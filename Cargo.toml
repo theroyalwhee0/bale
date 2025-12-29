@@ -1,7 +1,9 @@
 [package]
 name = "bale"
 version = "0.1.0"
+authors = ["Adam Mill <hismajesty@theroyalwhee.com>"]
 edition = "2024"
+rust-version = "1.89.0"
 
 [[bin]]
 name = "bale"
@@ -24,3 +26,26 @@ zerocopy = { version = "0.8.31", features = ["derive"] }
 
 [build-dependencies]
 chrono = "0.4.42"
+
+[lints.rust]
+# Deny unsafe by default, but allow with #[allow(unsafe_code)] for documented cases
+# like memory mapping where the operation is inherently unsafe but well-understood.
+unsafe_code = "deny"
+missing_docs = "deny"
+
+[lints.rustdoc]
+missing_crate_level_docs = "deny"
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+bare_urls = "deny"
+redundant_explicit_links = "deny"
+
+[lints.clippy]
+print_stdout = "deny"
+print_stderr = "deny"
+disallowed_methods = "deny"
+missing_docs_in_private_items = "deny"
+missing_panics_doc = "deny"
+missing_errors_doc = "deny"
+missing_safety_doc = "deny"

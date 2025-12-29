@@ -1,4 +1,11 @@
+//! Bale archive format library.
+//!
+//! A mmap-first, zero-copy zip-compatible archive format with fixed-stride
+//! entries for efficient random access.
+
+/// End of Central Directory record.
 mod eocd;
+/// Error types for bale operations.
 mod error;
 
 pub use eocd::Eocd;
@@ -23,6 +30,10 @@ pub const PATH_SIZE: usize = 256;
 /// If the path has a `.bale` extension and the file doesn't exist,
 /// creates a new empty bale archive. Otherwise, creates an empty file
 /// or updates the modification time of an existing file.
+///
+/// # Errors
+///
+/// Returns an error if file creation or modification fails.
 pub fn touch(path: &Path) -> Result<(), BaleError> {
     let is_bale = path.extension().is_some_and(|ext| ext == "bale");
     let exists = path.exists();
@@ -37,6 +48,7 @@ pub fn touch(path: &Path) -> Result<(), BaleError> {
 /// Creates a new empty bale archive at the given path.
 ///
 /// The archive contains only the End of Central Directory record.
+#[allow(unsafe_code)]
 fn create_empty_archive(path: &Path) -> Result<(), BaleError> {
     let file = OpenOptions::new()
         .read(true)

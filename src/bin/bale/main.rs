@@ -1,7 +1,10 @@
+//! Bale CLI tool for working with bale archives.
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Command-line interface for bale.
 #[derive(Parser)]
 #[command(
     version = concat!(
@@ -16,10 +19,12 @@ use clap::{Parser, Subcommand};
     about
 )]
 struct Cli {
+    /// The subcommand to run.
     #[command(subcommand)]
     command: Command,
 }
 
+/// Available subcommands.
 #[derive(Subcommand)]
 enum Command {
     /// Create a file or update its modification time.
@@ -29,6 +34,8 @@ enum Command {
     },
 }
 
+/// Entry point for the bale CLI.
+#[allow(clippy::print_stderr)]
 fn main() {
     let cli = Cli::parse();
 

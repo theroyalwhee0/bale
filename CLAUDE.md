@@ -52,6 +52,7 @@ control.
 - Test: `cargo nextest run` (preferred) or `cargo test`
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
+- Precommit: `git precommit --all`
 
 ### Testing Notes
 
