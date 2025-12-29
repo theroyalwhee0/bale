@@ -1,4 +1,6 @@
-use clap::Parser;
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -13,9 +15,29 @@ use clap::Parser;
     ),
     about
 )]
-struct Cli {}
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Create a file or update its modification time.
+    Touch {
+        /// The file to touch.
+        path: PathBuf,
+    },
+}
 
 fn main() {
-    let _cli = Cli::parse();
-    bale::run();
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Touch { path } => {
+            if let Err(e) = bale::touch(&path) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
 }
