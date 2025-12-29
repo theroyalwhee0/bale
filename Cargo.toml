@@ -14,10 +14,13 @@ bin = ["dep:clap"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"], optional = true }
+crc32fast = "1.5.0"
 flate2 = "1.1.5"
+memmap2 = "0.9.9"
 nom = "8.0.0"
+tempfile = "3.24.0"
 thiserror = "2.0.17"
-zerocopy = "0.8.31"
+zerocopy = { version = "0.8.31", features = ["derive"] }
 
 [build-dependencies]
 chrono = "0.4.42"

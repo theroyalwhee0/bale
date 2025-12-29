@@ -5,6 +5,7 @@
 !.gitignore
 !Cargo.lock
 !Cargo.toml
+!CLAUDE.md
 
 # Whitelist lint files.
 !.markdownlintrc
