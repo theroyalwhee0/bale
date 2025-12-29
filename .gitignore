@@ -1,16 +1,17 @@
 # Ignore everything by default
 *
 
-# Whitelist project files
+# Whitelist project files.
 !.gitignore
 !Cargo.lock
 !Cargo.toml
 
-# Whitelist lints.
+# Whitelist lint files.
 !.markdownlintrc
 !clippy.toml
 
-# Whitelist source directories
+# Whitelist source files.
+!build.rs
 !src/
 !src/**/
 !src/**/*.rs
