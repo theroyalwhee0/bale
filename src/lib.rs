@@ -5,6 +5,8 @@
 
 /// Archive builder for creating bale archives.
 mod archive;
+/// Validated, normalized paths within a bale archive.
+mod archive_path;
 /// Bale-specific EOCD extension.
 mod bale_eocd;
 /// Central Directory Header for ZIP entries.
@@ -19,6 +21,7 @@ mod error;
 mod local_file;
 
 pub use archive::Archive;
+pub use archive_path::ArchivePath;
 pub use bale_eocd::BaleEocd;
 pub use central_dir::CentralDirectoryHeader;
 pub use dos_time::DosDateTime;

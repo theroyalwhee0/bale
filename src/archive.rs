@@ -1,4 +1,6 @@
-use crate::{BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader};
+use crate::{
+    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
+};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -89,6 +91,32 @@ impl Archive {
             alignment,
             path_size,
         })
+    }
+
+    /// Adds a file to the archive using a path for the archive name.
+    ///
+    /// The file is stored uncompressed (STORE method). This method accepts
+    /// a `Path` for the archive name, which is validated and normalized.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - Path to the source file on disk
+    /// * `archive_path` - Path to store in the archive (must be valid UTF-8)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The archive path is not valid UTF-8
+    /// - The archive path exceeds the configured path size
+    /// - The source file cannot be read
+    /// - Writing to the archive fails
+    pub fn add_file_path(
+        &mut self,
+        src: impl AsRef<Path>,
+        archive_path: impl AsRef<Path>,
+    ) -> Result<(), BaleError> {
+        let archive_path = ArchivePath::try_from_path(archive_path)?;
+        self.add_file(src, archive_path.as_str())
     }
 
     /// Adds a file to the archive.

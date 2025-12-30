@@ -29,6 +29,10 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), BaleCliError> {
     match cli.command {
         Command::Touch { path } => commands::touch::run(path),
-        Command::Add { archive, files } => commands::add::run(archive, &files),
+        Command::Add {
+            archive,
+            prefix,
+            files,
+        } => commands::add::run(archive, &prefix, &files),
     }
 }

@@ -32,4 +32,8 @@ pub enum BaleError {
     /// Path size is outside valid range (1-2048).
     #[error("invalid path size: {0} is not in range 1..=2048")]
     InvalidPathSize(u16),
+
+    /// Path contains invalid UTF-8.
+    #[error("invalid path: not valid UTF-8")]
+    InvalidPath,
 }

@@ -36,6 +36,9 @@ pub enum Command {
     Add {
         /// The archive to add files to.
         archive: PathBuf,
+        /// Path prefix for files in the archive.
+        #[arg(long, default_value = "")]
+        prefix: String,
         /// Files to add to the archive.
         #[arg(required = true)]
         files: Vec<PathBuf>,
