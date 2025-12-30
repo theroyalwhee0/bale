@@ -6,6 +6,7 @@
 !Cargo.lock
 !Cargo.toml
 !CLAUDE.md
+!README.md
 
 # Whitelist lint files.
 !.markdownlintrc

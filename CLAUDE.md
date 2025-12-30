@@ -1,19 +1,24 @@
 # BALE - Project Context for Claude
 
+This file is authored and maintained by Claude (Anthropic's AI assistant) to
+provide context for future Claude sessions working on this project.
+
 ## Project Overview
 
 `bale` is a Rust library implementing a mmap-first, zero-copy zip-compatible
 archive format. It uses fixed-stride entries for efficient random access.
 
-## File Organization (One Item Per File)
+## Code Organization
 
-- **Guideline**: Place one public item (struct, enum, or trait) per file.
-  - File names should match the item name (e.g., `Entry` in `entry.rs`)
-  - Each file contains the item and all its implementations
-  - Type aliases are exempt from this rule and can be grouped logically
-  - When violating this guideline, include a comment explaining why
+### One Item Per File
 
-## Module Organization (mod.rs as Table of Contents)
+- Place one public item (struct, enum, or trait) per file
+- File names should match the item name (e.g., `Entry` in `entry.rs`)
+- Each file contains the item and all its implementations
+- Type aliases are exempt and can be grouped logically
+- When violating this guideline, include a comment explaining why
+
+### mod.rs as Table of Contents
 
 `mod.rs` files should **only** contain module declarations and re-exports.
 
@@ -21,48 +26,76 @@ archive format. It uses fixed-stride entries for efficient random access.
   in separate files
 - `mod.rs` serves as the module's table of contents
 
-### Dependencies Philosophy
+## Dependencies
 
 - Minimal, well-vetted dependencies
 - Feature-gated where appropriate
-- **IMPORTANT**: Never add dependencies without giving a chance to review
+- **IMPORTANT**: Never add dependencies without giving user a chance to review
   them BEFORE adding
-- All dependencies belong in the workspace root `Cargo.toml`, not in
-  individual crate `Cargo.toml` files
+- All dependencies belong in the workspace root `Cargo.toml`
 - Always pin exact versions (e.g., `"3.1.3"` not `"3"`)
 
-### Git Configuration
+## Git Configuration
 
-**CRITICAL - No Force Push or Amend**: Repository rules prevent force-pushing
-to ANY branch. This means:
+**No Force Push or Amend**: Repository rules prevent force-pushing to ANY
+branch.
 
 - **NEVER use `git push --force` or `git push --force-with-lease`**
 - **NEVER use `git commit --amend` on commits that have been pushed**
 - If you need to fix a pushed commit, create a NEW commit instead
-- Multiple small commits are fine - they get squashed on merge
 
-If you accidentally amend a pushed commit, you'll need to reset and recommit.
-
-**Whitelist .gitignore**: This project uses a whitelist approach to version
-control.
+**Whitelist .gitignore**: This project uses a whitelist approach. New file
+types must be explicitly added to `.gitignore` with specific extensions (not
+wildcards like `*`).
 
 ## Development Workflow
 
-- Build: `cargo build`
-- Test: `cargo nextest run` (preferred) or `cargo test`
-- Lint: `cargo clippy`
-- Format: `cargo fmt`
-- Precommit: `git precommit --all`
+```bash
+cargo build              # Build
+cargo nextest run        # Test (preferred)
+cargo test               # Test (alternative)
+cargo clippy             # Lint
+cargo fmt                # Format
+git precommit --all      # Run all checks
+```
 
-### Testing Notes
+## Testing
 
-- Use `#[cfg(test)]` modules
+### Unit Tests
+
+- Use `#[cfg(test)]` modules in source files
 - Document test panic expectations
 - Test round-trip serialization/deserialization
 
-## Format Notes
+### Integration Tests
 
-- **Zip-compatible EOCD**: Standard 22-byte format for empty archives
-- **Fixed stride**: `header_size + path_size` for CD and local headers
-- **Little-endian**: All integer fields are little-endian
-- **Constants** (current): `ALIGNMENT = 4096`, `PATH_SIZE = 256`
+Located in `tests/`:
+
+- `tests/fixtures.rs` - Generates test fixtures (run with `--ignored`)
+- `tests/fixtures/` - Binary fixtures (e.g., `empty.bale`)
+- `tests/empty_archive.rs` - trycmd-based CLI tool tests
+- `tests/cmd/` - trycmd test cases as `.toml` files
+
+Regenerate fixtures: `cargo test --test fixtures -- --ignored`
+
+### trycmd Pattern
+
+For testing with external CLI tools, use `/usr/bin/env` to resolve from PATH:
+
+```toml
+bin.path = "/usr/bin/env"
+args = ["toolname", "arguments..."]
+status.code = 0
+```
+
+Expected output goes in matching `.stdout` files.
+
+## Format Specification
+
+| Property   | Value                             |
+| ---------- | --------------------------------- |
+| EOCD       | Standard 22-byte zip format       |
+| Stride     | `header_size + path_size` (fixed) |
+| Byte order | Little-endian                     |
+| Alignment  | 4096 bytes                        |
+| Max path   | 256 bytes                         |
