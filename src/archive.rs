@@ -224,6 +224,9 @@ impl Archive {
         let entry_count = self.entries.len() as u16;
         let path_size = self.path_size as usize;
 
+        // Sort entries by path for consistent ordering and binary search.
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+
         // Write Central Directory headers.
         for entry in &self.entries {
             let cd_header = CentralDirectoryHeader::new(
@@ -321,5 +324,58 @@ mod tests {
         let long_path = "a".repeat(Archive::DEFAULT_PATH_SIZE as usize + 1);
         let result = archive.add_file(&file_path, &long_path);
         assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
+    }
+
+    /// Central Directory entries should be sorted by path for binary search.
+    #[test]
+    fn cd_entries_sorted_by_path() {
+        use crate::CentralDirectoryHeader;
+        use std::io::{Read, Seek, SeekFrom};
+        use zerocopy::FromBytes;
+
+        let dir = TempDir::new().unwrap();
+        let archive_path = dir.path().join("test.bale");
+
+        // Create test files.
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let mut f = File::create(dir.path().join(name)).unwrap();
+            f.write_all(name.as_bytes()).unwrap();
+        }
+
+        // Add files in reverse order.
+        let mut archive = Archive::create(&archive_path).unwrap();
+        archive.add_file(dir.path().join("c.txt"), "c.txt").unwrap();
+        archive.add_file(dir.path().join("a.txt"), "a.txt").unwrap();
+        archive.add_file(dir.path().join("b.txt"), "b.txt").unwrap();
+        archive.finish().unwrap();
+
+        // Read back and verify CD order.
+        let mut file = File::open(&archive_path).unwrap();
+        let file_len = file.metadata().unwrap().len();
+
+        // Read EOCD to find CD offset.
+        let eocd_offset = file_len - BaleEocd::COMBINED_SIZE as u64;
+        file.seek(SeekFrom::Start(eocd_offset)).unwrap();
+        let mut eocd_buf = [0u8; Eocd::SIZE];
+        file.read_exact(&mut eocd_buf).unwrap();
+        let eocd = Eocd::ref_from_bytes(&eocd_buf).unwrap();
+        let cd_offset = eocd.cd_offset.get() as u64;
+
+        // Read paths from CD entries.
+        let path_size = Archive::DEFAULT_PATH_SIZE as usize;
+        let stride = CentralDirectoryHeader::stride(path_size);
+        let mut paths = Vec::new();
+        for i in 0..3 {
+            let entry_offset = cd_offset + (i * stride) as u64;
+            let path_offset = entry_offset + CentralDirectoryHeader::SIZE as u64;
+            file.seek(SeekFrom::Start(path_offset)).unwrap();
+            let mut path_buf = vec![0u8; path_size];
+            file.read_exact(&mut path_buf).unwrap();
+            // Trim null padding.
+            let end = path_buf.iter().position(|&b| b == 0).unwrap_or(path_size);
+            paths.push(String::from_utf8_lossy(&path_buf[..end]).to_string());
+        }
+
+        assert_eq!(paths, vec!["a.txt", "b.txt", "c.txt"]);
     }
 }
