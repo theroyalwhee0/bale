@@ -15,4 +15,13 @@ pub enum BaleError {
         /// Actual signature found.
         found: u32,
     },
+
+    /// Archive path exceeds maximum length.
+    #[error("path too long: {path:?} exceeds {max} bytes")]
+    PathTooLong {
+        /// The path that was too long.
+        path: String,
+        /// Maximum allowed path length.
+        max: usize,
+    },
 }

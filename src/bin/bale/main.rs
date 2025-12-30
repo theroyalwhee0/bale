@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use bale::Archive;
 use clap::{Parser, Subcommand};
 
 /// Command-line interface for bale.
@@ -32,6 +33,14 @@ enum Command {
         /// The file to touch.
         path: PathBuf,
     },
+    /// Add files to a bale archive.
+    Add {
+        /// The archive to add files to.
+        archive: PathBuf,
+        /// Files to add to the archive.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
 }
 
 /// Entry point for the bale CLI.
@@ -39,12 +48,28 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
 
-    match cli.command {
-        Command::Touch { path } => {
-            if let Err(e) = bale::touch(&path) {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        }
+    let result = match cli.command {
+        Command::Touch { path } => bale::touch(path),
+        Command::Add { archive, files } => add_files(archive, files),
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
     }
+}
+
+/// Adds files to an archive.
+fn add_files(archive_path: PathBuf, files: Vec<PathBuf>) -> Result<(), bale::BaleError> {
+    let mut archive = Archive::create(archive_path)?;
+
+    for file in &files {
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed");
+        archive.add_file(file, name)?;
+    }
+
+    archive.finish()
 }

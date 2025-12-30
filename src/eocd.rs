@@ -34,15 +34,28 @@ impl Eocd {
     pub const SIZE: usize = 22;
 
     /// Creates a new empty EOCD for an archive with no entries.
+    #[must_use]
     pub fn empty() -> Self {
+        Self::new(0, 0, 0)
+    }
+
+    /// Creates a new EOCD with the given parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `entry_count` - Number of entries in the archive
+    /// * `cd_size` - Size of the central directory in bytes
+    /// * `cd_offset` - Offset to the start of the central directory
+    #[must_use]
+    pub fn new(entry_count: u16, cd_size: u32, cd_offset: u32) -> Self {
         Self {
             signature: U32::new(Self::SIGNATURE),
             disk_number: U16::new(0),
             cd_start_disk: U16::new(0),
-            cd_entries_disk: U16::new(0),
-            cd_entries_total: U16::new(0),
-            cd_size: U32::new(0),
-            cd_offset: U32::new(0),
+            cd_entries_disk: U16::new(entry_count),
+            cd_entries_total: U16::new(entry_count),
+            cd_size: U32::new(cd_size),
+            cd_offset: U32::new(cd_offset),
             comment_length: U16::new(0),
         }
     }
@@ -52,11 +65,13 @@ impl Eocd {
 mod tests {
     use super::*;
 
+    /// EOCD is exactly 22 bytes per ZIP spec.
     #[test]
     fn eocd_size_is_22_bytes() {
         assert_eq!(std::mem::size_of::<Eocd>(), Eocd::SIZE);
     }
 
+    /// EOCD can be serialized and deserialized without data loss.
     #[test]
     fn eocd_roundtrip() {
         let eocd = Eocd::empty();

@@ -18,6 +18,11 @@ archive format. It uses fixed-stride entries for efficient random access.
 - Type aliases are exempt and can be grouped logically
 - When violating this guideline, include a comment explaining why
 
+### Documentation
+
+Document all functions with `///` doc comments, including private and test
+functions. Every function should explain its purpose.
+
 ### mod.rs as Table of Contents
 
 `mod.rs` files should **only** contain module declarations and re-exports.

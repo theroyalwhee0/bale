@@ -1,0 +1,4 @@
+Archive:  tests/fixtures/single_file.bale
+Zip file size: 4420 bytes, number of entries: 1
+-rw-rw-r--  1.0 unx       13 b- stor [..] hello.txt
+1 file, 13 bytes uncompressed, 13 bytes compressed:  0.0%

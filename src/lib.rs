@@ -3,13 +3,25 @@
 //! A mmap-first, zero-copy zip-compatible archive format with fixed-stride
 //! entries for efficient random access.
 
+/// Archive builder for creating bale archives.
+mod archive;
+/// Central Directory Header for ZIP entries.
+mod central_dir;
+/// MS-DOS date/time format for ZIP archives.
+mod dos_time;
 /// End of Central Directory record.
 mod eocd;
 /// Error types for bale operations.
 mod error;
+/// Local File Header for ZIP entries.
+mod local_file;
 
+pub use archive::Archive;
+pub use central_dir::CentralDirectoryHeader;
+pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
 pub use error::BaleError;
+pub use local_file::LocalFileHeader;
 
 use std::fs::{FileTimes, OpenOptions};
 use std::io;
@@ -34,7 +46,8 @@ pub const PATH_SIZE: usize = 256;
 /// # Errors
 ///
 /// Returns an error if file creation or modification fails.
-pub fn touch(path: &Path) -> Result<(), BaleError> {
+pub fn touch(path: impl AsRef<Path>) -> Result<(), BaleError> {
+    let path = path.as_ref();
     let is_bale = path.extension().is_some_and(|ext| ext == "bale");
     let exists = path.exists();
 
