@@ -4,22 +4,31 @@ mod cli;
 mod commands;
 mod error;
 
+use std::process::ExitCode;
+
 use clap::Parser;
 
 use cli::{Cli, Command};
+use error::BaleCliError;
 
 /// Entry point for the bale CLI.
-#[allow(clippy::print_stderr)]
-fn main() {
-    let cli = Cli::parse();
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("error: {e}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let result = match cli.command {
+/// Runs the CLI with the given arguments.
+fn run(cli: Cli) -> Result<(), BaleCliError> {
+    match cli.command {
         Command::Touch { path } => commands::touch::run(path),
         Command::Add { archive, files } => commands::add::run(archive, &files),
-    };
-
-    if let Err(e) = result {
-        eprintln!("error: {e}");
-        std::process::exit(1);
     }
 }
