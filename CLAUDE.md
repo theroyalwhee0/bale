@@ -23,6 +23,28 @@ archive format. It uses fixed-stride entries for efficient random access.
 Document all functions with `///` doc comments, including private and test
 functions. Every function should explain its purpose.
 
+### Scoped Mutability
+
+Prefer hiding `mut` bindings and `#[cfg]` feature branching inside block
+expressions to limit their scope:
+
+```rust
+// Good: mut is scoped to initialization
+let path_buf = {
+    let mut buf = [0u8; PATH_SIZE];
+    buf[..len].copy_from_slice(bytes);
+    buf
+};
+
+// Good: cfg branching returns a value
+let mode = {
+    #[cfg(unix)]
+    { metadata.permissions().mode() }
+    #[cfg(not(unix))]
+    { 0o644 }
+};
+```
+
 ### mod.rs as Table of Contents
 
 `mod.rs` files should **only** contain module declarations and re-exports.
@@ -102,5 +124,43 @@ Expected output goes in matching `.stdout` files.
 | EOCD       | Standard 22-byte zip format       |
 | Stride     | `header_size + path_size` (fixed) |
 | Byte order | Little-endian                     |
-| Alignment  | 4096 bytes                        |
-| Max path   | 256 bytes                         |
+| Alignment  | 4096 bytes (configurable, 2^N)    |
+| Max path   | 256 bytes (configurable, 1-2048)  |
+
+### Archive Layout
+
+```text
+┌─────────────────────────────────────┐
+│ Local File Header + Data (aligned)  │ ← Repeats for each file
+├─────────────────────────────────────┤
+│ Central Directory Headers           │ ← Fixed stride entries
+├─────────────────────────────────────┤
+│ [ZIP64 EOCD Record - if needed]     │ ← Optional, for large archives
+│ [ZIP64 EOCD Locator - if needed]    │
+├─────────────────────────────────────┤
+│ EOCD (22 bytes) + BaleEocd (234 b)  │ ← 256-byte trailer
+└─────────────────────────────────────┘
+```
+
+### BaleEocd (EOCD Comment)
+
+234-byte structure stored as the EOCD comment field. Combined with the 22-byte
+EOCD, the total trailer is exactly 256 bytes for efficient single-read access.
+
+| Offset | Size | Field                                   |
+| ------ | ---- | --------------------------------------- |
+| 0      | 4    | Magic signature "BALE" (0x454C4142 LE)  |
+| 4      | 1    | Major version                           |
+| 5      | 1    | Minor version                           |
+| 6      | 1    | Patch version                           |
+| 7      | 1    | Alignment power (2^N, e.g., 12 = 4096)  |
+| 8      | 2    | Path size (1-2048, little-endian)       |
+| 10     | 224  | Reserved (zeros)                        |
+
+### ZIP64 Compatibility
+
+ZIP64 structures are placed *before* the standard EOCD, so the comment field
+remains available at the end of the archive. The BaleMetadata comment is valid
+for both standard and ZIP64 archives.
+
+Reference: [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)

@@ -5,6 +5,8 @@
 
 /// Archive builder for creating bale archives.
 mod archive;
+/// Bale-specific EOCD extension.
+mod bale_eocd;
 /// Central Directory Header for ZIP entries.
 mod central_dir;
 /// MS-DOS date/time format for ZIP archives.
@@ -17,6 +19,7 @@ mod error;
 mod local_file;
 
 pub use archive::Archive;
+pub use bale_eocd::BaleEocd;
 pub use central_dir::CentralDirectoryHeader;
 pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
@@ -60,7 +63,7 @@ pub fn touch(path: impl AsRef<Path>) -> Result<(), BaleError> {
 
 /// Creates a new empty bale archive at the given path.
 ///
-/// The archive contains only the End of Central Directory record.
+/// The archive contains the EOCD and BaleMetadata comment.
 #[allow(unsafe_code)]
 fn create_empty_archive(path: &Path) -> Result<(), BaleError> {
     let file = OpenOptions::new()
@@ -69,13 +72,17 @@ fn create_empty_archive(path: &Path) -> Result<(), BaleError> {
         .create_new(true)
         .open(path)?;
 
-    file.set_len(Eocd::SIZE as u64)?;
+    let total_size = BaleEocd::COMBINED_SIZE;
+    file.set_len(total_size as u64)?;
 
     // SAFETY: We just created this file exclusively with create_new.
     let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
-    let eocd = Eocd::empty();
-    mmap.copy_from_slice(eocd.as_bytes());
+    let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
+    let bale_eocd = BaleEocd::new();
+
+    mmap[..Eocd::SIZE].copy_from_slice(eocd.as_bytes());
+    mmap[Eocd::SIZE..].copy_from_slice(bale_eocd.as_bytes());
     mmap.flush()?;
 
     Ok(())

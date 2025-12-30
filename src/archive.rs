@@ -1,12 +1,11 @@
+use crate::{
+    ALIGNMENT, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
+    PATH_SIZE,
+};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
-
 use zerocopy::IntoBytes;
-
-use crate::{
-    ALIGNMENT, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader, PATH_SIZE,
-};
 
 /// Metadata for an entry in the archive.
 struct EntryInfo {
@@ -49,11 +48,10 @@ impl Archive {
             .write(true)
             .create_new(true)
             .open(path.as_ref())?;
-
         Ok(Self {
             file,
-            position: 0,
-            entries: Vec::new(),
+            position: Default::default(),
+            entries: Default::default(),
         })
     }
 
@@ -81,7 +79,6 @@ impl Archive {
                 max: PATH_SIZE,
             });
         }
-
         // Open source file and get metadata.
         let mut src_file = File::open(src.as_ref())?;
         let metadata = src_file.metadata()?;
@@ -91,14 +88,18 @@ impl Archive {
                 .modified()
                 .unwrap_or_else(|_| std::time::SystemTime::now()),
         );
-
-        #[cfg(unix)]
+        // Get the unix permissions or default them.
         let mode = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode()
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode()
+            }
+            #[cfg(not(unix))]
+            {
+                0o644
+            }
         };
-        #[cfg(not(unix))]
-        let mode = 0o644;
 
         // Record the local header offset.
         let local_offset = self.position;
@@ -107,8 +108,11 @@ impl Archive {
         let (crc32, data) = Self::read_with_crc(&mut src_file)?;
 
         // Create null-padded path.
-        let mut path_buf = [0u8; PATH_SIZE];
-        path_buf[..path_bytes.len()].copy_from_slice(path_bytes);
+        let path_buf = {
+            let mut path_buf = [0u8; PATH_SIZE];
+            path_buf[..path_bytes.len()].copy_from_slice(path_bytes);
+            path_buf
+        };
 
         // Write Local File Header + filename + data (must be contiguous per ZIP spec).
         let local_header = LocalFileHeader::new(size, crc32, mtime);
@@ -148,7 +152,6 @@ impl Archive {
     pub fn finish(mut self) -> Result<(), BaleError> {
         let cd_offset = self.position;
         let entry_count = self.entries.len() as u16;
-
         // Write Central Directory headers.
         for entry in &self.entries {
             let cd_header = CentralDirectoryHeader::new(
@@ -162,13 +165,18 @@ impl Archive {
             self.file.write_all(&entry.path)?;
             self.position += CentralDirectoryHeader::STRIDE as u64;
         }
-
         let cd_size = self.position - cd_offset;
-
-        // Write EOCD.
-        let eocd = Eocd::new(entry_count, cd_size as u32, cd_offset as u32);
+        // Write EOCD with comment length for BaleEocd.
+        let eocd = Eocd::new_with_comment(
+            entry_count,
+            cd_size as u32,
+            cd_offset as u32,
+            BaleEocd::SIZE as u16,
+        );
         self.file.write_all(eocd.as_bytes())?;
-
+        // Write BaleEocd as the EOCD comment.
+        let bale_eocd = BaleEocd::new();
+        self.file.write_all(bale_eocd.as_bytes())?;
         self.file.flush()?;
         Ok(())
     }
@@ -177,7 +185,6 @@ impl Archive {
     fn read_with_crc(file: &mut File) -> io::Result<(u32, Vec<u8>)> {
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
-
         let crc = crc32fast::hash(&data);
         Ok((crc, data))
     }
@@ -199,35 +206,30 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    /// An empty archive should contain only the EOCD (22 bytes).
+    /// An empty archive contains EOCD + BaleEocd (256 bytes total).
     #[test]
     fn create_empty_archive() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
-
         let archive = Archive::create(&path).unwrap();
         archive.finish().unwrap();
-
         let metadata = std::fs::metadata(&path).unwrap();
-        assert_eq!(metadata.len(), Eocd::SIZE as u64);
+        assert_eq!(metadata.len(), BaleEocd::COMBINED_SIZE as u64);
     }
 
-    /// Adding a file should produce an archive larger than just EOCD.
+    /// Adding a file should produce an archive larger than the trailer.
     #[test]
     fn add_single_file() {
         let dir = TempDir::new().unwrap();
         let archive_path = dir.path().join("test.bale");
         let file_path = dir.path().join("hello.txt");
-
         let mut f = File::create(&file_path).unwrap();
         f.write_all(b"Hello, World!").unwrap();
-
         let mut archive = Archive::create(&archive_path).unwrap();
         archive.add_file(&file_path, "hello.txt").unwrap();
         archive.finish().unwrap();
-
         let metadata = std::fs::metadata(&archive_path).unwrap();
-        assert!(metadata.len() > Eocd::SIZE as u64);
+        assert!(metadata.len() > BaleEocd::COMBINED_SIZE as u64);
     }
 
     /// Paths exceeding PATH_SIZE bytes should return an error.
@@ -236,13 +238,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let archive_path = dir.path().join("test.bale");
         let file_path = dir.path().join("hello.txt");
-
         File::create(&file_path).unwrap();
-
         let mut archive = Archive::create(&archive_path).unwrap();
         let long_path = "a".repeat(PATH_SIZE + 1);
         let result = archive.add_file(&file_path, &long_path);
-
         assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
     }
 }

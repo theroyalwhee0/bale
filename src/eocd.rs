@@ -22,7 +22,7 @@ pub struct Eocd {
     pub cd_size: U32,
     /// Offset to the start of the central directory.
     pub cd_offset: U32,
-    /// Length of the archive comment (always 0 for bale).
+    /// Length of the archive comment (128 for BaleMetadata).
     pub comment_length: U16,
 }
 
@@ -33,13 +33,13 @@ impl Eocd {
     /// Size of the EOCD structure in bytes.
     pub const SIZE: usize = 22;
 
-    /// Creates a new empty EOCD for an archive with no entries.
+    /// Creates a new empty EOCD for an archive with no entries and no comment.
     #[must_use]
     pub fn empty() -> Self {
-        Self::new(0, 0, 0)
+        Self::new_with_comment(0, 0, 0, 0)
     }
 
-    /// Creates a new EOCD with the given parameters.
+    /// Creates a new EOCD with the given parameters and no comment.
     ///
     /// # Arguments
     ///
@@ -48,6 +48,24 @@ impl Eocd {
     /// * `cd_offset` - Offset to the start of the central directory
     #[must_use]
     pub fn new(entry_count: u16, cd_size: u32, cd_offset: u32) -> Self {
+        Self::new_with_comment(entry_count, cd_size, cd_offset, 0)
+    }
+
+    /// Creates a new EOCD with a comment of the specified length.
+    ///
+    /// # Arguments
+    ///
+    /// * `entry_count` - Number of entries in the archive
+    /// * `cd_size` - Size of the central directory in bytes
+    /// * `cd_offset` - Offset to the start of the central directory
+    /// * `comment_length` - Length of the comment following the EOCD
+    #[must_use]
+    pub fn new_with_comment(
+        entry_count: u16,
+        cd_size: u32,
+        cd_offset: u32,
+        comment_length: u16,
+    ) -> Self {
         Self {
             signature: U32::new(Self::SIGNATURE),
             disk_number: U16::new(0),
@@ -56,7 +74,7 @@ impl Eocd {
             cd_entries_total: U16::new(entry_count),
             cd_size: U32::new(cd_size),
             cd_offset: U32::new(cd_offset),
-            comment_length: U16::new(0),
+            comment_length: U16::new(comment_length),
         }
     }
 }
