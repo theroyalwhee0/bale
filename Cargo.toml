@@ -27,6 +27,9 @@ zerocopy = { version = "0.8.31", features = ["derive"] }
 [build-dependencies]
 chrono = "0.4.42"
 
+[dev-dependencies]
+trycmd = "0.15.11"
+
 [lints.rust]
 # Deny unsafe by default, but allow with #[allow(unsafe_code)] for documented cases
 # like memory mapping where the operation is inherently unsafe but well-understood.

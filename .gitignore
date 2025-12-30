@@ -16,3 +16,12 @@
 !src/
 !src/**/
 !src/**/*.rs
+
+# Whitelist test files.
+!tests/
+!tests/**/
+!tests/**/*.bale
+!tests/**/*.md
+!tests/**/*.rs
+!tests/**/*.stdout
+!tests/**/*.toml

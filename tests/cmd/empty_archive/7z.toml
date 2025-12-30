@@ -1,0 +1,3 @@
+bin.path = "/usr/bin/env"
+args = ["7z", "l", "tests/fixtures/empty.bale"]
+status.code = 0
