@@ -68,6 +68,10 @@ impl DosDateTime {
 }
 
 impl From<SystemTime> for DosDateTime {
+    /// Converts a `SystemTime` to MS-DOS date/time format.
+    ///
+    /// Years before 1980 are clamped to 1980. Seconds are truncated to
+    /// 2-second resolution (odd seconds round down).
     fn from(time: SystemTime) -> Self {
         let dt: DateTime<Utc> = time.into();
 
@@ -86,6 +90,9 @@ impl From<SystemTime> for DosDateTime {
 }
 
 impl From<DosDateTime> for SystemTime {
+    /// Converts MS-DOS date/time to a `SystemTime`.
+    ///
+    /// Invalid dates fall back to the Unix epoch (1970-01-01 00:00:00 UTC).
     fn from(dos: DosDateTime) -> Self {
         let dt = Utc
             .with_ymd_and_hms(
