@@ -34,12 +34,6 @@ use std::time::SystemTime;
 use memmap2::MmapMut;
 use zerocopy::IntoBytes;
 
-/// Default alignment for file data placement.
-pub const ALIGNMENT: usize = 4096;
-
-/// Default maximum path size in bytes.
-pub const PATH_SIZE: usize = 256;
-
 /// Creates a file or updates its modification time.
 ///
 /// If the path has a `.bale` extension and the file doesn't exist,

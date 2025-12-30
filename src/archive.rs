@@ -1,7 +1,4 @@
-use crate::{
-    ALIGNMENT, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
-    PATH_SIZE,
-};
+use crate::{BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -9,8 +6,8 @@ use zerocopy::IntoBytes;
 
 /// Metadata for an entry in the archive.
 struct EntryInfo {
-    /// Path within the archive (null-padded to PATH_SIZE).
-    path: [u8; PATH_SIZE],
+    /// Path within the archive (null-padded to path_size).
+    path: Vec<u8>,
     /// Offset to the Local File Header.
     local_offset: u64,
     /// File size in bytes.
@@ -34,15 +31,52 @@ pub struct Archive {
     position: u64,
     /// Entries added to the archive.
     entries: Vec<EntryInfo>,
+    /// Alignment for file data (power of 2).
+    alignment: u32,
+    /// Maximum path size in bytes.
+    path_size: u16,
 }
 
 impl Archive {
-    /// Creates a new archive at the given path.
+    /// Default alignment for file data (4096 bytes).
+    pub const DEFAULT_ALIGNMENT: u32 = 4096;
+
+    /// Default maximum path size (256 bytes).
+    pub const DEFAULT_PATH_SIZE: u16 = 256;
+
+    /// Creates a new archive at the given path with default settings.
+    ///
+    /// Uses 4096-byte alignment and 256-byte maximum path size.
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be created.
     pub fn create(path: impl AsRef<Path>) -> Result<Self, BaleError> {
+        Self::create_with_options(path, Self::DEFAULT_ALIGNMENT, Self::DEFAULT_PATH_SIZE)
+    }
+
+    /// Creates a new archive with custom alignment and path size.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the archive will be created
+    /// * `alignment` - Alignment for file data (must be a power of 2)
+    /// * `path_size` - Maximum path size (1-2048)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The file cannot be created
+    /// - Alignment is not a power of 2
+    /// - Path size is not in range 1..=2048
+    pub fn create_with_options(
+        path: impl AsRef<Path>,
+        alignment: u32,
+        path_size: u16,
+    ) -> Result<Self, BaleError> {
+        // Validate alignment and path_size by trying to create BaleEocd.
+        let _ = BaleEocd::new_with_options(alignment, path_size)?;
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -52,6 +86,8 @@ impl Archive {
             file,
             position: Default::default(),
             entries: Default::default(),
+            alignment,
+            path_size,
         })
     }
 
@@ -67,16 +103,17 @@ impl Archive {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The archive path exceeds 256 bytes
+    /// - The archive path exceeds the configured path size
     /// - The source file cannot be read
     /// - Writing to the archive fails
     pub fn add_file(&mut self, src: impl AsRef<Path>, archive_path: &str) -> Result<(), BaleError> {
         // Validate path length.
         let path_bytes = archive_path.as_bytes();
-        if path_bytes.len() > PATH_SIZE {
+        let path_size = self.path_size as usize;
+        if path_bytes.len() > path_size {
             return Err(BaleError::PathTooLong {
                 path: archive_path.to_string(),
-                max: PATH_SIZE,
+                max: path_size,
             });
         }
         // Open source file and get metadata.
@@ -109,20 +146,20 @@ impl Archive {
 
         // Create null-padded path.
         let path_buf = {
-            let mut path_buf = [0u8; PATH_SIZE];
-            path_buf[..path_bytes.len()].copy_from_slice(path_bytes);
-            path_buf
+            let mut buf = vec![0u8; path_size];
+            buf[..path_bytes.len()].copy_from_slice(path_bytes);
+            buf
         };
 
         // Write Local File Header + filename + data (must be contiguous per ZIP spec).
-        let local_header = LocalFileHeader::new(size, crc32, mtime);
+        let local_header = LocalFileHeader::new(size, crc32, mtime, self.path_size);
         self.file.write_all(local_header.as_bytes())?;
         self.file.write_all(&path_buf)?;
         self.file.write_all(&data)?;
-        self.position += LocalFileHeader::STRIDE as u64 + data.len() as u64;
+        self.position += LocalFileHeader::stride(path_size) as u64 + data.len() as u64;
 
         // Pad after entry to alignment (for next entry).
-        let padding = Self::padding_to_alignment(self.position);
+        let padding = self.padding_to_alignment(self.position);
         if padding > 0 {
             let zeros = vec![0u8; padding];
             self.file.write_all(&zeros)?;
@@ -149,9 +186,16 @@ impl Archive {
     /// # Errors
     ///
     /// Returns an error if writing fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the archive was created with invalid alignment or path_size
+    /// (should not happen when using `create` or `create_with_options`).
     pub fn finish(mut self) -> Result<(), BaleError> {
         let cd_offset = self.position;
         let entry_count = self.entries.len() as u16;
+        let path_size = self.path_size as usize;
+
         // Write Central Directory headers.
         for entry in &self.entries {
             let cd_header = CentralDirectoryHeader::new(
@@ -160,12 +204,15 @@ impl Archive {
                 entry.mtime,
                 entry.local_offset as u32,
                 entry.mode,
+                self.path_size,
             );
             self.file.write_all(cd_header.as_bytes())?;
             self.file.write_all(&entry.path)?;
-            self.position += CentralDirectoryHeader::STRIDE as u64;
+            self.position += CentralDirectoryHeader::stride(path_size) as u64;
         }
+
         let cd_size = self.position - cd_offset;
+
         // Write EOCD with comment length for BaleEocd.
         let eocd = Eocd::new_with_comment(
             entry_count,
@@ -174,8 +221,10 @@ impl Archive {
             BaleEocd::SIZE as u16,
         );
         self.file.write_all(eocd.as_bytes())?;
+
         // Write BaleEocd as the EOCD comment.
-        let bale_eocd = BaleEocd::new();
+        let bale_eocd = BaleEocd::new_with_options(self.alignment, self.path_size)
+            .expect("already validated in create_with_options");
         self.file.write_all(bale_eocd.as_bytes())?;
         self.file.flush()?;
         Ok(())
@@ -190,12 +239,13 @@ impl Archive {
     }
 
     /// Computes padding needed to reach the next alignment boundary.
-    const fn padding_to_alignment(position: u64) -> usize {
-        let remainder = position as usize % ALIGNMENT;
+    fn padding_to_alignment(&self, position: u64) -> usize {
+        let alignment = self.alignment as usize;
+        let remainder = position as usize % alignment;
         if remainder == 0 {
             0
         } else {
-            ALIGNMENT - remainder
+            alignment - remainder
         }
     }
 }
@@ -232,7 +282,7 @@ mod tests {
         assert!(metadata.len() > BaleEocd::COMBINED_SIZE as u64);
     }
 
-    /// Paths exceeding PATH_SIZE bytes should return an error.
+    /// Paths exceeding the configured path size should return an error.
     #[test]
     fn path_too_long_error() {
         let dir = TempDir::new().unwrap();
@@ -240,7 +290,7 @@ mod tests {
         let file_path = dir.path().join("hello.txt");
         File::create(&file_path).unwrap();
         let mut archive = Archive::create(&archive_path).unwrap();
-        let long_path = "a".repeat(PATH_SIZE + 1);
+        let long_path = "a".repeat(Archive::DEFAULT_PATH_SIZE as usize + 1);
         let result = archive.add_file(&file_path, &long_path);
         assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
     }

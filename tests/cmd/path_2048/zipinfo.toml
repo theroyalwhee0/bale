@@ -1,0 +1,3 @@
+bin.path = "/usr/bin/env"
+args = ["zipinfo", "tests/fixtures/path_2048.bale"]
+status.code = 0

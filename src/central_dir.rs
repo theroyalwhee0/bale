@@ -1,12 +1,12 @@
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::{DosDateTime, PATH_SIZE};
+use crate::DosDateTime;
 
 /// Central Directory File Header (46 bytes fixed, followed by filename).
 ///
 /// These headers appear after all local file entries and before the EOCD.
-/// For bale archives, the filename is always `PATH_SIZE` bytes (null-padded).
+/// For bale archives, the filename is always `path_size` bytes (null-padded).
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct CentralDirectoryHeader {
@@ -53,9 +53,6 @@ impl CentralDirectoryHeader {
     /// Size of the fixed header portion in bytes.
     pub const SIZE: usize = 46;
 
-    /// Total size including the fixed-length filename field.
-    pub const STRIDE: usize = Self::SIZE + PATH_SIZE;
-
     /// Version made by: Unix (3) in high byte, ZIP 1.0 (10) in low byte.
     const VERSION_MADE_BY_UNIX: u16 = (3 << 8) | 10;
 
@@ -64,6 +61,12 @@ impl CentralDirectoryHeader {
 
     /// Compression method: STORE (no compression).
     const COMPRESSION_STORE: u16 = 0;
+
+    /// Returns the total stride (header + filename) for a given path size.
+    #[must_use]
+    pub const fn stride(path_size: usize) -> usize {
+        Self::SIZE + path_size
+    }
 
     /// Creates a new `CentralDirectoryHeader` for an uncompressed file.
     ///
@@ -74,6 +77,7 @@ impl CentralDirectoryHeader {
     /// * `mtime` - Modification time in MS-DOS format
     /// * `local_offset` - Offset to the Local File Header
     /// * `unix_mode` - Unix file permissions (e.g., 0o644)
+    /// * `path_size` - Length of the filename field
     #[must_use]
     pub fn new(
         size: u32,
@@ -81,6 +85,7 @@ impl CentralDirectoryHeader {
         mtime: DosDateTime,
         local_offset: u32,
         unix_mode: u32,
+        path_size: u16,
     ) -> Self {
         // External attributes: Unix mode in upper 16 bits.
         let external_attrs = unix_mode << 16;
@@ -96,7 +101,7 @@ impl CentralDirectoryHeader {
             crc32: U32::new(crc32),
             compressed_size: U32::new(size),
             uncompressed_size: U32::new(size),
-            filename_length: U16::new(PATH_SIZE as u16),
+            filename_length: U16::new(path_size),
             extra_length: U16::new(0),
             comment_length: U16::new(0),
             disk_start: U16::new(0),
@@ -120,23 +125,25 @@ mod tests {
         );
     }
 
-    /// Stride includes header (46) plus fixed filename field (256).
+    /// Stride includes header (46) plus filename field.
     #[test]
     fn stride_is_header_plus_path() {
-        assert_eq!(CentralDirectoryHeader::STRIDE, 46 + 256);
+        assert_eq!(CentralDirectoryHeader::stride(256), 46 + 256);
+        assert_eq!(CentralDirectoryHeader::stride(128), 46 + 128);
     }
 
     /// New headers must have the correct ZIP signature.
     #[test]
     fn new_header_has_correct_signature() {
-        let header = CentralDirectoryHeader::new(100, 0x12345678, DosDateTime::default(), 0, 0o644);
+        let header =
+            CentralDirectoryHeader::new(100, 0x12345678, DosDateTime::default(), 0, 0o644, 256);
         assert_eq!(header.signature.get(), CentralDirectoryHeader::SIGNATURE);
     }
 
     /// Unix permissions are stored in the upper 16 bits of external_attrs.
     #[test]
     fn unix_mode_in_external_attrs() {
-        let header = CentralDirectoryHeader::new(100, 0, DosDateTime::default(), 0, 0o755);
+        let header = CentralDirectoryHeader::new(100, 0, DosDateTime::default(), 0, 0o755, 256);
         // 0o755 = 0x1ED, shifted left 16 bits = 0x01ED0000
         assert_eq!(header.external_attrs.get(), 0o755 << 16);
     }
@@ -145,7 +152,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         let mtime = DosDateTime::new(0x58CF, 0x6955);
-        let header = CentralDirectoryHeader::new(1024, 0xDEADBEEF, mtime, 4096, 0o644);
+        let header = CentralDirectoryHeader::new(1024, 0xDEADBEEF, mtime, 4096, 0o644, 256);
         let bytes = header.as_bytes();
         assert_eq!(bytes.len(), CentralDirectoryHeader::SIZE);
 
@@ -154,5 +161,6 @@ mod tests {
         assert_eq!(restored.uncompressed_size.get(), 1024);
         assert_eq!(restored.crc32.get(), 0xDEADBEEF);
         assert_eq!(restored.local_header_offset.get(), 4096);
+        assert_eq!(restored.filename_length.get(), 256);
     }
 }
