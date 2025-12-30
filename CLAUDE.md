@@ -53,6 +53,24 @@ let mode = {
   in separate files
 - `mod.rs` serves as the module's table of contents
 
+### Strict Linting and Quality Standards
+
+- **Forbidden unsafe code**: `unsafe_code = "forbid"`
+- **Required documentation**: All items (public and private) must be documented
+  - Missing docs are denied (both code and rustdoc)
+  - All functions must include `# Errors`, `# Panics`, and `# Safety` docs
+    where applicable
+- **No direct stdout/stderr**: `print_stdout` and `print_stderr` are denied
+- **Warnings are errors**: Pre-commit hooks run clippy with `-D warnings`,
+  so any warning fails the commit
+
+## Important Conventions
+
+1. **Documentation First**: Write docs before implementation
+2. **Error Propagation**: Use `Result` types with descriptive errors
+3. **Zero-Copy Design**: Prefer borrowing over allocation where possible
+4. **Little-Endian**: All integer fields in the format are little-endian
+
 ## Dependencies
 
 - Minimal, well-vetted dependencies
@@ -62,7 +80,35 @@ let mode = {
 - All dependencies belong in the workspace root `Cargo.toml`
 - Always pin exact versions (e.g., `"3.1.3"` not `"3"`)
 
+## Issue Workflow
+
+**IMPORTANT**: Always use `focus-issue` to start work on GitHub issues.
+Do NOT use `gh issue` directly.
+
+```bash
+focus-issue <issue-number>
+```
+
+This command:
+
+1. Assigns the issue to you (if not already assigned)
+2. Creates or switches to an issue branch (e.g., `2-implement-index-table`)
+3. Fetches issue content to `.focus/Issue.md` for easy reference
+
+The `.focus/` directory is gitignored and contains local working context
+for the current issue.
+
+After completing work:
+
+0. Pause and let your coworker review the git diffs.
+1. Commit changes to the issue branch
+2. Push and create a PR via `gh pr create`
+3. After merge, switch back to main: `git checkout main && git pull`
+
 ## Git Configuration
+
+**No `-C` Flag**: Do not use `git -C <path>`. Run git commands from the
+working directory instead.
 
 **No Force Push or Amend**: Repository rules prevent force-pushing to ANY
 branch.
@@ -70,6 +116,9 @@ branch.
 - **NEVER use `git push --force` or `git push --force-with-lease`**
 - **NEVER use `git commit --amend` on commits that have been pushed**
 - If you need to fix a pushed commit, create a NEW commit instead
+- Multiple small commits are fine - they get squashed on merge
+
+If you accidentally amend a pushed commit, you'll need to reset and recommit.
 
 **Whitelist .gitignore**: This project uses a whitelist approach. New file
 types must be explicitly added to `.gitignore` with specific extensions (not
