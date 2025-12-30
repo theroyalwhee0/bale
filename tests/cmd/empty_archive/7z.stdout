@@ -1,0 +1,12 @@
+
+Listing archive: tests/fixtures/empty.bale
+
+--
+Path = tests/fixtures/empty.bale
+Type = zip
+Physical Size = 22
+
+   Date      Time    Attr         Size   Compressed  Name
+------------------- ----- ------------ ------------  ------------------------
+------------------- ----- ------------ ------------  ------------------------
+                                     0            0  0 files
