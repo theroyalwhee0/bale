@@ -2,6 +2,8 @@
 //!
 //! Run with `cargo test --test fixtures -- --ignored` to regenerate fixtures.
 
+#![allow(deprecated)]
+
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;

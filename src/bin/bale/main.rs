@@ -34,5 +34,13 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
             prefix,
             files,
         } => commands::add::run(archive, &prefix, &files),
+        Command::List { archive } => commands::list::run(archive),
+        Command::Extract {
+            archive,
+            output,
+            entries,
+        } => commands::extract::run(archive, output, &entries),
+        Command::Delete { archive, entries } => commands::delete::run(archive, &entries),
+        Command::Compact { archive } => commands::compact::run(archive),
     }
 }

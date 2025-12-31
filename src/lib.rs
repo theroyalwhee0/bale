@@ -11,6 +11,8 @@ mod archive_path;
 mod bale_eocd;
 /// Central Directory Header for ZIP entries.
 mod central_dir;
+/// Archive compaction.
+mod compact;
 /// MS-DOS date/time format for ZIP archives.
 mod dos_time;
 /// End of Central Directory record.
@@ -26,10 +28,12 @@ mod reader;
 /// Append-only archive writer.
 mod writer;
 
+#[allow(deprecated)]
 pub use archive::Archive;
 pub use archive_path::ArchivePath;
 pub use bale_eocd::BaleEocd;
 pub use central_dir::CentralDirectoryHeader;
+pub use compact::{CompactStats, compact};
 pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
 pub use error::BaleError;

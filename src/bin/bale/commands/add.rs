@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bale::Archive;
+use bale::{ArchivePath, ArchiveWriter};
 
 use crate::error::BaleCliError;
 
@@ -12,14 +12,15 @@ pub fn run(
     prefix: &str,
     files: &[PathBuf],
 ) -> Result<(), BaleCliError> {
-    let mut archive = Archive::create(archive_path)?;
+    let mut writer = ArchiveWriter::create(archive_path)?;
 
     for file in files {
         let name = file.file_name().unwrap_or(file.as_os_str());
         let dest = Path::new(prefix).join(name);
-        archive.add_file_path(file, &dest)?;
+        let archive_path = ArchivePath::try_from_path(&dest)?;
+        writer.add_file(file, archive_path.as_str())?;
     }
 
-    archive.finish()?;
+    writer.sync()?;
     Ok(())
 }

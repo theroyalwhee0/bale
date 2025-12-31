@@ -26,6 +26,13 @@ struct EntryInfo {
 ///
 /// Use [`Archive::create`] to start building an archive, [`Archive::add_file`]
 /// to add files, and [`Archive::finish`] to finalize.
+///
+/// # Deprecated
+///
+/// This legacy builder uses non-mmap I/O. Use [`crate::ArchiveWriter`] instead,
+/// which provides mmap-based I/O with file locking, append support, and deletion.
+#[deprecated(since = "0.1.0", note = "Use ArchiveWriter instead")]
+#[allow(deprecated)]
 pub struct Archive {
     /// The underlying file.
     file: File,
@@ -39,6 +46,7 @@ pub struct Archive {
     path_size: u16,
 }
 
+#[allow(deprecated)]
 impl Archive {
     /// Default alignment for file data (4096 bytes).
     pub const DEFAULT_ALIGNMENT: u32 = 4096;
@@ -282,6 +290,7 @@ impl Archive {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;
