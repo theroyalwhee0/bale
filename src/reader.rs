@@ -298,12 +298,6 @@ impl ArchiveReader {
     /// deletions or when entries are shadowed.
     #[must_use]
     pub fn has_orphaned_data(&self) -> bool {
-        let entries: Vec<_> = self.iter_entries().collect();
-
-        if entries.is_empty() {
-            return false;
-        }
-
         let path_size = self.path_size();
         let alignment = self.alignment() as usize;
         let local_header_stride = LocalFileHeader::stride(path_size);
@@ -311,22 +305,18 @@ impl ArchiveReader {
 
         let mut expected_offset: usize = 0;
 
-        for (header, _path_bytes) in &entries {
+        for (header, _path_bytes) in self.iter_entries() {
             let local_offset = header.local_header_offset.get() as usize;
-            let data_size = header.uncompressed_size.get() as usize;
 
-            // Check if entry starts where expected.
             if local_offset != expected_offset {
                 return true;
             }
 
-            // Calculate next expected offset (aligned).
+            let data_size = header.uncompressed_size.get() as usize;
             let entry_size = local_header_stride + data_size;
-            let aligned_size = entry_size.div_ceil(alignment) * alignment;
-            expected_offset = local_offset + aligned_size;
+            expected_offset = local_offset + entry_size.div_ceil(alignment) * alignment;
         }
 
-        // Check if CD starts right after the last entry.
         expected_offset != cd_offset
     }
 
