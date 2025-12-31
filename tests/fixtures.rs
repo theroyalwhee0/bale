@@ -12,9 +12,23 @@ use zerocopy::IntoBytes;
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
 const INVALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid");
 
-/// Generates an empty bale archive with EOCD + BaleEocd (256 bytes).
+/// Regenerates all test fixtures.
+///
+/// Run with: `cargo test --test fixtures -- --ignored`
 #[test]
 #[ignore]
+fn generate_all_fixtures() {
+    generate_empty_bale();
+    generate_single_file_bale();
+    generate_align_16k_bale();
+    generate_path_2048_bale();
+    generate_orphaned_data_bale();
+    generate_unsorted_cd_bale();
+    generate_duplicate_paths_bale();
+    generate_bad_crc_bale();
+}
+
+/// Generates an empty bale archive with EOCD + BaleEocd (256 bytes).
 fn generate_empty_bale() {
     let path = Path::new(VALID_FIXTURES_DIR).join("empty.bale");
     let mut file = File::create(&path).expect("failed to create empty.bale");
@@ -29,8 +43,6 @@ fn generate_empty_bale() {
 }
 
 /// Generates a bale archive containing a single "hello.txt" file.
-#[test]
-#[ignore]
 fn generate_single_file_bale() {
     let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("single_file.bale");
@@ -57,8 +69,6 @@ fn generate_single_file_bale() {
 }
 
 /// Generates a bale archive with 16KB alignment.
-#[test]
-#[ignore]
 fn generate_align_16k_bale() {
     let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("align_16k.bale");
@@ -86,8 +96,6 @@ fn generate_align_16k_bale() {
 }
 
 /// Generates a bale archive with 2048-byte path size.
-#[test]
-#[ignore]
 fn generate_path_2048_bale() {
     let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("path_2048.bale");
@@ -122,8 +130,6 @@ fn generate_path_2048_bale() {
 ///
 /// Created by adding an entry, deleting it, then adding another entry.
 /// The deleted entry's data remains as orphaned bytes.
-#[test]
-#[ignore]
 fn generate_orphaned_data_bale() {
     let archive_path = Path::new(VALID_FIXTURES_DIR).join("orphaned_data.bale");
 
@@ -150,8 +156,6 @@ fn generate_orphaned_data_bale() {
 ///
 /// Entries are added in reverse alphabetical order (c, b, a) and the CD
 /// is not sorted, making binary search impossible.
-#[test]
-#[ignore]
 fn generate_unsorted_cd_bale() {
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("unsorted_cd.bale");
 
@@ -177,8 +181,6 @@ fn generate_unsorted_cd_bale() {
 ///
 /// The same path appears multiple times in the Central Directory.
 /// Only the last entry is accessible (shadowing).
-#[test]
-#[ignore]
 fn generate_duplicate_paths_bale() {
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("duplicate_paths.bale");
 
@@ -203,8 +205,6 @@ fn generate_duplicate_paths_bale() {
 ///
 /// The archive is structurally valid but the CRC in the Central Directory
 /// does not match the actual file data.
-#[test]
-#[ignore]
 fn generate_bad_crc_bale() {
     use std::io::{Read, Seek, SeekFrom};
 
