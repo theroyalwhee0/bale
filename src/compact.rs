@@ -1,7 +1,7 @@
 //! Archive compaction to reclaim space from orphaned data.
 
 use crate::{ArchiveReader, ArchiveWriter, BaleError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -124,6 +124,141 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
     })
 }
 
+/// Statistics from a rename duplicates operation.
+#[derive(Debug, Clone, Default)]
+pub struct RenameStats {
+    /// Number of entries renamed.
+    pub entries_renamed: usize,
+    /// Mapping of old paths to new paths.
+    pub renames: Vec<(String, String)>,
+}
+
+/// Renames duplicate paths in an archive.
+///
+/// When multiple entries share the same path, earlier occurrences are renamed
+/// with numeric suffixes while the last occurrence keeps the original name.
+/// For example: `file.txt` x 3 → `file(1).txt`, `file(2).txt`, `file.txt`
+///
+/// This preserves shadowing semantics where the last entry "wins".
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The archive cannot be opened
+/// - The temp file cannot be created
+/// - Writing fails
+/// - The rename operation fails
+pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleError> {
+    let path = path.as_ref();
+
+    // Open existing archive for reading.
+    let reader = ArchiveReader::open(path)?;
+    let alignment = reader.alignment();
+    let path_size = reader.path_size() as u16;
+
+    // First pass: count occurrences of each path.
+    let mut path_counts: HashMap<String, usize> = HashMap::new();
+    for (_header, path_bytes) in reader.iter_entries() {
+        let path_str = bytes_to_path_string(path_bytes);
+        *path_counts.entry(path_str).or_insert(0) += 1;
+    }
+
+    // Check if there are any duplicates.
+    let has_duplicates = path_counts.values().any(|&count| count > 1);
+    if !has_duplicates {
+        return Ok(RenameStats::default());
+    }
+
+    // Second pass: collect entries with renamed paths.
+    // Track current occurrence number for each path.
+    let mut path_occurrences: HashMap<String, usize> = HashMap::new();
+    let mut entries: Vec<_> = Vec::new();
+    let mut renames: Vec<(String, String)> = Vec::new();
+
+    for (header, path_bytes) in reader.iter_entries() {
+        let original_path = bytes_to_path_string(path_bytes);
+        let total_count = path_counts[&original_path];
+        let occurrence = {
+            let entry = path_occurrences.entry(original_path.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
+        // Determine the new path name.
+        let new_path = if total_count > 1 && occurrence < total_count {
+            // This is a duplicate that's not the last occurrence - rename it.
+            let renamed = insert_suffix(&original_path, occurrence);
+            renames.push((original_path, renamed.clone()));
+            renamed
+        } else {
+            // Either not a duplicate, or it's the last occurrence - keep original.
+            original_path
+        };
+
+        entries.push((header, new_path));
+    }
+
+    // Sort entries by the new path for binary search.
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Create temp file in same directory (for atomic rename).
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let temp_path = parent.join(format!(
+        ".{}.rename.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("archive")
+    ));
+
+    // Write archive with renamed entries.
+    {
+        let mut writer = ArchiveWriter::create_with_options(&temp_path, alignment, path_size)?;
+
+        for (header, new_path) in &entries {
+            let data = reader.read_data(header)?;
+            let mode = header.external_attrs.get() >> 16;
+            writer.add_entry(new_path, data, mode)?;
+        }
+
+        writer.sync()?;
+    }
+
+    // Atomic rename.
+    fs::rename(&temp_path, path)?;
+
+    Ok(RenameStats {
+        entries_renamed: renames.len(),
+        renames,
+    })
+}
+
+/// Inserts a numeric suffix before the file extension.
+///
+/// Examples:
+/// - `file.txt` + 1 → `file(1).txt`
+/// - `archive.tar.gz` + 2 → `archive.tar(2).gz`
+/// - `noext` + 3 → `noext(3)`
+fn insert_suffix(path: &str, number: usize) -> String {
+    if let Some(dot_pos) = path.rfind('.') {
+        // Has extension: insert suffix before the last dot.
+        let (stem, ext) = path.split_at(dot_pos);
+        format!("{}({}){}", stem, number, ext)
+    } else {
+        // No extension: append suffix at the end.
+        format!("{}({})", path, number)
+    }
+}
+
+/// Converts path bytes to a trimmed string.
+fn bytes_to_path_string(path_bytes: &[u8]) -> String {
+    path_bytes
+        .iter()
+        .copied()
+        .take_while(|&b| b != 0)
+        .map(|b| b as char)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +368,117 @@ mod tests {
 
         assert_eq!(exec_entry.external_attrs.get() >> 16, 0o755);
         assert_eq!(data_entry.external_attrs.get() >> 16, 0o644);
+    }
+
+    /// Insert suffix before file extension.
+    #[test]
+    fn insert_suffix_with_extension() {
+        assert_eq!(insert_suffix("file.txt", 1), "file(1).txt");
+        assert_eq!(insert_suffix("image.png", 2), "image(2).png");
+        assert_eq!(insert_suffix("archive.tar.gz", 3), "archive.tar(3).gz");
+    }
+
+    /// Insert suffix for files without extension.
+    #[test]
+    fn insert_suffix_no_extension() {
+        assert_eq!(insert_suffix("README", 1), "README(1)");
+        assert_eq!(insert_suffix("Makefile", 5), "Makefile(5)");
+    }
+
+    /// Rename duplicates on archive with no duplicates does nothing.
+    #[test]
+    fn rename_duplicates_no_duplicates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("a.txt", b"a", 0o644).unwrap();
+            writer.add_entry("b.txt", b"b", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let stats = rename_duplicates(&path).unwrap();
+        assert_eq!(stats.entries_renamed, 0);
+        assert!(stats.renames.is_empty());
+
+        // Verify archive unchanged.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 2);
+    }
+
+    /// Rename duplicates renames earlier occurrences.
+    #[test]
+    fn rename_duplicates_renames_earlier() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with 3 duplicate entries.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"version 1", 0o644).unwrap();
+            writer.add_entry("file.txt", b"version 2", 0o644).unwrap();
+            writer.add_entry("file.txt", b"version 3", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let stats = rename_duplicates(&path).unwrap();
+        assert_eq!(stats.entries_renamed, 2);
+
+        // Verify renames.
+        assert!(
+            stats
+                .renames
+                .contains(&("file.txt".to_string(), "file(1).txt".to_string()))
+        );
+        assert!(
+            stats
+                .renames
+                .contains(&("file.txt".to_string(), "file(2).txt".to_string()))
+        );
+
+        // Verify archive has 3 unique entries.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 3);
+
+        // Last occurrence keeps original name.
+        let entry = reader.find_entry("file.txt").unwrap();
+        let data = reader.read_data(entry).unwrap();
+        assert_eq!(data, b"version 3");
+
+        // Earlier occurrences are renamed.
+        let entry1 = reader.find_entry("file(1).txt").unwrap();
+        let data1 = reader.read_data(entry1).unwrap();
+        assert_eq!(data1, b"version 1");
+
+        let entry2 = reader.find_entry("file(2).txt").unwrap();
+        let data2 = reader.read_data(entry2).unwrap();
+        assert_eq!(data2, b"version 2");
+    }
+
+    /// Rename duplicates sorts entries after renaming.
+    #[test]
+    fn rename_duplicates_sorts_entries() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("z.txt", b"z1", 0o644).unwrap();
+            writer.add_entry("z.txt", b"z2", 0o644).unwrap();
+            writer.add_entry("a.txt", b"a", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        rename_duplicates(&path).unwrap();
+
+        // Verify entries are sorted.
+        let reader = ArchiveReader::open(&path).unwrap();
+        let paths: Vec<String> = reader
+            .iter_entries()
+            .map(|(_, p)| bytes_to_path_string(p))
+            .collect();
+
+        assert_eq!(paths, vec!["a.txt", "z(1).txt", "z.txt"]);
     }
 }
