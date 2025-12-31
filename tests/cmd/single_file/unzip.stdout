@@ -1,4 +1,4 @@
-Archive:  tests/fixtures/single_file.bale
+Archive:  tests/fixtures/valid/single_file.bale
 BALE
     testing: hello.txt                OK
-No errors detected in compressed data of tests/fixtures/single_file.bale.
+No errors detected in compressed data of tests/fixtures/valid/single_file.bale.

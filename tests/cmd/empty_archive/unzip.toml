@@ -1,4 +1,4 @@
 bin.path = "/usr/bin/env"
-args = ["unzip", "-t", "tests/fixtures/empty.bale"]
+args = ["unzip", "-t", "tests/fixtures/valid/empty.bale"]
 status.code = 1
 stderr_to_stdout = true

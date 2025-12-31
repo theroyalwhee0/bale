@@ -9,13 +9,13 @@ use std::path::Path;
 use bale::{ArchiveWriter, BaleEocd, Eocd};
 use zerocopy::IntoBytes;
 
-const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
 
 /// Generates an empty bale archive with EOCD + BaleEocd (256 bytes).
 #[test]
 #[ignore]
 fn generate_empty_bale() {
-    let path = Path::new(FIXTURES_DIR).join("empty.bale");
+    let path = Path::new(VALID_FIXTURES_DIR).join("empty.bale");
     let mut file = File::create(&path).expect("failed to create empty.bale");
 
     let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
@@ -31,7 +31,7 @@ fn generate_empty_bale() {
 #[test]
 #[ignore]
 fn generate_single_file_bale() {
-    let fixtures_dir = Path::new(FIXTURES_DIR);
+    let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("single_file.bale");
     let content_path = fixtures_dir.join("hello.txt");
 
@@ -59,7 +59,7 @@ fn generate_single_file_bale() {
 #[test]
 #[ignore]
 fn generate_align_16k_bale() {
-    let fixtures_dir = Path::new(FIXTURES_DIR);
+    let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("align_16k.bale");
     let content_path = fixtures_dir.join("align_test.txt");
 
@@ -88,7 +88,7 @@ fn generate_align_16k_bale() {
 #[test]
 #[ignore]
 fn generate_path_2048_bale() {
-    let fixtures_dir = Path::new(FIXTURES_DIR);
+    let fixtures_dir = Path::new(VALID_FIXTURES_DIR);
     let archive_path = fixtures_dir.join("path_2048.bale");
     let content_path = fixtures_dir.join("path_test.txt");
 

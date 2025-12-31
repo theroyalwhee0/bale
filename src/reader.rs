@@ -1,6 +1,7 @@
 //! Zero-copy archive reader using memory-mapped I/O.
 
 use crate::{BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive};
+use std::collections::HashSet;
 use std::path::Path;
 use zerocopy::FromBytes;
 
@@ -202,6 +203,111 @@ impl ArchiveReader {
     #[must_use]
     pub fn bale_eocd(&self) -> &BaleEocd {
         &self.bale_eocd
+    }
+
+    /// Verifies the CRC-32 checksum for an entry.
+    ///
+    /// Reads the entry data and computes its CRC-32, comparing against the
+    /// stored value in the Central Directory header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The entry data cannot be read
+    /// - The computed CRC does not match the stored CRC
+    pub fn verify_crc(&self, entry: &CentralDirectoryHeader) -> Result<(), BaleError> {
+        let data = self.read_data(entry)?;
+        let computed = crc32fast::hash(data);
+        let stored = entry.crc32.get();
+
+        if computed != stored {
+            return Err(BaleError::Corrupted(format!(
+                "CRC mismatch: expected {:08x}, got {:08x}",
+                stored, computed
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Checks if the Central Directory is sorted by path bytes.
+    ///
+    /// A sorted CD enables binary search for entry lookup. Archives created
+    /// by `compact` are always sorted.
+    #[must_use]
+    pub fn is_sorted(&self) -> bool {
+        let entries: Vec<_> = self.iter_entries().collect();
+        entries.windows(2).all(|w| w[0].1 <= w[1].1)
+    }
+
+    /// Returns a list of duplicate paths in the archive.
+    ///
+    /// Duplicate paths occur when the same path appears multiple times in the
+    /// Central Directory (shadowing). Returns the paths that have duplicates,
+    /// not the total count of duplicates.
+    #[must_use]
+    pub fn find_duplicates(&self) -> Vec<String> {
+        let mut seen: HashSet<&[u8]> = HashSet::new();
+        let mut duplicates: Vec<String> = Vec::new();
+
+        for (_header, path_bytes) in self.iter_entries() {
+            if !seen.insert(path_bytes) {
+                let path = Self::path_to_string(path_bytes);
+                if !duplicates.contains(&path) {
+                    duplicates.push(path);
+                }
+            }
+        }
+
+        duplicates
+    }
+
+    /// Checks if the archive contains orphaned data.
+    ///
+    /// Orphaned data exists when there are gaps between entries or between
+    /// the last entry and the Central Directory. This can occur after
+    /// deletions or when entries are shadowed.
+    #[must_use]
+    pub fn has_orphaned_data(&self) -> bool {
+        let entries: Vec<_> = self.iter_entries().collect();
+
+        if entries.is_empty() {
+            return false;
+        }
+
+        let path_size = self.path_size();
+        let alignment = self.alignment() as usize;
+        let local_header_stride = LocalFileHeader::stride(path_size);
+        let cd_offset = self.eocd.cd_offset.get() as usize;
+
+        let mut expected_offset: usize = 0;
+
+        for (header, _path_bytes) in &entries {
+            let local_offset = header.local_header_offset.get() as usize;
+            let data_size = header.uncompressed_size.get() as usize;
+
+            // Check if entry starts where expected.
+            if local_offset != expected_offset {
+                return true;
+            }
+
+            // Calculate next expected offset (aligned).
+            let entry_size = local_header_stride + data_size;
+            let aligned_size = entry_size.div_ceil(alignment) * alignment;
+            expected_offset = local_offset + aligned_size;
+        }
+
+        // Check if CD starts right after the last entry.
+        expected_offset != cd_offset
+    }
+
+    /// Converts a null-padded path to a string.
+    fn path_to_string(path_bytes: &[u8]) -> String {
+        let end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        String::from_utf8_lossy(&path_bytes[..end]).to_string()
     }
 }
 
