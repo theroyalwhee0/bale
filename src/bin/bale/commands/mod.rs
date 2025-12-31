@@ -2,6 +2,8 @@
 
 /// Add files to an archive.
 pub mod add;
+/// Check archive integrity.
+pub mod check;
 /// Compact an archive.
 pub mod compact;
 /// Delete entries from an archive.
