@@ -277,8 +277,11 @@ impl ArchiveReader {
     /// Duplicate paths occur when the same path appears multiple times in the
     /// Central Directory (shadowing). Returns the paths that have duplicates,
     /// not the total count of duplicates.
-    #[must_use]
-    pub fn find_duplicates(&self) -> Vec<String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any path contains invalid UTF-8.
+    pub fn find_duplicates(&self) -> Result<Vec<String>, BaleError> {
         let mut seen: HashSet<&[u8]> = HashSet::new();
         let mut dup_set: HashSet<&[u8]> = HashSet::new();
 
@@ -288,7 +291,10 @@ impl ArchiveReader {
             }
         }
 
-        dup_set.into_iter().map(Self::path_to_string).collect()
+        dup_set
+            .into_iter()
+            .map(|b| Ok(Self::path_bytes_to_string(b)?))
+            .collect()
     }
 
     /// Checks if the archive contains orphaned data.
@@ -320,13 +326,17 @@ impl ArchiveReader {
         expected_offset != cd_offset
     }
 
-    /// Converts a null-padded path to a string.
-    fn path_to_string(path_bytes: &[u8]) -> String {
+    /// Converts null-padded path bytes to a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path bytes are not valid UTF-8.
+    fn path_bytes_to_string(path_bytes: &[u8]) -> Result<String, std::str::Utf8Error> {
         let end = path_bytes
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(path_bytes.len());
-        String::from_utf8_lossy(&path_bytes[..end]).to_string()
+        std::str::from_utf8(&path_bytes[..end]).map(String::from)
     }
 }
 

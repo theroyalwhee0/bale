@@ -1,6 +1,7 @@
 disallowed-methods = [
-    # No `to_string_lossy` methods, as they lead to loss of information.
-    # Prefer using `to_str` or `to_string` with proper error handling.
+    # No lossy string conversions - they hide data corruption.
+    # Prefer proper error handling or explicit byte representations.
     "std::ffi::OsStr::to_string_lossy",
     "std::path::Path::to_string_lossy",
+    "std::string::String::from_utf8_lossy",
 ]

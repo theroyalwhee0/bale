@@ -65,7 +65,7 @@ pub fn run(archive_path: impl AsRef<Path>, fix: bool, fix_crc: bool) -> Result<(
         let mut crc_issues: Vec<CrcIssue> = Vec::new();
 
         for (header, path_bytes) in reader.iter_entries() {
-            let path = path_to_string(path_bytes);
+            let path = path_bytes_to_string(path_bytes)?;
             let (computed, local_crc, cd_crc) = reader.crc_info(header)?;
 
             if computed == local_crc && computed == cd_crc {
@@ -166,7 +166,7 @@ pub fn run(archive_path: impl AsRef<Path>, fix: bool, fix_crc: bool) -> Result<(
     // Second pass: check duplicates and fix if requested.
     let has_duplicates = {
         let reader = ArchiveReader::open(&archive_path)?;
-        let duplicates = reader.find_duplicates();
+        let duplicates = reader.find_duplicates()?;
         let has_duplicates = !duplicates.is_empty();
 
         if has_duplicates && fix {
@@ -224,11 +224,15 @@ pub fn run(archive_path: impl AsRef<Path>, fix: bool, fix_crc: bool) -> Result<(
     Ok(())
 }
 
-/// Converts a null-padded path to a string.
-fn path_to_string(path_bytes: &[u8]) -> String {
+/// Converts null-padded path bytes to a string.
+///
+/// # Errors
+///
+/// Returns an error if the path bytes are not valid UTF-8.
+fn path_bytes_to_string(path_bytes: &[u8]) -> Result<String, std::str::Utf8Error> {
     let end = path_bytes
         .iter()
         .position(|&b| b == 0)
         .unwrap_or(path_bytes.len());
-    String::from_utf8_lossy(&path_bytes[..end]).to_string()
+    std::str::from_utf8(&path_bytes[..end]).map(String::from)
 }

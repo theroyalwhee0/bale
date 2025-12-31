@@ -53,4 +53,8 @@ pub enum BaleError {
     /// Archive data is corrupted or invalid.
     #[error("corrupted archive: {0}")]
     Corrupted(String),
+
+    /// Invalid UTF-8 in archive path.
+    #[error("invalid UTF-8: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
 }
