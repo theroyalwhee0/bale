@@ -2,13 +2,11 @@
 //!
 //! Run with `cargo test --test fixtures -- --ignored` to regenerate fixtures.
 
-#![allow(deprecated)]
-
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use bale::{Archive, BaleEocd, Eocd};
+use bale::{ArchiveWriter, BaleEocd, Eocd};
 use zerocopy::IntoBytes;
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -47,11 +45,11 @@ fn generate_single_file_bale() {
     let _ = std::fs::remove_file(&archive_path);
 
     // Create archive.
-    let mut archive = Archive::create(&archive_path).expect("failed to create archive");
-    archive
+    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+    writer
         .add_file(&content_path, "hello.txt")
         .expect("failed to add file");
-    archive.finish().expect("failed to finish archive");
+    writer.sync().expect("failed to sync archive");
 
     // Clean up source file.
     std::fs::remove_file(&content_path).expect("failed to remove hello.txt");
@@ -75,12 +73,12 @@ fn generate_align_16k_bale() {
     let _ = std::fs::remove_file(&archive_path);
 
     // Create archive with 16KB alignment.
-    let mut archive =
-        Archive::create_with_options(&archive_path, 16384, 256).expect("failed to create archive");
-    archive
+    let mut writer = ArchiveWriter::create_with_options(&archive_path, 16384, 256)
+        .expect("failed to create archive");
+    writer
         .add_file(&content_path, "align_test.txt")
         .expect("failed to add file");
-    archive.finish().expect("failed to finish archive");
+    writer.sync().expect("failed to sync archive");
 
     // Clean up source file.
     std::fs::remove_file(&content_path).expect("failed to remove source file");
@@ -104,12 +102,12 @@ fn generate_path_2048_bale() {
     let _ = std::fs::remove_file(&archive_path);
 
     // Create archive with 2048-byte paths.
-    let mut archive =
-        Archive::create_with_options(&archive_path, 4096, 2048).expect("failed to create archive");
-    archive
+    let mut writer = ArchiveWriter::create_with_options(&archive_path, 4096, 2048)
+        .expect("failed to create archive");
+    writer
         .add_file(&content_path, "path_test.txt")
         .expect("failed to add file");
-    archive.finish().expect("failed to finish archive");
+    writer.sync().expect("failed to sync archive");
 
     // Clean up source file.
     std::fs::remove_file(&content_path).expect("failed to remove source file");
