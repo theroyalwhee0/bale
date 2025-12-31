@@ -71,4 +71,9 @@ pub enum Command {
         /// The archive to compact.
         archive: PathBuf,
     },
+    /// Check archive integrity.
+    Check {
+        /// The archive to check.
+        archive: PathBuf,
+    },
 }
