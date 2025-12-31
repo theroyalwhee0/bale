@@ -4,7 +4,7 @@ use std::fs::{FileTimes, OpenOptions};
 use std::path::Path;
 use std::time::SystemTime;
 
-use bale::Archive;
+use bale::ArchiveWriter;
 
 use crate::error::BaleCliError;
 
@@ -21,7 +21,8 @@ pub fn run(path: impl AsRef<Path>) -> Result<(), BaleCliError> {
         let times = FileTimes::new().set_accessed(now).set_modified(now);
         file.set_times(times)?;
     } else {
-        Archive::create(path)?.finish()?;
+        let mut writer = ArchiveWriter::create(path)?;
+        writer.sync()?;
     }
 
     Ok(())

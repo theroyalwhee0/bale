@@ -43,4 +43,32 @@ pub enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// List entries in a bale archive.
+    List {
+        /// The archive to list.
+        archive: PathBuf,
+    },
+    /// Extract entries from a bale archive.
+    Extract {
+        /// The archive to extract from.
+        archive: PathBuf,
+        /// Output directory (defaults to current directory).
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+        /// Entries to extract (if empty, extracts all).
+        entries: Vec<String>,
+    },
+    /// Delete entries from a bale archive.
+    Delete {
+        /// The archive to modify.
+        archive: PathBuf,
+        /// Entries to delete.
+        #[arg(required = true)]
+        entries: Vec<String>,
+    },
+    /// Compact a bale archive, removing orphaned data.
+    Compact {
+        /// The archive to compact.
+        archive: PathBuf,
+    },
 }

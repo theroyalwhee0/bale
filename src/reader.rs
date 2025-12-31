@@ -238,15 +238,17 @@ mod tests {
     /// Opening a valid empty archive works.
     #[test]
     fn open_empty_archive() {
-        use crate::Archive;
+        use crate::ArchiveWriter;
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
 
-        // Create empty archive using the builder.
-        let archive = Archive::create(&path).unwrap();
-        archive.finish().unwrap();
+        // Create empty archive using the writer (drop to release lock).
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.sync().unwrap();
+        }
 
         // Open with reader.
         let reader = ArchiveReader::open(&path).unwrap();
@@ -258,23 +260,20 @@ mod tests {
     /// Reading entries from an archive with files.
     #[test]
     fn read_entries() {
-        use crate::Archive;
-        use std::fs::File;
-        use std::io::Write;
+        use crate::ArchiveWriter;
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let archive_path = dir.path().join("test.bale");
 
-        // Create a source file.
-        let src_path = dir.path().join("hello.txt");
-        let mut src = File::create(&src_path).unwrap();
-        src.write_all(b"Hello, World!").unwrap();
-
-        // Create archive with one file.
-        let mut archive = Archive::create(&archive_path).unwrap();
-        archive.add_file(&src_path, "hello.txt").unwrap();
-        archive.finish().unwrap();
+        // Create archive with one file (drop to release lock).
+        {
+            let mut writer = ArchiveWriter::create(&archive_path).unwrap();
+            writer
+                .add_entry("hello.txt", b"Hello, World!", 0o644)
+                .unwrap();
+            writer.sync().unwrap();
+        }
 
         // Open with reader.
         let reader = ArchiveReader::open(&archive_path).unwrap();
@@ -295,25 +294,19 @@ mod tests {
     /// find_entry returns the entry for an existing path.
     #[test]
     fn find_existing_entry() {
-        use crate::Archive;
-        use std::fs::File;
-        use std::io::Write;
+        use crate::ArchiveWriter;
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let archive_path = dir.path().join("test.bale");
 
-        // Create source files.
-        let src1 = dir.path().join("a.txt");
-        File::create(&src1).unwrap().write_all(b"aaa").unwrap();
-        let src2 = dir.path().join("b.txt");
-        File::create(&src2).unwrap().write_all(b"bbbbb").unwrap();
-
-        // Create archive.
-        let mut archive = Archive::create(&archive_path).unwrap();
-        archive.add_file(&src1, "a.txt").unwrap();
-        archive.add_file(&src2, "b.txt").unwrap();
-        archive.finish().unwrap();
+        // Create archive (drop to release lock).
+        {
+            let mut writer = ArchiveWriter::create(&archive_path).unwrap();
+            writer.add_entry("a.txt", b"aaa", 0o644).unwrap();
+            writer.add_entry("b.txt", b"bbbbb", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
 
         // Open and find entries.
         let reader = ArchiveReader::open(&archive_path).unwrap();
