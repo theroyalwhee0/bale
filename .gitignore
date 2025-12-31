@@ -24,5 +24,6 @@
 !tests/**/*.bale
 !tests/**/*.md
 !tests/**/*.rs
+!tests/**/*.stderr
 !tests/**/*.stdout
 !tests/**/*.toml

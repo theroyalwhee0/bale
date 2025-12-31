@@ -1,0 +1,3 @@
+bin.name = "bale"
+args = ["check", "tests/fixtures/invalid/duplicate_paths.bale"]
+status.code = 0
