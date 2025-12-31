@@ -280,18 +280,15 @@ impl ArchiveReader {
     #[must_use]
     pub fn find_duplicates(&self) -> Vec<String> {
         let mut seen: HashSet<&[u8]> = HashSet::new();
-        let mut duplicates: Vec<String> = Vec::new();
+        let mut dup_set: HashSet<&[u8]> = HashSet::new();
 
         for (_header, path_bytes) in self.iter_entries() {
             if !seen.insert(path_bytes) {
-                let path = Self::path_to_string(path_bytes);
-                if !duplicates.contains(&path) {
-                    duplicates.push(path);
-                }
+                dup_set.insert(path_bytes);
             }
         }
 
-        duplicates
+        dup_set.into_iter().map(Self::path_to_string).collect()
     }
 
     /// Checks if the archive contains orphaned data.
