@@ -23,6 +23,8 @@ mod local_file;
 mod mmap;
 /// Zero-copy archive reader.
 mod reader;
+/// Append-only archive writer.
+mod writer;
 
 pub use archive::Archive;
 pub use archive_path::ArchivePath;
@@ -32,5 +34,6 @@ pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
 pub use error::BaleError;
 pub use local_file::LocalFileHeader;
-pub use mmap::MappedArchive;
+pub use mmap::{MappedArchive, MappedArchiveMut};
 pub use reader::ArchiveReader;
+pub use writer::ArchiveWriter;
