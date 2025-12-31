@@ -29,7 +29,7 @@ mod writer;
 pub use archive_path::ArchivePath;
 pub use bale_eocd::BaleEocd;
 pub use central_dir::CentralDirectoryHeader;
-pub use compact::{CompactStats, compact};
+pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
 pub use error::BaleError;

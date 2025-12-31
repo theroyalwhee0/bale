@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use bale::{ArchiveReader, compact};
+use bale::{ArchiveReader, compact, rename_duplicates};
 
 use crate::error::BaleCliError;
 
@@ -26,6 +26,7 @@ enum ArchiveStatus {
 ///
 /// When `fix` is true, attempts to fix issues:
 /// - Unsorted CD: Sorts by running compact
+/// - Duplicate paths: Renames with numeric suffixes (e.g., `file(1).txt`)
 ///
 /// # Errors
 ///
@@ -64,23 +65,36 @@ pub fn run(archive_path: impl AsRef<Path>, fix: bool) -> Result<(), BaleCliError
         is_sorted
     };
 
-    // Second pass: check duplicates and orphaned data.
-    let (has_duplicates, has_orphaned_data) = {
+    // Second pass: check duplicates and fix if requested.
+    let has_duplicates = {
         let reader = ArchiveReader::open(&archive_path)?;
-
         let duplicates = reader.find_duplicates();
         let has_duplicates = !duplicates.is_empty();
-        for path in &duplicates {
-            errors.push(format!("Duplicate path: '{}'", path));
-        }
 
+        if has_duplicates && fix {
+            drop(reader); // Release the reader before modifying.
+            let stats = rename_duplicates(&archive_path)?;
+            for (old_path, new_path) in &stats.renames {
+                fixed.push(format!("Renamed '{}' to '{}'", old_path, new_path));
+            }
+            false // No longer has duplicates after fix.
+        } else {
+            for path in &duplicates {
+                errors.push(format!("Duplicate path: '{}'", path));
+            }
+            has_duplicates
+        }
+    };
+
+    // Third pass: check orphaned data.
+    let has_orphaned_data = {
+        let reader = ArchiveReader::open(&archive_path)?;
         let has_orphaned_data = reader.has_orphaned_data();
         if has_orphaned_data {
             errors
                 .push("Archive contains orphaned data (run 'bale compact' to reclaim)".to_string());
         }
-
-        (has_duplicates, has_orphaned_data)
+        has_orphaned_data
     };
 
     // Print fixed items to stdout.
