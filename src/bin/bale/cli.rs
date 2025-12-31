@@ -75,5 +75,8 @@ pub enum Command {
     Check {
         /// The archive to check.
         archive: PathBuf,
+        /// Attempt to fix issues found.
+        #[arg(long)]
+        fix: bool,
     },
 }
