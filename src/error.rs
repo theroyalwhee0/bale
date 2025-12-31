@@ -36,4 +36,21 @@ pub enum BaleError {
     /// Path contains invalid UTF-8.
     #[error("invalid path: not valid UTF-8")]
     InvalidPath,
+
+    /// Archive is too small to contain a valid trailer.
+    #[error("archive too small: {size} bytes, minimum is {minimum}")]
+    TooSmall {
+        /// Actual size of the archive.
+        size: u64,
+        /// Minimum size required.
+        minimum: u64,
+    },
+
+    /// Entry not found in archive.
+    #[error("entry not found: {0}")]
+    EntryNotFound(String),
+
+    /// Archive data is corrupted or invalid.
+    #[error("corrupted archive: {0}")]
+    Corrupted(String),
 }

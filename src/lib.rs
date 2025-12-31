@@ -19,6 +19,10 @@ mod eocd;
 mod error;
 /// Local File Header for ZIP entries.
 mod local_file;
+/// Memory-mapped file access.
+mod mmap;
+/// Zero-copy archive reader.
+mod reader;
 
 pub use archive::Archive;
 pub use archive_path::ArchivePath;
@@ -28,3 +32,5 @@ pub use dos_time::DosDateTime;
 pub use eocd::Eocd;
 pub use error::BaleError;
 pub use local_file::LocalFileHeader;
+pub use mmap::MappedArchive;
+pub use reader::ArchiveReader;
