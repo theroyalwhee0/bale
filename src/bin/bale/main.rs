@@ -42,6 +42,10 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         } => commands::extract::run(archive, output, &entries),
         Command::Delete { archive, entries } => commands::delete::run(archive, &entries),
         Command::Compact { archive } => commands::compact::run(archive),
-        Command::Check { archive, fix } => commands::check::run(archive, fix),
+        Command::Check {
+            archive,
+            fix,
+            fix_crc,
+        } => commands::check::run(archive, fix, fix_crc),
     }
 }

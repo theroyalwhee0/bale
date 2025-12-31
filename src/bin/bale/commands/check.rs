@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use bale::{ArchiveReader, compact, rename_duplicates};
+use bale::{ArchiveReader, compact, rename_duplicates, repair_crcs};
 
 use crate::error::BaleCliError;
 
@@ -15,6 +15,26 @@ enum ArchiveStatus {
     Working,
 }
 
+/// Classification of CRC issues.
+#[derive(Debug)]
+enum CrcIssue {
+    /// CD CRC wrong, but Local matches computed - safe to fix with --fix.
+    CdOnly {
+        /// The file path with the issue.
+        path: String,
+    },
+    /// Local CRC wrong, but CD matches computed - safe to fix with --fix.
+    LocalOnly {
+        /// The file path with the issue.
+        path: String,
+    },
+    /// Both CRCs wrong - needs --fix-crc.
+    Both {
+        /// The file path with the issue.
+        path: String,
+    },
+}
+
 /// Checks archive integrity.
 ///
 /// Verifies:
@@ -24,34 +44,112 @@ enum ArchiveStatus {
 /// - Duplicate path detection
 /// - Orphaned data detection
 ///
-/// When `fix` is true, attempts to fix issues:
+/// When `fix` is true, attempts to fix safe issues:
 /// - Unsorted CD: Sorts by running compact
 /// - Duplicate paths: Renames with numeric suffixes (e.g., `file(1).txt`)
+/// - CRC mismatches where one header is correct: Copies correct value
+///
+/// When `fix_crc` is true, also fixes risky issues:
+/// - CRC mismatches where both headers are wrong: Recomputes from data
 ///
 /// # Errors
 ///
 /// Returns an error if the archive cannot be opened or read.
-pub fn run(archive_path: impl AsRef<Path>, fix: bool) -> Result<(), BaleCliError> {
+pub fn run(archive_path: impl AsRef<Path>, fix: bool, fix_crc: bool) -> Result<(), BaleCliError> {
     let mut errors: Vec<String> = Vec::new();
     let mut fixed: Vec<String> = Vec::new();
 
-    // First pass: check CRCs and sorting.
-    let (crc_errors, is_sorted) = {
+    // First pass: check CRCs and classify issues.
+    let (crc_issues, is_sorted) = {
         let reader = ArchiveReader::open(&archive_path)?;
-        let mut crc_errors = Vec::new();
+        let mut crc_issues: Vec<CrcIssue> = Vec::new();
 
         for (header, path_bytes) in reader.iter_entries() {
-            if let Err(e) = reader.verify_crc(header) {
-                let path = path_to_string(path_bytes);
-                crc_errors.push(format!("'{}': {}", path, e));
+            let path = path_to_string(path_bytes);
+            let (computed, local_crc, cd_crc) = reader.crc_info(header)?;
+
+            if computed == local_crc && computed == cd_crc {
+                // All good.
+            } else if computed == local_crc && computed != cd_crc {
+                // CD is wrong, Local is correct.
+                crc_issues.push(CrcIssue::CdOnly { path });
+            } else if computed == cd_crc && computed != local_crc {
+                // Local is wrong, CD is correct.
+                crc_issues.push(CrcIssue::LocalOnly { path });
+            } else {
+                // Both are wrong.
+                crc_issues.push(CrcIssue::Both { path });
             }
         }
 
         let is_sorted = reader.is_sorted();
-        (crc_errors, is_sorted)
+        (crc_issues, is_sorted)
     };
 
-    errors.extend(crc_errors);
+    // Classify CRC issues into safe and risky.
+    let mut safe_crc_issues: Vec<String> = Vec::new();
+    let mut risky_crc_issues: Vec<String> = Vec::new();
+
+    for issue in &crc_issues {
+        match issue {
+            CrcIssue::CdOnly { path } | CrcIssue::LocalOnly { path } => {
+                safe_crc_issues.push(path.clone());
+            }
+            CrcIssue::Both { path } => {
+                risky_crc_issues.push(path.clone());
+            }
+        }
+    }
+
+    // Handle CRC fixes.
+    let has_crc_issues = !crc_issues.is_empty();
+    let crc_fixed = if has_crc_issues && (fix || fix_crc) {
+        // Both --fix and --fix-crc trigger repair (repair_crcs fixes all CRC issues).
+        // But we only report as "fixed" based on what flags were used.
+        let can_fix_safe = fix || fix_crc;
+        let can_fix_risky = fix_crc;
+
+        let should_repair = (can_fix_safe && !safe_crc_issues.is_empty())
+            || (can_fix_risky && !risky_crc_issues.is_empty());
+
+        if should_repair {
+            let stats = repair_crcs(&archive_path)?;
+            for path in &stats.repaired {
+                fixed.push(format!("Repaired CRC for '{}'", path));
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Report CRC errors that weren't fixed.
+    if !crc_fixed {
+        for issue in &crc_issues {
+            match issue {
+                CrcIssue::CdOnly { path } => {
+                    errors.push(format!(
+                        "'{}': corrupted archive: CD CRC mismatch (use --fix to repair)",
+                        path
+                    ));
+                }
+                CrcIssue::LocalOnly { path } => {
+                    errors.push(format!(
+                        "'{}': corrupted archive: Local header CRC mismatch (use --fix to repair)",
+                        path
+                    ));
+                }
+                CrcIssue::Both { path } => {
+                    errors.push(format!(
+                        "'{}': corrupted archive: CRC mismatch (use --fix-crc to repair)",
+                        path
+                    ));
+                }
+            }
+        }
+    }
 
     // Fix unsorted CD if requested.
     let is_sorted = if !is_sorted && fix {
@@ -110,7 +208,8 @@ pub fn run(archive_path: impl AsRef<Path>, fix: bool) -> Result<(), BaleCliError
     }
 
     // Determine status and print result.
-    let status = if is_sorted && !has_duplicates && !has_orphaned_data {
+    let has_crc_errors = !crc_fixed && has_crc_issues;
+    let status = if is_sorted && !has_duplicates && !has_orphaned_data && !has_crc_errors {
         ArchiveStatus::Compacted
     } else {
         ArchiveStatus::Working

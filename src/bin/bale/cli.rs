@@ -75,8 +75,11 @@ pub enum Command {
     Check {
         /// The archive to check.
         archive: PathBuf,
-        /// Attempt to fix issues found.
+        /// Attempt to fix issues found (sorts CD, renames duplicates).
         #[arg(long)]
         fix: bool,
+        /// Repair CRC mismatches by recomputing checksums.
+        #[arg(long)]
+        fix_crc: bool,
     },
 }

@@ -1,0 +1,5 @@
+bin.name = "bale"
+args = ["check", "--fix", "bad_crc.bale"]
+fs.sandbox = true
+fs.base = "fix_crc_safe"
+status.code = 0

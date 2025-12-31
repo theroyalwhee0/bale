@@ -26,6 +26,7 @@ fn generate_all_fixtures() {
     generate_unsorted_cd_bale();
     generate_duplicate_paths_bale();
     generate_bad_crc_bale();
+    generate_bad_both_crc_bale();
 }
 
 /// Generates an empty bale archive with EOCD + BaleEocd (256 bytes).
@@ -257,4 +258,66 @@ fn generate_bad_crc_bale() {
         .expect("failed to seek");
     file.write_all(&crc_bytes)
         .expect("failed to write corrupted CRC");
+}
+
+/// Generates a bale archive with incorrect CRC-32 in BOTH headers.
+///
+/// Both the Local File Header and Central Directory have wrong CRCs,
+/// requiring --fix-crc (risky) to repair.
+fn generate_bad_both_crc_bale() {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let archive_path = Path::new(INVALID_FIXTURES_DIR).join("bad_both_crc.bale");
+
+    // Remove existing archive if present.
+    let _ = std::fs::remove_file(&archive_path);
+
+    // Create a valid archive first.
+    {
+        let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+        writer
+            .add_entry("test.txt", b"test content", 0o644)
+            .expect("failed to add entry");
+        writer.sync().expect("failed to sync archive");
+    }
+
+    // Corrupt both CRCs.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&archive_path)
+        .expect("failed to open archive");
+
+    let file_len = file.metadata().expect("failed to get metadata").len();
+    let trailer_size = 256u64; // EOCD (22) + BaleEocd (234)
+    let cd_header_size = 46u64;
+    let path_size = 256u64;
+    let cd_entry_size = cd_header_size + path_size;
+
+    // Corrupt Local File Header CRC (at offset 14 in the header, which starts at 0).
+    let local_crc_offset = 14u64;
+    file.seek(SeekFrom::Start(local_crc_offset))
+        .expect("failed to seek");
+    let mut local_crc_bytes = [0u8; 4];
+    file.read_exact(&mut local_crc_bytes)
+        .expect("failed to read local CRC");
+    local_crc_bytes[0] ^= 0xAA; // Different corruption pattern
+    file.seek(SeekFrom::Start(local_crc_offset))
+        .expect("failed to seek");
+    file.write_all(&local_crc_bytes)
+        .expect("failed to write corrupted local CRC");
+
+    // Corrupt CD CRC (at offset 16 in the CD header).
+    let cd_offset = file_len - trailer_size - cd_entry_size;
+    let cd_crc_offset = cd_offset + 16;
+    file.seek(SeekFrom::Start(cd_crc_offset))
+        .expect("failed to seek");
+    let mut cd_crc_bytes = [0u8; 4];
+    file.read_exact(&mut cd_crc_bytes)
+        .expect("failed to read CD CRC");
+    cd_crc_bytes[0] ^= 0x55; // Different corruption pattern
+    file.seek(SeekFrom::Start(cd_crc_offset))
+        .expect("failed to seek");
+    file.write_all(&cd_crc_bytes)
+        .expect("failed to write corrupted CD CRC");
 }

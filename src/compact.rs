@@ -232,6 +232,95 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     })
 }
 
+/// Statistics from a CRC repair operation.
+#[derive(Debug, Clone, Default)]
+pub struct CrcRepairStats {
+    /// Number of entries with CRCs repaired.
+    pub entries_repaired: usize,
+    /// Paths of repaired entries.
+    pub repaired: Vec<String>,
+}
+
+/// Repairs CRC mismatches by recomputing checksums from data.
+///
+/// This rewrites the archive with correct CRC values in both the Local File
+/// Header and Central Directory. Use this when both headers have incorrect
+/// CRCs (the "risky" case where we can't tell which was originally correct).
+///
+/// For safe repairs where only one header is wrong, the archive rewrite
+/// inherently fixes this since we always compute fresh CRCs.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The archive cannot be opened
+/// - The temp file cannot be created
+/// - Writing fails
+/// - The rename operation fails
+pub fn repair_crcs(path: impl AsRef<Path>) -> Result<CrcRepairStats, BaleError> {
+    let path = path.as_ref();
+
+    // Open existing archive for reading.
+    let reader = ArchiveReader::open(path)?;
+    let alignment = reader.alignment();
+    let path_size = reader.path_size() as u16;
+
+    // Collect entries and check which need repair.
+    let mut entries: Vec<_> = Vec::new();
+    let mut repaired: Vec<String> = Vec::new();
+
+    for (header, path_bytes) in reader.iter_entries() {
+        let path_str = bytes_to_path_string(path_bytes);
+        let (computed, local_crc, cd_crc) = reader.crc_info(header)?;
+
+        // Check if any CRC is wrong.
+        if computed != local_crc || computed != cd_crc {
+            repaired.push(path_str.clone());
+        }
+
+        entries.push((header, path_str));
+    }
+
+    // If nothing to repair, return early.
+    if repaired.is_empty() {
+        return Ok(CrcRepairStats::default());
+    }
+
+    // Sort entries by path for binary search.
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Create temp file in same directory (for atomic rename).
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let temp_path = parent.join(format!(
+        ".{}.crc-repair.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("archive")
+    ));
+
+    // Write archive with correct CRCs.
+    // ArchiveWriter always computes correct CRCs, so we just need to re-add entries.
+    {
+        let mut writer = ArchiveWriter::create_with_options(&temp_path, alignment, path_size)?;
+
+        for (header, path_str) in &entries {
+            let data = reader.read_data(header)?;
+            let mode = header.external_attrs.get() >> 16;
+            writer.add_entry(path_str, data, mode)?;
+        }
+
+        writer.sync()?;
+    }
+
+    // Atomic rename.
+    fs::rename(&temp_path, path)?;
+
+    Ok(CrcRepairStats {
+        entries_repaired: repaired.len(),
+        repaired,
+    })
+}
+
 /// Inserts a numeric suffix before the file extension.
 ///
 /// Examples:

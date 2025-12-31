@@ -205,6 +205,38 @@ impl ArchiveReader {
         &self.bale_eocd
     }
 
+    /// Returns CRC information for an entry: (computed, local_header, cd_header).
+    ///
+    /// This allows callers to determine the type of CRC mismatch:
+    /// - If computed == local != cd: CD header is corrupted
+    /// - If computed == cd != local: Local header is corrupted
+    /// - If computed != local && computed != cd: Unknown corruption
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry data or local header cannot be read.
+    pub fn crc_info(&self, entry: &CentralDirectoryHeader) -> Result<(u32, u32, u32), BaleError> {
+        let bytes = self.mmap.as_bytes();
+        let local_offset = entry.local_header_offset.get() as usize;
+
+        // Read local file header.
+        let local_end = local_offset + LocalFileHeader::SIZE;
+        if local_end > bytes.len() {
+            return Err(BaleError::Corrupted(format!(
+                "local header extends beyond archive: offset={local_offset}"
+            )));
+        }
+        let local_header = LocalFileHeader::ref_from_bytes(&bytes[local_offset..local_end])
+            .map_err(|e| BaleError::Corrupted(format!("invalid local header: {e}")))?;
+
+        let data = self.read_data(entry)?;
+        let computed = crc32fast::hash(data);
+        let local_crc = local_header.crc32.get();
+        let cd_crc = entry.crc32.get();
+
+        Ok((computed, local_crc, cd_crc))
+    }
+
     /// Verifies the CRC-32 checksum for an entry.
     ///
     /// Reads the entry data and computes its CRC-32, comparing against the
