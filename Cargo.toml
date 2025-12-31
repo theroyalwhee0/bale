@@ -19,6 +19,7 @@ chrono = "0.4.42"
 clap = { version = "4", features = ["derive"], optional = true }
 crc32fast = "1.5.0"
 flate2 = "1.1.5"
+fs4 = "0.13.1"
 memmap2 = "0.9.9"
 nom = "8.0.0"
 tempfile = "3.24.0"
