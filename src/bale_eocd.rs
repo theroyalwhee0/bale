@@ -142,7 +142,7 @@ impl BaleEocd {
 
     /// Returns the maximum path size.
     #[must_use]
-    pub fn path_size(&self) -> u16 {
+    pub const fn path_size(&self) -> u16 {
         self.path_size.get()
     }
 
@@ -162,10 +162,12 @@ impl BaleEocd {
     /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
     /// silently ignored for forward compatibility with future format extensions.
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
+        let path_size = self.path_size.get();
         self.magic.get() == Self::MAGIC
             && self.alignment_pow2 <= Self::MAX_ALIGNMENT_POW2
-            && (Self::MIN_PATH_SIZE..=Self::MAX_PATH_SIZE).contains(&self.path_size.get())
+            && path_size >= Self::MIN_PATH_SIZE
+            && path_size <= Self::MAX_PATH_SIZE
     }
 }
 
