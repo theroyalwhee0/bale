@@ -1,6 +1,6 @@
 //! Archive path type for validated, normalized paths within a bale archive.
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -93,11 +93,29 @@ impl<'a> ArchivePath<'a> {
         ArchivePath(Cow::Owned(self.0.into_owned()))
     }
 
-    /// Consumes this path and returns a normalized, owned version.
+    /// Returns a normalized, owned copy of this path.
     ///
     /// This is useful for paths created via [`from_bytes`](Self::from_bytes) that may contain
     /// backslashes, `..` components, or other non-normalized content. After
     /// normalization, the path can be compared with paths created via [`TryFrom`].
+    ///
+    /// Use [`into_normalized`](Self::into_normalized) if you don't need to keep the original.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidPath` if:
+    /// - The path is not valid UTF-8
+    /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
+    /// - The path is empty after normalization
+    pub fn normalize(&self) -> Result<ArchivePath<'static>, BaleError> {
+        let s = self.as_str().ok_or(BaleError::InvalidPath)?;
+        Ok(ArchivePath(Cow::Owned(Self::normalize_str(s)?)))
+    }
+
+    /// Consumes this path and returns a normalized, owned version.
+    ///
+    /// This is equivalent to [`normalize`](Self::normalize) but consumes `self`.
+    /// Use this when you don't need to keep the original path.
     ///
     /// # Errors
     ///
@@ -106,8 +124,7 @@ impl<'a> ArchivePath<'a> {
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
     pub fn into_normalized(self) -> Result<ArchivePath<'static>, BaleError> {
-        let s = self.as_str().ok_or(BaleError::InvalidPath)?;
-        Ok(ArchivePath(Cow::Owned(Self::normalize_str(s)?)))
+        self.normalize()
     }
 
     /// Normalizes a path string for archive storage.
@@ -163,6 +180,13 @@ impl fmt::Display for ArchivePath<'_> {
 /// Allows `ArchivePath` to be used where a `&[u8]` is expected.
 impl AsRef<[u8]> for ArchivePath<'_> {
     fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// Allows `ArchivePath` to be used as a `HashMap` key with `&[u8]` lookups.
+impl Borrow<[u8]> for ArchivePath<'_> {
+    fn borrow(&self) -> &[u8] {
         &self.0
     }
 }
