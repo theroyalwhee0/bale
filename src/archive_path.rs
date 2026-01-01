@@ -109,7 +109,7 @@ impl<'a> ArchivePath<'a> {
     /// - The path is empty after normalization
     pub fn normalize(&self) -> Result<ArchivePath<'static>, BaleError> {
         let s = self.as_str().ok_or(BaleError::InvalidPath)?;
-        Ok(ArchivePath(Cow::Owned(Self::normalize_str(s)?)))
+        Ok(ArchivePath(Self::normalize_bytes(s)?))
     }
 
     /// Consumes this path and returns a normalized, owned version.
@@ -144,7 +144,7 @@ impl<'a> ArchivePath<'a> {
     /// Returns `BaleError::InvalidPath` if:
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
-    fn normalize_str(path: impl AsRef<str>) -> Result<Vec<u8>, BaleError> {
+    fn normalize_bytes(path: impl AsRef<str>) -> Result<Cow<'static, [u8]>, BaleError> {
         let mut components: Vec<&str> = Vec::new();
 
         for part in path.as_ref().trim().split(['/', '\\']) {
@@ -166,7 +166,7 @@ impl<'a> ArchivePath<'a> {
             return Err(BaleError::InvalidPath);
         }
 
-        Ok(components.join("/").into_bytes())
+        Ok(Cow::Owned(components.join("/").into_bytes()))
     }
 }
 
@@ -226,7 +226,7 @@ impl TryFrom<&str> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self(Cow::Owned(Self::normalize_str(s)?)))
+        Ok(Self(Self::normalize_bytes(s)?))
     }
 }
 
@@ -240,7 +240,7 @@ impl TryFrom<String> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Ok(Self(Cow::Owned(Self::normalize_str(&s)?)))
+        Ok(Self(Self::normalize_bytes(&s)?))
     }
 }
 
@@ -255,7 +255,7 @@ impl TryFrom<&Path> for ArchivePath<'static> {
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let s = path.to_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Cow::Owned(Self::normalize_str(s)?)))
+        Ok(Self(Self::normalize_bytes(s)?))
     }
 }
 
