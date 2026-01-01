@@ -1,6 +1,8 @@
 //! Zero-copy archive reader using memory-mapped I/O.
 
-use crate::{BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive};
+use crate::{
+    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use zerocopy::FromBytes;
@@ -110,6 +112,39 @@ impl ArchiveReader {
     #[must_use]
     pub fn alignment(&self) -> u32 {
         self.bale_eocd.alignment()
+    }
+
+    /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.
+    ///
+    /// The returned path borrows directly from the memory-mapped archive.
+    /// Returns `None` if the index is out of bounds.
+    #[must_use]
+    pub fn get_path(&self, index: usize) -> Option<ArchivePath<'_>> {
+        let bytes = self.mmap.as_bytes();
+        let cd_offset = self.eocd.cd_offset.get() as usize;
+        let path_size = self.path_size();
+        let stride = CentralDirectoryHeader::stride(path_size);
+
+        if index >= self.entry_count() {
+            return None;
+        }
+
+        let entry_start = cd_offset + index * stride;
+        let entry_end = entry_start + stride;
+        if entry_end > bytes.len() {
+            return None;
+        }
+
+        let path_start = entry_start + CentralDirectoryHeader::SIZE;
+        let path_bytes = &bytes[path_start..entry_start + stride];
+
+        // Trim null padding for the ArchivePath
+        let end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+
+        Some(ArchivePath::from_bytes(&path_bytes[..end]))
     }
 
     /// Returns an iterator over all Central Directory entries.

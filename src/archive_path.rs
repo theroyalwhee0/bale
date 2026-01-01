@@ -1,31 +1,35 @@
 //! Archive path type for validated, normalized paths within a bale archive.
 
+use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::BaleError;
 
-/// A normalized path within a bale archive.
+/// A path within a bale archive, either borrowed or owned.
 ///
 /// Archive paths use forward slashes as separators and are typically UTF-8,
 /// but may contain arbitrary bytes when read from an archive.
 ///
+/// # Lifetimes
+///
+/// - `ArchivePath<'a>` borrows bytes (zero-copy from mmap)
+/// - `ArchivePath<'static>` owns bytes (for storage or modification)
+///
 /// # Construction
 ///
-/// - Use `TryFrom<&str>`, `TryFrom<&Path>`, etc. to create from user input
-///   (validates UTF-8 and normalizes)
-/// - Use `From<Vec<u8>>` or `From<&[u8]>` to create from raw archive bytes
-///   (no validation, used when reading archives)
+/// - Use [`from_bytes`](Self::from_bytes) for zero-copy wrapping of archive data
+/// - Use `TryFrom<&str>`, `TryFrom<&Path>`, etc. for user input (normalizes, always owned)
 ///
 /// # Display
 ///
 /// The `Display` implementation uses lossy UTF-8 conversion, replacing invalid
 /// bytes with the Unicode replacement character.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ArchivePath(Vec<u8>);
+pub struct ArchivePath<'a>(Cow<'a, [u8]>);
 
-impl ArchivePath {
+impl<'a> ArchivePath<'a> {
     /// Returns the path as a string slice if it is valid UTF-8.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
@@ -49,16 +53,17 @@ impl ArchivePath {
     /// Returns true if the path has zero bytes.
     ///
     /// Note: Paths created via [`TryFrom`] are never empty (empty paths are rejected).
-    /// This can only be true for paths created via [`From<Vec<u8>>`] with an empty vector.
+    /// This can only be true for paths created via [`from_bytes`](Self::from_bytes)
+    /// with empty bytes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// Creates an `ArchivePath` from raw bytes without validation.
+    /// Creates an `ArchivePath` by borrowing raw bytes without validation.
     ///
-    /// Use this when reading paths from an existing archive. The bytes are stored
-    /// as-is and may contain:
+    /// This is zero-copy when borrowing from an mmap'd archive. The bytes are
+    /// stored as-is and may contain:
     /// - Non-UTF-8 sequences
     /// - Backslashes (not converted to forward slashes)
     /// - `..` or `.` components (not resolved)
@@ -69,11 +74,20 @@ impl ArchivePath {
     /// to normalize an archive-read path for comparison. For user-supplied paths,
     /// prefer the `TryFrom` implementations.
     #[must_use]
-    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
-        Self(bytes.as_ref().to_vec())
+    pub fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self(Cow::Borrowed(bytes))
     }
 
-    /// Consumes this path and returns a normalized version.
+    /// Converts this path into an owned version with `'static` lifetime.
+    ///
+    /// If the path is already owned, this is a no-op. If borrowed, this clones
+    /// the underlying bytes.
+    #[must_use]
+    pub fn into_owned(self) -> ArchivePath<'static> {
+        ArchivePath(Cow::Owned(self.0.into_owned()))
+    }
+
+    /// Consumes this path and returns a normalized, owned version.
     ///
     /// This is useful for paths created via [`from_bytes`](Self::from_bytes) that may contain
     /// backslashes, `..` components, or other non-normalized content. After
@@ -85,9 +99,9 @@ impl ArchivePath {
     /// - The path is not valid UTF-8
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
-    pub fn into_normalized(self) -> Result<ArchivePath, BaleError> {
+    pub fn into_normalized(self) -> Result<ArchivePath<'static>, BaleError> {
         let s = self.as_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Self::normalize_str(s)?))
+        Ok(ArchivePath(Cow::Owned(Self::normalize_str(s)?)))
     }
 
     /// Normalizes a path string for archive storage.
@@ -134,122 +148,126 @@ impl ArchivePath {
 }
 
 /// Displays the path, using lossy UTF-8 conversion for invalid bytes.
-impl fmt::Display for ArchivePath {
+impl fmt::Display for ArchivePath<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", String::from_utf8_lossy(&self.0))
     }
 }
 
 /// Allows `ArchivePath` to be used where a `&[u8]` is expected.
-impl AsRef<[u8]> for ArchivePath {
+impl AsRef<[u8]> for ArchivePath<'_> {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-/// See [`ArchivePath::from_bytes`] for details.
-impl From<Vec<u8>> for ArchivePath {
+/// Creates an owned `ArchivePath` from a `Vec<u8>`.
+///
+/// See [`ArchivePath::from_bytes`] for details on raw byte paths.
+impl From<Vec<u8>> for ArchivePath<'static> {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self(Cow::Owned(bytes))
     }
 }
 
-/// See [`ArchivePath::from_bytes`] for details.
-impl From<&[u8]> for ArchivePath {
-    fn from(bytes: &[u8]) -> Self {
+/// Creates a borrowed `ArchivePath` from a byte slice.
+///
+/// See [`ArchivePath::from_bytes`] for details on raw byte paths.
+impl<'a> From<&'a [u8]> for ArchivePath<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
         Self::from_bytes(bytes)
     }
 }
 
-/// Consumes the `ArchivePath` and returns the inner bytes.
-impl From<ArchivePath> for Vec<u8> {
-    fn from(path: ArchivePath) -> Self {
-        path.0
+/// Consumes the `ArchivePath` and returns the inner bytes as owned.
+impl From<ArchivePath<'_>> for Vec<u8> {
+    fn from(path: ArchivePath<'_>) -> Self {
+        path.0.into_owned()
     }
 }
 
-/// Converts a `&str` to an `ArchivePath` with normalization.
+/// Converts a `&str` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is empty or attempts
 /// to escape the archive root via `..` components.
-impl TryFrom<&str> for ArchivePath {
+impl TryFrom<&str> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize_str(s)?))
+        Ok(Self(Cow::Owned(Self::normalize_str(s)?)))
     }
 }
 
-/// Converts a `String` to an `ArchivePath` with normalization.
+/// Converts a `String` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is empty or attempts
 /// to escape the archive root via `..` components.
-impl TryFrom<String> for ArchivePath {
+impl TryFrom<String> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize_str(&s)?))
+        Ok(Self(Cow::Owned(Self::normalize_str(&s)?)))
     }
 }
 
-/// Converts a `&Path` to an `ArchivePath` with normalization.
+/// Converts a `&Path` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
 /// is empty, or attempts to escape the archive root via `..` components.
-impl TryFrom<&Path> for ArchivePath {
+impl TryFrom<&Path> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let s = path.to_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Self::normalize_str(s)?))
+        Ok(Self(Cow::Owned(Self::normalize_str(s)?)))
     }
 }
 
-/// Converts a `PathBuf` to an `ArchivePath` with normalization.
+/// Converts a `PathBuf` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
 /// is empty, or attempts to escape the archive root via `..` components.
-impl TryFrom<PathBuf> for ArchivePath {
+impl TryFrom<PathBuf> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
-        Self::try_from(path.as_path())
+        ArchivePath::try_from(path.as_path())
     }
 }
 
-/// Converts an `&OsStr` to an `ArchivePath` with normalization.
+/// Converts an `&OsStr` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
 /// is empty, or attempts to escape the archive root via `..` components.
-impl TryFrom<&OsStr> for ArchivePath {
+impl TryFrom<&OsStr> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: &OsStr) -> Result<Self, Self::Error> {
-        Self::try_from(Path::new(s))
+        ArchivePath::try_from(Path::new(s))
     }
 }
 
-/// Converts an `OsString` to an `ArchivePath` with normalization.
+/// Converts an `OsString` to an owned `ArchivePath` with normalization.
 ///
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
 /// is empty, or attempts to escape the archive root via `..` components.
-impl TryFrom<OsString> for ArchivePath {
+impl TryFrom<OsString> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: OsString) -> Result<Self, Self::Error> {
-        Self::try_from(s.as_os_str())
+        ArchivePath::try_from(s.as_os_str())
     }
 }
 
@@ -287,6 +305,26 @@ mod tests {
         let path = ArchivePath::from(b"foo/bar".to_vec());
         assert_eq!(path.as_str(), Some("foo/bar"));
         assert_eq!(path.as_bytes(), b"foo/bar");
+    }
+
+    /// from_bytes borrows without copying.
+    #[test]
+    fn from_bytes_borrows() {
+        let bytes = b"foo/bar";
+        let path = ArchivePath::from_bytes(bytes);
+        // Verify it points to the same memory
+        assert!(std::ptr::eq(path.as_bytes().as_ptr(), bytes.as_ptr()));
+    }
+
+    /// into_owned converts borrowed to owned.
+    #[test]
+    fn into_owned_works() {
+        let bytes = b"foo/bar";
+        let borrowed = ArchivePath::from_bytes(bytes);
+        let owned = borrowed.into_owned();
+        assert_eq!(owned.as_str(), Some("foo/bar"));
+        // Owned path no longer points to original bytes
+        assert!(!std::ptr::eq(owned.as_bytes().as_ptr(), bytes.as_ptr()));
     }
 
     /// into_normalized normalizes a raw-bytes path for comparison.
