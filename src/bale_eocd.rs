@@ -58,6 +58,15 @@ impl BaleEocd {
     /// Maximum alignment power (2^24 = 16 MB).
     pub(crate) const MAX_ALIGNMENT_POW2: u8 = 24;
 
+    /// Default alignment power (2^12 = 4096 bytes).
+    pub const DEFAULT_ALIGNMENT_POW2: u8 = 12;
+
+    /// Default alignment in bytes (4096 = page size).
+    pub const DEFAULT_ALIGNMENT: u32 = 1 << Self::DEFAULT_ALIGNMENT_POW2;
+
+    /// Default path size in bytes.
+    pub const DEFAULT_PATH_SIZE: u16 = 256;
+
     /// Current format version (major, minor, patch).
     ///
     /// Version compatibility policy:
@@ -68,7 +77,10 @@ impl BaleEocd {
     /// Currently, version checking is not enforced; all versions are accepted.
     pub const CURRENT_VERSION: (u8, u8, u8) = (0, 1, 0);
 
-    /// Creates a new `BaleEocd` with default settings (4096 alignment, 256 path size).
+    /// Creates a new `BaleEocd` with default settings.
+    ///
+    /// Uses [`DEFAULT_ALIGNMENT`](Self::DEFAULT_ALIGNMENT) (4096) and
+    /// [`DEFAULT_PATH_SIZE`](Self::DEFAULT_PATH_SIZE) (256).
     #[must_use]
     pub fn new() -> Self {
         let (major, minor, patch) = Self::CURRENT_VERSION;
@@ -77,8 +89,8 @@ impl BaleEocd {
             version_major: major,
             version_minor: minor,
             version_patch: patch,
-            alignment_pow2: 12, // 2^12 = 4096
-            path_size: U16::new(256),
+            alignment_pow2: Self::DEFAULT_ALIGNMENT_POW2,
+            path_size: U16::new(Self::DEFAULT_PATH_SIZE),
             reserved: [0u8; Self::RESERVED_SIZE],
         }
     }
@@ -158,7 +170,9 @@ impl BaleEocd {
 }
 
 impl Default for BaleEocd {
-    /// Returns a `BaleEocd` with default settings (4096 alignment, 256 path size).
+    /// Returns a `BaleEocd` with default settings.
+    ///
+    /// See [`BaleEocd::new()`] for details.
     fn default() -> Self {
         Self::new()
     }
@@ -182,21 +196,23 @@ mod tests {
         assert_eq!(Eocd::SIZE + BaleEocd::SIZE, 256);
     }
 
-    /// Default settings use 4096 alignment and 256 path size.
+    /// Default settings use DEFAULT_ALIGNMENT and DEFAULT_PATH_SIZE.
     #[test]
     fn default_settings() {
         let bale = BaleEocd::new();
-        assert_eq!(bale.alignment(), 4096);
-        assert_eq!(bale.path_size(), 256);
+        assert_eq!(bale.alignment(), BaleEocd::DEFAULT_ALIGNMENT);
+        assert_eq!(bale.path_size(), BaleEocd::DEFAULT_PATH_SIZE);
         assert!(bale.is_valid());
     }
 
     /// Alignment is correctly encoded as power of 2.
     #[test]
     fn alignment_encoding() {
-        let bale = BaleEocd::new_with_options(4096, 256).unwrap();
-        assert_eq!(bale.alignment_pow2, 12); // 2^12 = 4096
-        assert_eq!(bale.alignment(), 4096);
+        let bale =
+            BaleEocd::new_with_options(BaleEocd::DEFAULT_ALIGNMENT, BaleEocd::DEFAULT_PATH_SIZE)
+                .unwrap();
+        assert_eq!(bale.alignment_pow2, BaleEocd::DEFAULT_ALIGNMENT_POW2);
+        assert_eq!(bale.alignment(), BaleEocd::DEFAULT_ALIGNMENT);
 
         let bale = BaleEocd::new_with_options(512, 256).unwrap();
         assert_eq!(bale.alignment_pow2, 9); // 2^9 = 512
