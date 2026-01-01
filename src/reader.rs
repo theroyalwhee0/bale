@@ -109,9 +109,14 @@ impl ArchiveReader {
     }
 
     /// Returns the configured alignment for this archive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `alignment_pow2` is invalid. This cannot happen for archives
+    /// opened via [`open()`](Self::open) since validation occurs on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment()
+        self.bale_eocd.alignment().expect("validated on open")
     }
 
     /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.

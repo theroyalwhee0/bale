@@ -128,16 +128,16 @@ impl BaleEocd {
         })
     }
 
-    /// Returns the alignment in bytes.
+    /// Returns the alignment in bytes, or `None` if invalid.
     ///
-    /// Returns 1 if `alignment_pow2` exceeds [`MAX_ALIGNMENT_POW2`](Self::MAX_ALIGNMENT_POW2).
-    /// Callers should use [`is_valid()`](Self::is_valid) to detect invalid values.
+    /// Returns `None` if `alignment_pow2` exceeds [`MAX_ALIGNMENT_POW2`](Self::MAX_ALIGNMENT_POW2).
+    /// Note: `alignment_pow2 = 0` is valid and returns `Some(1)` (no alignment).
     #[must_use]
-    pub const fn alignment(&self) -> u32 {
+    pub const fn alignment(&self) -> Option<u32> {
         if self.alignment_pow2 > Self::MAX_ALIGNMENT_POW2 {
-            return 1;
+            return None;
         }
-        1 << self.alignment_pow2
+        Some(1 << self.alignment_pow2)
     }
 
     /// Returns the maximum path size.
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn default_settings() {
         let bale = BaleEocd::new();
-        assert_eq!(bale.alignment(), BaleEocd::DEFAULT_ALIGNMENT);
+        assert_eq!(bale.alignment(), Some(BaleEocd::DEFAULT_ALIGNMENT));
         assert_eq!(bale.path_size(), BaleEocd::DEFAULT_PATH_SIZE);
         assert!(bale.is_valid());
     }
@@ -212,11 +212,20 @@ mod tests {
             BaleEocd::new_with_options(BaleEocd::DEFAULT_ALIGNMENT, BaleEocd::DEFAULT_PATH_SIZE)
                 .unwrap();
         assert_eq!(bale.alignment_pow2, BaleEocd::DEFAULT_ALIGNMENT_POW2);
-        assert_eq!(bale.alignment(), BaleEocd::DEFAULT_ALIGNMENT);
+        assert_eq!(bale.alignment(), Some(BaleEocd::DEFAULT_ALIGNMENT));
 
         let bale = BaleEocd::new_with_options(512, 256).unwrap();
         assert_eq!(bale.alignment_pow2, 9); // 2^9 = 512
-        assert_eq!(bale.alignment(), 512);
+        assert_eq!(bale.alignment(), Some(512));
+    }
+
+    /// Minimum alignment (1 byte, pow2 = 0) is valid.
+    #[test]
+    fn min_alignment_is_valid() {
+        let bale = BaleEocd::new_with_options(1, 256).unwrap();
+        assert_eq!(bale.alignment_pow2, 0);
+        assert_eq!(bale.alignment(), Some(1));
+        assert!(bale.is_valid());
     }
 
     /// Path size is stored correctly.
@@ -257,7 +266,7 @@ mod tests {
 
         let restored = BaleEocd::ref_from_bytes(bytes).unwrap();
         assert!(restored.is_valid());
-        assert_eq!(restored.alignment(), 8192);
+        assert_eq!(restored.alignment(), Some(8192));
         assert_eq!(restored.path_size(), 512);
         assert_eq!(restored.version(), BaleEocd::CURRENT_VERSION);
     }
@@ -336,8 +345,8 @@ mod tests {
         let mut bale = BaleEocd::new();
         bale.alignment_pow2 = BaleEocd::MAX_ALIGNMENT_POW2 + 1; // 25
         assert!(!bale.is_valid());
-        // alignment() returns fallback value of 1.
-        assert_eq!(bale.alignment(), 1);
+        // alignment() returns None for invalid values.
+        assert_eq!(bale.alignment(), None);
     }
 
     /// alignment_pow2 at max u8 fails is_valid().
@@ -346,8 +355,8 @@ mod tests {
         let mut bale = BaleEocd::new();
         bale.alignment_pow2 = 255;
         assert!(!bale.is_valid());
-        // alignment() returns fallback value of 1.
-        assert_eq!(bale.alignment(), 1);
+        // alignment() returns None for invalid values.
+        assert_eq!(bale.alignment(), None);
     }
 
     /// path_size = 0 fails is_valid().

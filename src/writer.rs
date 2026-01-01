@@ -185,9 +185,17 @@ impl ArchiveWriter {
     }
 
     /// Returns the configured alignment for this archive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `alignment_pow2` is invalid. This cannot happen for writers
+    /// created via [`create()`](Self::create) or [`open()`](Self::open) since
+    /// `BaleEocd` validates on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment()
+        self.bale_eocd
+            .alignment()
+            .expect("validated on construction")
     }
 
     /// Adds an entry from raw data.
