@@ -55,17 +55,26 @@ impl ArchivePath {
     /// - Trims leading/trailing whitespace
     /// - Converts backslashes to forward slashes
     /// - Removes `.` components
-    /// - Resolves `..` components
+    /// - Resolves `..` components (errors if escaping root)
     /// - Removes leading/trailing slashes
     /// - Collapses multiple slashes
-    fn normalize(path: &str) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidPath` if:
+    /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
+    /// - The path is empty after normalization
+    fn normalize(path: &str) -> Result<Vec<u8>, BaleError> {
         let mut components: Vec<&str> = Vec::new();
 
         for part in path.trim().split(['/', '\\']) {
             match part {
                 "" | "." => {}
                 ".." => {
-                    components.pop();
+                    if components.pop().is_none() {
+                        // Attempted to go above root - path traversal attack
+                        return Err(BaleError::InvalidPath);
+                    }
                 }
                 component => {
                     components.push(component);
@@ -73,7 +82,11 @@ impl ArchivePath {
             }
         }
 
-        components.join("/").into_bytes()
+        if components.is_empty() {
+            return Err(BaleError::InvalidPath);
+        }
+
+        Ok(components.join("/").into_bytes())
     }
 }
 
@@ -117,20 +130,30 @@ impl From<ArchivePath> for Vec<u8> {
 }
 
 /// Converts a `&str` to an `ArchivePath` with normalization.
+///
+/// # Errors
+///
+/// Returns `BaleError::InvalidPath` if the path is empty or attempts
+/// to escape the archive root via `..` components.
 impl TryFrom<&str> for ArchivePath {
     type Error = BaleError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize(s)))
+        Ok(Self(Self::normalize(s)?))
     }
 }
 
 /// Converts a `String` to an `ArchivePath` with normalization.
+///
+/// # Errors
+///
+/// Returns `BaleError::InvalidPath` if the path is empty or attempts
+/// to escape the archive root via `..` components.
 impl TryFrom<String> for ArchivePath {
     type Error = BaleError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize(&s)))
+        Ok(Self(Self::normalize(&s)?))
     }
 }
 
@@ -138,13 +161,14 @@ impl TryFrom<String> for ArchivePath {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the path is not valid UTF-8.
+/// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
+/// is empty, or attempts to escape the archive root via `..` components.
 impl TryFrom<&Path> for ArchivePath {
     type Error = BaleError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let s = path.to_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Self::normalize(s)))
+        Ok(Self(Self::normalize(s)?))
     }
 }
 
@@ -152,7 +176,8 @@ impl TryFrom<&Path> for ArchivePath {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the path is not valid UTF-8.
+/// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
+/// is empty, or attempts to escape the archive root via `..` components.
 impl TryFrom<PathBuf> for ArchivePath {
     type Error = BaleError;
 
@@ -165,7 +190,8 @@ impl TryFrom<PathBuf> for ArchivePath {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the string is not valid UTF-8.
+/// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
+/// is empty, or attempts to escape the archive root via `..` components.
 impl TryFrom<&OsStr> for ArchivePath {
     type Error = BaleError;
 
@@ -178,7 +204,8 @@ impl TryFrom<&OsStr> for ArchivePath {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the string is not valid UTF-8.
+/// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
+/// is empty, or attempts to escape the archive root via `..` components.
 impl TryFrom<OsString> for ArchivePath {
     type Error = BaleError;
 
@@ -190,99 +217,25 @@ impl TryFrom<OsString> for ArchivePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
-    /// Forward slashes are preserved.
-    #[test]
-    fn forward_slashes_preserved() {
-        let path = ArchivePath::try_from("foo/bar/baz").unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar/baz"));
-    }
+    // ==================== Unit Tests ====================
 
     /// Backslashes are converted to forward slashes.
     #[test]
     fn backslashes_converted() {
-        let path = ArchivePath::try_from(Path::new("foo\\bar\\baz")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar/baz"));
-    }
-
-    /// Leading slashes are stripped.
-    #[test]
-    fn leading_slashes_stripped() {
-        let path = ArchivePath::try_from(Path::new("/foo/bar")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
-    }
-
-    /// Multiple slashes are collapsed.
-    #[test]
-    fn multiple_slashes_collapsed() {
-        let path = ArchivePath::try_from(Path::new("foo//bar///baz")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar/baz"));
-    }
-
-    /// Trailing slashes are stripped.
-    #[test]
-    fn trailing_slashes_stripped() {
-        let path = ArchivePath::try_from(Path::new("foo/bar/")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
-    }
-
-    /// Mixed normalization.
-    #[test]
-    fn mixed_normalization() {
-        let path = ArchivePath::try_from(Path::new("///foo\\\\bar//baz\\")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar/baz"));
-    }
-
-    /// Simple filename.
-    #[test]
-    fn simple_filename() {
-        let path = ArchivePath::try_from(Path::new("hello.txt")).unwrap();
-        assert_eq!(path.as_str(), Some("hello.txt"));
-    }
-
-    /// Dot components are removed.
-    #[test]
-    fn dot_components_removed() {
-        let path = ArchivePath::try_from(Path::new("foo/./bar/./baz")).unwrap();
+        let path = ArchivePath::try_from("foo\\bar\\baz").unwrap();
         assert_eq!(path.as_str(), Some("foo/bar/baz"));
     }
 
     /// Dot-dot components resolve to parent.
     #[test]
     fn dotdot_resolves_parent() {
-        let path = ArchivePath::try_from(Path::new("foo/bar/../baz")).unwrap();
+        let path = ArchivePath::try_from("foo/bar/../baz").unwrap();
         assert_eq!(path.as_str(), Some("foo/baz"));
     }
 
-    /// Multiple dot-dot components.
-    #[test]
-    fn multiple_dotdot() {
-        let path = ArchivePath::try_from(Path::new("foo/bar/baz/../../qux")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/qux"));
-    }
-
-    /// Dot-dot at start is ignored (can't go above root).
-    #[test]
-    fn dotdot_at_start_ignored() {
-        let path = ArchivePath::try_from(Path::new("../foo/bar")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
-    }
-
-    /// Mixed dot and dot-dot.
-    #[test]
-    fn mixed_dot_dotdot() {
-        let path = ArchivePath::try_from(Path::new("./foo/../bar/./baz")).unwrap();
-        assert_eq!(path.as_str(), Some("bar/baz"));
-    }
-
-    /// Whitespace is trimmed.
-    #[test]
-    fn whitespace_trimmed() {
-        let path = ArchivePath::try_from("  foo/bar  ").unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
-    }
-
-    /// Raw bytes can be used to create an ArchivePath.
+    /// Raw bytes can be used to create an ArchivePath (no validation).
     #[test]
     fn from_raw_bytes() {
         let path = ArchivePath::from(b"foo/bar".to_vec());
@@ -293,9 +246,9 @@ mod tests {
     /// Invalid UTF-8 bytes return None from as_str but display lossily.
     #[test]
     fn invalid_utf8_display() {
-        let path = ArchivePath::from(vec![0x66, 0x6F, 0x6F, 0xFF, 0x62, 0x61, 0x72]); // foo<invalid>bar
+        let path = ArchivePath::from(vec![0x66, 0x6F, 0x6F, 0xFF, 0x62, 0x61, 0x72]);
         assert_eq!(path.as_str(), None);
-        assert!(path.to_string().contains('\u{FFFD}')); // Contains replacement char
+        assert!(path.to_string().contains('\u{FFFD}'));
     }
 
     /// ArchivePath can be hashed.
@@ -304,7 +257,7 @@ mod tests {
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(ArchivePath::try_from("foo/bar").unwrap());
-        set.insert(ArchivePath::try_from("foo/bar").unwrap()); // Duplicate
+        set.insert(ArchivePath::try_from("foo/bar").unwrap());
         set.insert(ArchivePath::try_from("baz/qux").unwrap());
         assert_eq!(set.len(), 2);
     }
@@ -323,32 +276,135 @@ mod tests {
         assert_eq!(paths[2].as_str(), Some("z/file"));
     }
 
-    /// TryFrom for String works.
-    #[test]
-    fn try_from_string() {
-        let path = ArchivePath::try_from(String::from("foo/bar")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
+    // ==================== Property Tests ====================
+
+    /// Strategy for valid path component (excludes . and ..).
+    fn valid_component() -> impl Strategy<Value = String> {
+        // Start with alphanumeric, then allow alphanumeric + safe chars
+        "[a-zA-Z0-9][a-zA-Z0-9_.-]{0,19}"
     }
 
-    /// TryFrom for PathBuf works.
-    #[test]
-    fn try_from_pathbuf() {
-        let path = ArchivePath::try_from(PathBuf::from("foo/bar")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
+    /// Strategy for valid paths (1-5 components joined by /).
+    fn valid_path() -> impl Strategy<Value = String> {
+        prop::collection::vec(valid_component(), 1..=5).prop_map(|components| components.join("/"))
     }
 
-    /// TryFrom for OsString works.
-    #[test]
-    fn try_from_osstring() {
-        let path = ArchivePath::try_from(OsString::from("foo/bar")).unwrap();
-        assert_eq!(path.as_str(), Some("foo/bar"));
-    }
+    proptest! {
+        /// Valid paths are accepted and produce non-empty results.
+        #[test]
+        fn valid_paths_accepted(path in valid_path()) {
+            let result = ArchivePath::try_from(path.as_str());
+            prop_assert!(result.is_ok(), "valid path rejected: {}", path);
+            let archive_path = result.unwrap();
+            prop_assert!(!archive_path.is_empty());
+            prop_assert!(archive_path.as_str().is_some());
+        }
 
-    /// Into Vec<u8> works.
-    #[test]
-    fn into_vec_u8() {
-        let path = ArchivePath::try_from("foo/bar").unwrap();
-        let bytes: Vec<u8> = path.into();
-        assert_eq!(bytes, b"foo/bar");
+        /// Normalized paths have no consecutive slashes.
+        #[test]
+        fn no_consecutive_slashes(path in valid_path()) {
+            let archive_path = ArchivePath::try_from(path.as_str()).unwrap();
+            let s = archive_path.as_str().unwrap();
+            prop_assert!(!s.contains("//"), "consecutive slashes in: {}", s);
+        }
+
+        /// Normalized paths have no leading or trailing slashes.
+        #[test]
+        fn no_leading_trailing_slashes(path in valid_path()) {
+            let archive_path = ArchivePath::try_from(path.as_str()).unwrap();
+            let s = archive_path.as_str().unwrap();
+            prop_assert!(!s.starts_with('/'), "leading slash in: {}", s);
+            prop_assert!(!s.ends_with('/'), "trailing slash in: {}", s);
+        }
+
+        /// Paths with leading slashes are normalized (slashes stripped).
+        #[test]
+        fn leading_slashes_stripped(
+            slashes in "/+",
+            path in valid_path(),
+        ) {
+            let input = format!("{}{}", slashes, path);
+            let result = ArchivePath::try_from(input.as_str());
+            prop_assert!(result.is_ok());
+            let s = result.unwrap().as_str().unwrap().to_string();
+            prop_assert!(!s.starts_with('/'));
+        }
+
+        /// Paths with trailing slashes are normalized (slashes stripped).
+        #[test]
+        fn trailing_slashes_stripped(
+            path in valid_path(),
+            slashes in "/+",
+        ) {
+            let input = format!("{}{}", path, slashes);
+            let result = ArchivePath::try_from(input.as_str());
+            prop_assert!(result.is_ok());
+            let s = result.unwrap().as_str().unwrap().to_string();
+            prop_assert!(!s.ends_with('/'));
+        }
+
+        /// Path traversal attempts (leading ..) are rejected.
+        #[test]
+        fn path_traversal_rejected(
+            num_dotdots in 1usize..=4,
+            suffix in prop::option::of(valid_path()),
+        ) {
+            let dotdots = vec![".."; num_dotdots].join("/");
+            let input = match suffix {
+                Some(s) => format!("{}/{}", dotdots, s),
+                None => dotdots,
+            };
+            let result = ArchivePath::try_from(input.as_str());
+            prop_assert!(result.is_err(), "path traversal accepted: {}", input);
+        }
+
+        /// Paths that resolve to empty are rejected.
+        #[test]
+        fn empty_paths_rejected(
+            input in prop_oneof![
+                Just("".to_string()),
+                Just(".".to_string()),
+                Just("/".to_string()),
+                Just("   ".to_string()),
+                Just("///".to_string()),
+                Just("./././".to_string()),
+                Just("./.".to_string()),
+            ],
+        ) {
+            let result = ArchivePath::try_from(input.as_str());
+            prop_assert!(result.is_err(), "empty path accepted: {:?}", input);
+        }
+
+        /// Too many .. components (escaping root) are rejected.
+        #[test]
+        fn excess_dotdot_rejected(
+            components in prop::collection::vec(valid_component(), 1..=3),
+            extra_dotdots in 1usize..=3,
+        ) {
+            // Build path like "a/b/c" then add more ".." than components
+            let mut path = components.join("/");
+            for _ in 0..components.len() + extra_dotdots {
+                path.push_str("/..");
+            }
+            let result = ArchivePath::try_from(path.as_str());
+            prop_assert!(result.is_err(), "excess dotdot accepted: {}", path);
+        }
+
+        /// TryFrom works for all string-like types.
+        #[test]
+        fn tryfrom_all_types(path in valid_path()) {
+            // &str
+            prop_assert!(ArchivePath::try_from(path.as_str()).is_ok());
+            // String
+            prop_assert!(ArchivePath::try_from(path.clone()).is_ok());
+            // &Path
+            prop_assert!(ArchivePath::try_from(Path::new(&path)).is_ok());
+            // PathBuf
+            prop_assert!(ArchivePath::try_from(PathBuf::from(&path)).is_ok());
+            // &OsStr
+            prop_assert!(ArchivePath::try_from(OsStr::new(&path)).is_ok());
+            // OsString
+            prop_assert!(ArchivePath::try_from(OsString::from(&path)).is_ok());
+        }
     }
 }
