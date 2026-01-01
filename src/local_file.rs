@@ -108,7 +108,7 @@ mod tests {
     /// Header can be serialized and deserialized without data loss.
     #[test]
     fn roundtrip() {
-        let mtime = DosDateTime::new(0x58CF, 0x6955);
+        let mtime = DosDateTime::from_date_time_parts(0x58CF, 0x6955);
         let header = LocalFileHeader::new(1024, 0xDEADBEEF, mtime, 256);
         let bytes = header.as_bytes();
         assert_eq!(bytes.len(), LocalFileHeader::SIZE);
