@@ -96,40 +96,12 @@ impl ArchivePath {
 
         Ok(components.join("/").into_bytes())
     }
-
-    /// Returns a displayable wrapper that avoids allocation for valid UTF-8 paths.
-    ///
-    /// For paths that are valid UTF-8, this writes directly without copying.
-    /// For paths with invalid UTF-8, this falls back to lossy conversion.
-    #[must_use]
-    pub fn display(&self) -> Display<'_> {
-        Display(self)
-    }
-}
-
-/// A wrapper for displaying an [`ArchivePath`] efficiently.
-///
-/// This type avoids allocation when the path is valid UTF-8, falling back to
-/// lossy conversion only when necessary.
-///
-/// Created by [`ArchivePath::display`].
-pub struct Display<'a>(&'a ArchivePath);
-
-impl fmt::Display for Display<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.as_str() {
-            Some(s) => f.write_str(s),
-            None => write!(f, "{}", String::from_utf8_lossy(&self.0.0)),
-        }
-    }
 }
 
 /// Displays the path, using lossy UTF-8 conversion for invalid bytes.
-///
-/// This delegates to [`Display`] which avoids allocation for valid UTF-8 paths.
 impl fmt::Display for ArchivePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.display(), f)
+        write!(f, "{}", String::from_utf8_lossy(&self.0))
     }
 }
 
