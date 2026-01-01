@@ -137,6 +137,7 @@ impl<'a> ArchivePath<'a> {
     /// - Resolves `..` components (errors if escaping root)
     /// - Removes leading/trailing slashes
     /// - Collapses multiple slashes
+    /// - Rejects whitespace-only components (e.g., `"foo/ /bar"`)
     ///
     /// Whitespace within path components is preserved (spaces in filenames are valid).
     /// For example, `"foo/ bar /baz"` normalizes to `"foo/ bar /baz"`.
@@ -148,6 +149,7 @@ impl<'a> ArchivePath<'a> {
     /// Returns `BaleError::InvalidPath` if:
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
+    /// - The path contains whitespace-only components
     fn normalize_bytes(path: &str) -> Result<Cow<'_, [u8]>, BaleError> {
         let trimmed = path.trim();
 
@@ -167,6 +169,10 @@ impl<'a> ArchivePath<'a> {
                         // Attempted to go above root - path traversal attack
                         return Err(BaleError::InvalidPath);
                     }
+                }
+                component if component.trim().is_empty() => {
+                    // Whitespace-only component - reject
+                    return Err(BaleError::InvalidPath);
                 }
                 component => {
                     components.push(component);
@@ -207,8 +213,12 @@ impl<'a> ArchivePath<'a> {
 
         // Check each component.
         for component in path.split('/') {
-            // No empty components (consecutive slashes) or special components.
-            if component.is_empty() || component == "." || component == ".." {
+            // No empty, whitespace-only, or special components.
+            if component.is_empty()
+                || component.trim().is_empty()
+                || component == "."
+                || component == ".."
+            {
                 return false;
             }
         }
@@ -393,6 +403,15 @@ mod tests {
         assert!(std::ptr::eq(path.as_bytes().as_ptr(), bytes.as_ptr()));
     }
 
+    /// From<&[u8]> borrows without copying (same as from_bytes).
+    #[test]
+    fn from_slice_borrows() {
+        let bytes: &[u8] = b"foo/bar";
+        let path = ArchivePath::from(bytes);
+        // Verify it points to the same memory
+        assert!(std::ptr::eq(path.as_bytes().as_ptr(), bytes.as_ptr()));
+    }
+
     /// into_owned converts borrowed to owned.
     #[test]
     fn into_owned_works() {
@@ -441,6 +460,10 @@ mod tests {
         assert!(!ArchivePath::is_normalized("foo/../bar"));
         // Empty
         assert!(!ArchivePath::is_normalized(""));
+        // Whitespace-only component
+        assert!(!ArchivePath::is_normalized("foo/ /bar"));
+        assert!(!ArchivePath::is_normalized("foo/\t/bar"));
+        assert!(!ArchivePath::is_normalized(" "));
     }
 
     /// normalize_bytes returns borrowed for already-normalized paths.
@@ -460,6 +483,16 @@ mod tests {
         let result = ArchivePath::normalize_bytes("foo\\bar").unwrap();
         assert!(matches!(result, Cow::Owned(_)));
         assert_eq!(result.as_ref(), b"foo/bar");
+    }
+
+    /// normalize_bytes rejects whitespace-only components.
+    #[test]
+    fn whitespace_only_components_rejected() {
+        assert!(ArchivePath::try_from("foo/ /bar").is_err());
+        assert!(ArchivePath::try_from("foo/\t/bar").is_err());
+        assert!(ArchivePath::try_from("foo/   /bar").is_err());
+        // But whitespace around content is allowed
+        assert!(ArchivePath::try_from("foo/ bar /baz").is_ok());
     }
 
     /// into_normalized rejects invalid UTF-8.
@@ -486,6 +519,20 @@ mod tests {
         set.insert(ArchivePath::try_from("foo/bar").unwrap());
         set.insert(ArchivePath::try_from("baz/qux").unwrap());
         assert_eq!(set.len(), 2);
+    }
+
+    /// HashMap can be looked up by &[u8] via Borrow trait.
+    #[test]
+    fn hashmap_lookup_by_bytes() {
+        use std::collections::HashMap;
+        let mut map: HashMap<ArchivePath<'static>, u32> = HashMap::new();
+        map.insert(ArchivePath::try_from("foo/bar").unwrap(), 42);
+        map.insert(ArchivePath::try_from("baz/qux").unwrap(), 99);
+
+        // Lookup using &[u8] via Borrow<[u8]>
+        assert_eq!(map.get(b"foo/bar".as_slice()), Some(&42));
+        assert_eq!(map.get(b"baz/qux".as_slice()), Some(&99));
+        assert_eq!(map.get(b"nonexistent".as_slice()), None);
     }
 
     /// ArchivePath can be sorted.
