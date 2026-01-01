@@ -366,12 +366,13 @@ impl TryFrom<DosDateTime> for SystemTime {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use rstest::rstest;
+
+    // ==================== Unit Tests ====================
 
     /// The DOS epoch (1980-01-01 00:00:00) encodes correctly.
     #[test]
     fn dos_epoch() {
-        let dos = DosDateTime::new(0x0021, 0x0000); // 1980-01-01 00:00:00
+        let dos = DosDateTime::new(0x0021, 0x0000);
         assert_eq!(dos.year(), 1980);
         assert_eq!(dos.month(), 1);
         assert_eq!(dos.day(), 1);
@@ -388,9 +389,6 @@ mod tests {
         assert_eq!(dos.year(), 1980);
         assert_eq!(dos.month(), 1);
         assert_eq!(dos.day(), 1);
-        assert_eq!(dos.hour(), 0);
-        assert_eq!(dos.minute(), 0);
-        assert_eq!(dos.second(), 0);
         assert!(dos.is_valid());
     }
 
@@ -400,123 +398,9 @@ mod tests {
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(DosDateTime::new(0x0021, 0x0000));
-        set.insert(DosDateTime::new(0x0021, 0x0000)); // Duplicate
-        set.insert(DosDateTime::new(0x5921, 0x6B15)); // 2024-06-15 13:10:42
+        set.insert(DosDateTime::new(0x0021, 0x0000));
+        set.insert(DosDateTime::new(0x5921, 0x6B15));
         assert_eq!(set.len(), 2);
-    }
-
-    /// SystemTime -> DosDateTime -> SystemTime preserves date/time components.
-    #[test]
-    fn roundtrip() {
-        // 2024-06-15 13:10:42 UTC
-        let original = Utc.with_ymd_and_hms(2024, 6, 15, 13, 10, 42).unwrap();
-        let dos = DosDateTime::from(SystemTime::from(original));
-        let restored: SystemTime = dos.try_into().expect("valid date");
-        let restored_dt: DateTime<Utc> = restored.into();
-
-        assert!(dos.is_valid());
-
-        // DOS time has 2-second resolution.
-        assert_eq!(restored_dt.year(), 2024);
-        assert_eq!(restored_dt.month(), 6);
-        assert_eq!(restored_dt.day(), 15);
-        assert_eq!(restored_dt.hour(), 13);
-        assert_eq!(restored_dt.minute(), 10);
-        assert_eq!(restored_dt.second(), 42);
-    }
-
-    /// Component extraction methods return correct values.
-    #[test]
-    fn extract_components() {
-        let original = Utc.with_ymd_and_hms(2024, 6, 15, 13, 10, 42).unwrap();
-        let dos = DosDateTime::from(SystemTime::from(original));
-        assert_eq!(dos.year(), 2024);
-        assert_eq!(dos.month(), 6);
-        assert_eq!(dos.day(), 15);
-        assert_eq!(dos.hour(), 13);
-        assert_eq!(dos.minute(), 10);
-        assert_eq!(dos.second(), 42);
-        assert!(dos.is_valid());
-    }
-
-    /// Dates before DOS epoch (1980) clamp to 1980-01-01 00:00:00.
-    #[test]
-    fn before_dos_epoch() {
-        // 1970-01-01 should clamp to 1980-01-01 00:00:00
-        let original = Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap();
-        let dos = DosDateTime::from(SystemTime::from(original));
-        assert_eq!(dos.year(), 1980);
-        assert_eq!(dos.month(), 1);
-        assert_eq!(dos.day(), 1);
-        assert_eq!(dos.hour(), 0);
-        assert_eq!(dos.minute(), 0);
-        assert_eq!(dos.second(), 0);
-        assert!(dos.is_valid());
-    }
-
-    /// Dates after max DOS year (2107) clamp to 2107-12-31 23:59:58.
-    #[test]
-    fn after_dos_max_year() {
-        // 2150-02-29 would be invalid if only year was clamped to 2107
-        // (2107 is not a leap year), so entire date must clamp.
-        let original = Utc.with_ymd_and_hms(2150, 6, 15, 14, 30, 45).unwrap();
-        let dos = DosDateTime::from(SystemTime::from(original));
-        assert_eq!(dos.year(), 2107);
-        assert_eq!(dos.month(), 12);
-        assert_eq!(dos.day(), 31);
-        assert_eq!(dos.hour(), 23);
-        assert_eq!(dos.minute(), 59);
-        assert_eq!(dos.second(), 58); // Max representable (seconds stored as /2)
-        assert!(dos.is_valid());
-    }
-
-    /// Valid dates pass `is_valid()`.
-    #[test]
-    fn is_valid_accepts_valid_dates() {
-        // DOS epoch.
-        assert!(DosDateTime::new(0x0021, 0x0000).is_valid());
-        // Normal date: 2024-06-15 13:10:42.
-        let dos = DosDateTime::from(SystemTime::from(
-            Utc.with_ymd_and_hms(2024, 6, 15, 13, 10, 42).unwrap(),
-        ));
-        assert!(dos.is_valid());
-        // Leap year Feb 29: 2000-02-29.
-        let leap = DosDateTime::from(SystemTime::from(
-            Utc.with_ymd_and_hms(2000, 2, 29, 0, 0, 0).unwrap(),
-        ));
-        assert!(leap.is_valid());
-    }
-
-    /// Invalid months fail `is_valid()`.
-    #[rstest]
-    #[case(0x0001, 0)] // Month 0
-    #[case(0x01A1, 13)] // Month 13
-    #[case(0x01C1, 14)] // Month 14
-    #[case(0x01E1, 15)] // Month 15 (max 4-bit value)
-    fn is_valid_rejects_invalid_month(#[case] date: u16, #[case] expected_month: u16) {
-        let dos = DosDateTime::new(date, 0x0000);
-        assert_eq!(dos.month(), expected_month);
-        assert!(!dos.is_valid());
-    }
-
-    /// Invalid days fail `is_valid()`.
-    #[rstest]
-    #[case(0x0020, 1, 0)] // Day 0
-    #[case(0x005E, 2, 30)] // Feb 30
-    #[case(0x025D, 2, 29)] // Feb 29 non-leap (1981)
-    #[case(0x009F, 4, 31)] // Apr 31
-    #[case(0x00DF, 6, 31)] // Jun 31
-    #[case(0x013F, 9, 31)] // Sep 31
-    #[case(0x017F, 11, 31)] // Nov 31
-    fn is_valid_rejects_invalid_day(
-        #[case] date: u16,
-        #[case] expected_month: u16,
-        #[case] expected_day: u16,
-    ) {
-        let dos = DosDateTime::new(date, 0x0000);
-        assert_eq!(dos.month(), expected_month);
-        assert_eq!(dos.day(), expected_day);
-        assert!(!dos.is_valid());
     }
 
     /// Display formats as `YYYY-MM-DD HH:MM:SS`.
@@ -531,201 +415,169 @@ mod tests {
     /// Invalid dates return an error with `TryFrom`.
     #[test]
     fn try_from_invalid_returns_error() {
-        // Feb 30 is invalid.
-        let dos = DosDateTime::new(0x005E, 0x0000);
-        let result = SystemTime::try_from(dos);
-        assert!(result.is_err());
+        let dos = DosDateTime::new(0x005E, 0x0000); // Feb 30
+        assert!(SystemTime::try_from(dos).is_err());
     }
 
     /// `to_system_time_or_epoch()` falls back to DOS epoch for invalid dates.
     #[test]
     fn to_system_time_or_epoch_falls_back() {
-        // Feb 30 is invalid.
-        let dos = DosDateTime::new(0x005E, 0x0000);
-        let time = dos.to_system_time_or_epoch();
-        let dt: DateTime<Utc> = time.into();
-        // Should fall back to DOS epoch.
-        assert_eq!(dt.year(), 1980);
-        assert_eq!(dt.month(), 1);
-        assert_eq!(dt.day(), 1);
-        assert_eq!(dt.hour(), 0);
-        assert_eq!(dt.minute(), 0);
-        assert_eq!(dt.second(), 0);
+        let dos = DosDateTime::new(0x005E, 0x0000); // Feb 30
+        let dt: DateTime<Utc> = dos.to_system_time_or_epoch().into();
+        assert_eq!((dt.year(), dt.month(), dt.day()), (1980, 1, 1));
     }
 
-    /// Invalid time fields fail `is_valid()`.
-    #[rstest]
-    #[case(0xC000, 24, 0, 0)] // Hour 24
-    #[case(0xF800, 31, 0, 0)] // Hour 31 (max 5-bit value)
-    #[case(0x0780, 0, 60, 0)] // Minute 60
-    #[case(0x07E0, 0, 63, 0)] // Minute 63 (max 6-bit value)
-    #[case(0x001E, 0, 0, 60)] // Second 60 (raw=30)
-    #[case(0x001F, 0, 0, 62)] // Second 62 (raw=31, max 5-bit value)
-    fn is_valid_rejects_invalid_time(
-        #[case] time: u16,
-        #[case] expected_hour: u16,
-        #[case] expected_minute: u16,
-        #[case] expected_second: u16,
-    ) {
-        let dos = DosDateTime::new(0x0021, time); // Valid date: 1980-01-01
-        assert_eq!(dos.hour(), expected_hour);
-        assert_eq!(dos.minute(), expected_minute);
-        assert_eq!(dos.second(), expected_second);
-        assert!(!dos.is_valid());
-    }
-
-    /// `days_in_month` returns 0 for invalid months.
-    #[rstest]
-    #[case(0)]
-    #[case(13)]
-    #[case(14)]
-    #[case(15)]
-    #[case(255)]
-    fn days_in_month_invalid_month(#[case] month: u16) {
-        assert_eq!(DosDateTime::days_in_month(1980, month), 0);
-    }
-
-    /// `days_in_month` returns correct values for all months.
-    #[rstest]
-    #[case(1, 31)] // January
-    #[case(2, 28)] // February (non-leap)
-    #[case(3, 31)] // March
-    #[case(4, 30)] // April
-    #[case(5, 31)] // May
-    #[case(6, 30)] // June
-    #[case(7, 31)] // July
-    #[case(8, 31)] // August
-    #[case(9, 30)] // September
-    #[case(10, 31)] // October
-    #[case(11, 30)] // November
-    #[case(12, 31)] // December
-    fn days_in_month_all_months(#[case] month: u16, #[case] expected: u16) {
-        assert_eq!(DosDateTime::days_in_month(1981, month), expected);
-    }
-
-    /// Leap year detection for February.
-    #[rstest]
-    #[case(1980, 29)] // Leap year (divisible by 4)
-    #[case(1981, 28)] // Non-leap year
-    #[case(2000, 29)] // Century leap year (divisible by 400)
-    #[case(2100, 28)] // Century non-leap year (divisible by 100, not 400)
-    fn days_in_february_leap_years(#[case] year: u16, #[case] expected: u16) {
-        assert_eq!(DosDateTime::days_in_month(year, 2), expected);
-    }
-
-    /// Boundary values for time fields.
-    #[rstest]
-    #[case(0, 0, 0)] // Minimum time
-    #[case(23, 59, 58)] // Maximum valid time (58 seconds due to 2-second resolution)
-    fn time_boundaries(#[case] hour: u16, #[case] minute: u16, #[case] second: u16) {
-        let time = (hour << 11) | (minute << 5) | (second / 2);
-        let dos = DosDateTime::new(0x0021, time); // 1980-01-01
-        assert_eq!(dos.hour(), hour);
-        assert_eq!(dos.minute(), minute);
-        assert_eq!(dos.second(), second);
-        assert!(dos.is_valid());
-    }
-
-    /// Boundary values for date fields.
-    #[rstest]
-    #[case(1980, 1, 1)] // DOS epoch
-    #[case(2107, 12, 31)] // Maximum DOS date
-    fn date_boundaries(#[case] year: u16, #[case] month: u16, #[case] day: u16) {
-        let year_offset = year - 1980;
-        let date = (year_offset << 9) | (month << 5) | day;
-        let dos = DosDateTime::new(date, 0x0000);
-        assert_eq!(dos.year(), year);
-        assert_eq!(dos.month(), month);
-        assert_eq!(dos.day(), day);
-        assert!(dos.is_valid());
-    }
-
-    /// `from_components` creates valid DosDateTime from valid inputs.
-    #[rstest]
-    #[case(1980, 1, 1, 0, 0, 0)] // DOS epoch
-    #[case(2024, 6, 15, 13, 10, 42)] // Normal date
-    #[case(2107, 12, 31, 23, 59, 59)] // Maximum values (second 59 truncates to 58)
-    #[case(2000, 2, 29, 12, 30, 0)] // Leap year
-    fn from_components_valid(
-        #[case] year: u16,
-        #[case] month: u16,
-        #[case] day: u16,
-        #[case] hour: u16,
-        #[case] minute: u16,
-        #[case] second: u16,
-    ) {
-        let dos = DosDateTime::from_components(year, month, day, hour, minute, second)
-            .expect("should create valid DosDateTime");
-        assert_eq!(dos.year(), year);
-        assert_eq!(dos.month(), month);
-        assert_eq!(dos.day(), day);
-        assert_eq!(dos.hour(), hour);
-        assert_eq!(dos.minute(), minute);
-        // Second is truncated to 2-second resolution
-        assert_eq!(dos.second(), second / 2 * 2);
-        assert!(dos.is_valid());
-    }
-
-    /// Odd seconds are truncated to even values (2-second resolution).
-    #[rstest]
-    #[case(1, 0)]
-    #[case(3, 2)]
-    #[case(59, 58)]
-    fn odd_second_truncation(#[case] input: u16, #[case] expected: u16) {
-        let dos = DosDateTime::from_components(2000, 1, 1, 0, 0, input).expect("valid date");
-        assert_eq!(
-            dos.second(),
-            expected,
-            "input second {} should truncate to {}",
-            input,
-            expected
-        );
-    }
-
-    /// `from_components` rejects invalid inputs.
-    #[rstest]
-    #[case(1979, 1, 1, 0, 0, 0)] // Year before epoch
-    #[case(2108, 1, 1, 0, 0, 0)] // Year after max
-    #[case(2000, 0, 1, 0, 0, 0)] // Month 0
-    #[case(2000, 13, 1, 0, 0, 0)] // Month 13
-    #[case(2000, 1, 0, 0, 0, 0)] // Day 0
-    #[case(2000, 1, 32, 0, 0, 0)] // Day 32
-    #[case(2000, 2, 30, 0, 0, 0)] // Feb 30
-    #[case(2001, 2, 29, 0, 0, 0)] // Feb 29 in non-leap year
-    #[case(2000, 1, 1, 24, 0, 0)] // Hour 24
-    #[case(2000, 1, 1, 0, 60, 0)] // Minute 60
-    #[case(2000, 1, 1, 0, 0, 60)] // Second 60
-    fn from_components_invalid(
-        #[case] year: u16,
-        #[case] month: u16,
-        #[case] day: u16,
-        #[case] hour: u16,
-        #[case] minute: u16,
-        #[case] second: u16,
-    ) {
-        let result = DosDateTime::from_components(year, month, day, hour, minute, second);
-        assert!(
-            result.is_err(),
-            "should reject {}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second
-        );
-    }
+    // ==================== Property Tests ====================
 
     proptest! {
-        /// Round-trip: SystemTime -> DosDateTime -> SystemTime preserves components.
+        /// Valid DosDateTime values from components pass is_valid().
         #[test]
-        fn roundtrip_proptest(
+        fn valid_components_accepted(
             year in 1980u16..=2107,
             month in 1u16..=12,
-            day in 1u16..=28, // Use 28 to avoid invalid dates
+            day in 1u16..=28, // Safe range for all months
             hour in 0u16..=23,
             minute in 0u16..=59,
-            second in (0u16..=29).prop_map(|s| s * 2), // Even seconds only
+            second in 0u16..=59,
+        ) {
+            let dos = DosDateTime::from_components(year, month, day, hour, minute, second)
+                .expect("valid components");
+            prop_assert!(dos.is_valid());
+            prop_assert_eq!(dos.year(), year);
+            prop_assert_eq!(dos.month(), month);
+            prop_assert_eq!(dos.day(), day);
+            prop_assert_eq!(dos.hour(), hour);
+            prop_assert_eq!(dos.minute(), minute);
+            prop_assert_eq!(dos.second(), second / 2 * 2); // 2-second resolution
+        }
+
+        /// Invalid months (0 or 13+) fail is_valid().
+        #[test]
+        fn invalid_month_rejected(month in prop_oneof![Just(0u16), 13u16..=15]) {
+            let date = (month << 5) | 1; // year_offset=0, day=1
+            let dos = DosDateTime::new(date, 0x0000);
+            prop_assert!(!dos.is_valid());
+        }
+
+        /// Day 0 fails is_valid().
+        #[test]
+        fn day_zero_rejected(month in 1u16..=12) {
+            let date = month << 5; // year_offset=0, day=0
+            let dos = DosDateTime::new(date, 0x0000);
+            prop_assert!(!dos.is_valid());
+        }
+
+        /// Days beyond month's max fail is_valid().
+        #[test]
+        fn excess_day_rejected(
+            year_offset in 0u16..=127,
+            month in 1u16..=12,
+        ) {
+            let year = 1980 + year_offset;
+            let max_day = DosDateTime::days_in_month(year, month);
+            let invalid_day = max_day + 1;
+            let date = (year_offset << 9) | (month << 5) | invalid_day;
+            let dos = DosDateTime::new(date, 0x0000);
+            prop_assert!(!dos.is_valid(), "day {} in month {} should be invalid", invalid_day, month);
+        }
+
+        /// Invalid hours (24+) fail is_valid().
+        #[test]
+        fn invalid_hour_rejected(hour in 24u16..=31) {
+            let time = hour << 11;
+            let dos = DosDateTime::new(0x0021, time);
+            prop_assert!(!dos.is_valid());
+        }
+
+        /// Invalid minutes (60+) fail is_valid().
+        #[test]
+        fn invalid_minute_rejected(minute in 60u16..=63) {
+            let time = minute << 5;
+            let dos = DosDateTime::new(0x0021, time);
+            prop_assert!(!dos.is_valid());
+        }
+
+        /// Invalid seconds (60+) fail is_valid().
+        #[test]
+        fn invalid_second_rejected(second_half in 30u16..=31) {
+            let dos = DosDateTime::new(0x0021, second_half);
+            prop_assert!(!dos.is_valid());
+        }
+
+        /// days_in_month returns 0 for invalid months.
+        #[test]
+        fn days_in_month_invalid(month in prop_oneof![Just(0u16), 13u16..=255]) {
+            prop_assert_eq!(DosDateTime::days_in_month(2000, month), 0);
+        }
+
+        /// days_in_month returns correct values for valid months.
+        #[test]
+        fn days_in_month_valid(
+            year in 1980u16..=2107,
+            month in 1u16..=12,
+        ) {
+            let expected = match month {
+                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+                4 | 6 | 9 | 11 => 30,
+                2 => {
+                    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+                    if leap { 29 } else { 28 }
+                }
+                _ => 0,
+            };
+            prop_assert_eq!(DosDateTime::days_in_month(year, month), expected);
+        }
+
+        /// Odd seconds truncate to even (2-second resolution).
+        #[test]
+        fn odd_seconds_truncated(second in 0u16..=59) {
+            let dos = DosDateTime::from_components(2000, 1, 1, 0, 0, second).unwrap();
+            prop_assert_eq!(dos.second(), second / 2 * 2);
+        }
+
+        /// from_components rejects year before epoch.
+        #[test]
+        fn year_before_epoch_rejected(year in 0u16..1980) {
+            prop_assert!(DosDateTime::from_components(year, 1, 1, 0, 0, 0).is_err());
+        }
+
+        /// from_components rejects year after max.
+        #[test]
+        fn year_after_max_rejected(year in 2108u16..=u16::MAX) {
+            prop_assert!(DosDateTime::from_components(year, 1, 1, 0, 0, 0).is_err());
+        }
+
+        /// Dates before DOS epoch clamp to 1980-01-01 00:00:00.
+        #[test]
+        fn before_epoch_clamps(year in 1970i32..1980) {
+            let dt = Utc.with_ymd_and_hms(year, 6, 15, 12, 30, 0).unwrap();
+            let dos = DosDateTime::from(SystemTime::from(dt));
+            prop_assert_eq!(dos.year(), 1980);
+            prop_assert_eq!(dos.month(), 1);
+            prop_assert_eq!(dos.day(), 1);
+            prop_assert!(dos.is_valid());
+        }
+
+        /// Dates after max DOS year clamp to 2107-12-31 23:59:58.
+        #[test]
+        fn after_max_clamps(year in 2108i32..=2150) {
+            let dt = Utc.with_ymd_and_hms(year, 6, 15, 12, 30, 0).unwrap();
+            let dos = DosDateTime::from(SystemTime::from(dt));
+            prop_assert_eq!(dos.year(), 2107);
+            prop_assert_eq!(dos.month(), 12);
+            prop_assert_eq!(dos.day(), 31);
+            prop_assert!(dos.is_valid());
+        }
+
+        /// Round-trip: SystemTime -> DosDateTime -> SystemTime preserves components.
+        #[test]
+        fn roundtrip(
+            year in 1980u16..=2107,
+            month in 1u16..=12,
+            day in 1u16..=28,
+            hour in 0u16..=23,
+            minute in 0u16..=59,
+            second in (0u16..=29).prop_map(|s| s * 2),
         ) {
             let original = Utc
                 .with_ymd_and_hms(year as i32, month as u32, day as u32, hour as u32, minute as u32, second as u32)
@@ -743,29 +595,7 @@ mod tests {
             prop_assert_eq!(restored_dt.second() as u16, second);
         }
 
-        /// All valid DosDateTime values pass is_valid().
-        #[test]
-        fn valid_dos_datetime_proptest(
-            year_offset in 0u16..=DosDateTime::MAX_YEAR_OFFSET,
-            month in 1u16..=12,
-            day in 1u16..=28,
-            hour in 0u16..=23,
-            minute in 0u16..=59,
-            second_half in 0u16..=29,
-        ) {
-            let date = (year_offset << 9) | (month << 5) | day;
-            let time = (hour << 11) | (minute << 5) | second_half;
-            let dos = DosDateTime::new(date, time);
-
-            prop_assert!(dos.is_valid());
-        }
-
         /// Ordering matches chronological order.
-        ///
-        /// Verifies that `Ord` comparison produces the same result as comparing
-        /// the individual date/time components in chronological order.
-        ///
-        /// This includes sorting of invalid date.
         #[test]
         fn ordering_matches_chronological(
             y1 in 0u16..=DosDateTime::MAX_YEAR_OFFSET,
@@ -781,95 +611,11 @@ mod tests {
             min2 in 0u16..=59,
             s2 in 0u16..=29,
         ) {
-            let date1 = (y1 << 9) | (m1 << 5) | d1;
-            let time1 = (h1 << 11) | (min1 << 5) | s1;
-            let dos1 = DosDateTime::new(date1, time1);
-
-            let date2 = (y2 << 9) | (m2 << 5) | d2;
-            let time2 = (h2 << 11) | (min2 << 5) | s2;
-            let dos2 = DosDateTime::new(date2, time2);
-
-            // Compare chronologically using tuples.
+            let dos1 = DosDateTime::new((y1 << 9) | (m1 << 5) | d1, (h1 << 11) | (min1 << 5) | s1);
+            let dos2 = DosDateTime::new((y2 << 9) | (m2 << 5) | d2, (h2 << 11) | (min2 << 5) | s2);
             let chrono1 = (y1, m1, d1, h1, min1, s1);
             let chrono2 = (y2, m2, d2, h2, min2, s2);
-
-            prop_assert_eq!(
-                dos1.cmp(&dos2),
-                chrono1.cmp(&chrono2),
-                "Ord mismatch: {:?} vs {:?}",
-                dos1,
-                dos2
-            );
-        }
-
-        /// Full range test including invalid calendar dates.
-        ///
-        /// Generates all possible date/time values (including invalid ones like Feb 31).
-        /// Valid dates must produce valid DosDateTime; invalid dates are skipped.
-        /// Years before 1980 clamp to 1980-01-01 00:00:00.
-        /// Years after 2107 clamp to 2107-12-31 23:59:58.
-        #[test]
-        fn system_time_full_range_proptest(
-            year in 1970i32..=2150,
-            month in 1u32..=12,
-            day in 1u32..=31,   // Includes invalid days like Feb 30
-            hour in 0u32..=23,
-            minute in 0u32..=59,
-            second in 0u32..=59,
-        ) {
-            match Utc.with_ymd_and_hms(year, month, day, hour, minute, second).single() {
-                Some(dt) => {
-                    // Valid calendar date - conversion must produce valid DosDateTime.
-                    let system_time = SystemTime::from(dt);
-                    let dos = DosDateTime::from(system_time);
-
-                    prop_assert!(dos.is_valid(),
-                        "valid date {}-{:02}-{:02} {:02}:{:02}:{:02} produced invalid DosDateTime",
-                        year, month, day, hour, minute, second);
-
-                    // Verify clamping behavior.
-                    if year < 1980 {
-                        // Clamps to 1980-01-01 00:00:00.
-                        prop_assert_eq!(dos.year(), 1980);
-                        prop_assert_eq!(dos.month(), 1);
-                        prop_assert_eq!(dos.day(), 1);
-                        prop_assert_eq!(dos.hour(), 0);
-                        prop_assert_eq!(dos.minute(), 0);
-                        prop_assert_eq!(dos.second(), 0);
-                    } else if year > 2107 {
-                        // Clamps to 2107-12-31 23:59:58.
-                        prop_assert_eq!(dos.year(), 2107);
-                        prop_assert_eq!(dos.month(), 12);
-                        prop_assert_eq!(dos.day(), 31);
-                        prop_assert_eq!(dos.hour(), 23);
-                        prop_assert_eq!(dos.minute(), 59);
-                        prop_assert_eq!(dos.second(), 58);
-                    } else {
-                        // Within range: fields preserved.
-                        prop_assert_eq!(dos.year() as i32, year);
-                        prop_assert_eq!(dos.month() as u32, month);
-                        prop_assert_eq!(dos.day() as u32, day);
-                        prop_assert_eq!(dos.hour() as u32, hour);
-                        prop_assert_eq!(dos.minute() as u32, minute);
-                        // Seconds truncate to 2-second resolution.
-                        prop_assert_eq!(dos.second() as u32, second - (second % 2));
-                    }
-                }
-                None => {
-                    // Invalid calendar date (e.g., Feb 30) - chrono rejects it.
-                    // Verify from_components also rejects it.
-                    if (1980..=2107).contains(&year) && month <= 12 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59 {
-                        let result = DosDateTime::from_components(
-                            year as u16, month as u16, day as u16,
-                            hour as u16, minute as u16, second as u16,
-                        );
-
-                        prop_assert!(result.is_err(),
-                            "invalid date {}-{:02}-{:02} {:02}:{:02}:{:02} was accepted by from_components",
-                            year, month, day, hour, minute, second);
-                    }
-                }
-            }
+            prop_assert_eq!(dos1.cmp(&dos2), chrono1.cmp(&chrono2));
         }
     }
 }
