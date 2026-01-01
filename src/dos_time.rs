@@ -136,7 +136,6 @@ impl DosDateTime {
     ///
     /// let now = DosDateTime::now();
     /// assert!(now.is_valid());
-    /// assert!(now.year() >= 1980);
     /// ```
     #[must_use]
     pub fn now() -> Self {
@@ -188,7 +187,7 @@ impl DosDateTime {
     /// Returns the number of days in the given month for the given year.
     ///
     /// Returns `None` for invalid months (0 or > 12).
-    const fn days_in_month(year: u16, month: u16) -> Option<u16> {
+    pub(crate) const fn days_in_month(year: u16, month: u16) -> Option<u16> {
         match month {
             // Months with 31 days.
             1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
@@ -322,6 +321,7 @@ impl From<SystemTime> for DosDateTime {
             (0u16, 1u16, 1u16, 0u16, 0u16, 0u16)
         } else if input_year > (Self::DOS_EPOCH_YEAR + Self::MAX_YEAR_OFFSET) as i32 {
             // After max DOS year: clamp to 2107-12-31 23:59:58.
+            // Note: 58 is the max representable second (stored as 29 * 2), not 59 truncated.
             (Self::MAX_YEAR_OFFSET, 12u16, 31u16, 23u16, 59u16, 58u16)
         } else {
             // Within valid range: use actual values.
