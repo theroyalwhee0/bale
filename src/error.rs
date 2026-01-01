@@ -1,3 +1,4 @@
+use crate::DosDateTime;
 use thiserror::Error;
 
 /// Errors that can occur when working with bale archives.
@@ -53,4 +54,8 @@ pub enum BaleError {
     /// Archive data is corrupted or invalid.
     #[error("corrupted archive: {0}")]
     Corrupted(String),
+
+    /// Invalid DOS date/time value.
+    #[error("invalid DOS date/time: {0}")]
+    InvalidDosDateTime(DosDateTime),
 }
