@@ -29,7 +29,10 @@ pub struct BaleEocd {
     pub alignment_pow2: u8,
     /// Maximum path size in bytes (1-2048).
     pub path_size: U16,
-    /// Reserved for future use (must be zero).
+    /// Reserved for future use.
+    ///
+    /// Writers must set this to all zeros. Readers should ignore non-zero bytes
+    /// for forward compatibility with future format extensions.
     pub reserved: [u8; Self::RESERVED_SIZE],
 }
 
@@ -52,13 +55,32 @@ impl BaleEocd {
     /// Maximum allowed path size.
     pub const MAX_PATH_SIZE: u16 = 2048;
 
-    /// Current format version.
+    /// Maximum alignment power (2^24 = 16 MB).
+    pub(crate) const MAX_ALIGNMENT_POW2: u8 = 24;
+
+    /// Current format version (major, minor, patch).
+    ///
+    /// Version compatibility policy:
+    /// - **Major**: Breaking format change. Readers should refuse incompatible major versions.
+    /// - **Minor**: Backward-compatible additions. Older readers can safely read newer minor versions.
+    /// - **Patch**: Implementation-only changes with no format impact.
+    ///
+    /// Currently, version checking is not enforced; all versions are accepted.
     pub const CURRENT_VERSION: (u8, u8, u8) = (0, 1, 0);
 
     /// Creates a new `BaleEocd` with default settings (4096 alignment, 256 path size).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let (major, minor, patch) = Self::CURRENT_VERSION;
+        Self {
+            magic: U32::new(Self::MAGIC),
+            version_major: major,
+            version_minor: minor,
+            version_patch: patch,
+            alignment_pow2: 12, // 2^12 = 4096
+            path_size: U16::new(256),
+            reserved: [0u8; Self::RESERVED_SIZE],
+        }
     }
 
     /// Creates a new `BaleEocd` with the given parameters.
@@ -70,10 +92,12 @@ impl BaleEocd {
     ///
     /// # Errors
     ///
-    /// - Returns `BaleError::InvalidAlignment` if `alignment` is not a power of 2 or is zero.
+    /// - Returns `BaleError::InvalidAlignment` if `alignment` is not a power of 2,
+    ///   is zero, or exceeds 16 MB (2^24).
     /// - Returns `BaleError::InvalidPathSize` if `path_size` is not in range 1..=2048.
     pub fn new_with_options(alignment: u32, path_size: u16) -> Result<Self, BaleError> {
-        if !alignment.is_power_of_two() {
+        let max_alignment = 1u32 << Self::MAX_ALIGNMENT_POW2;
+        if !alignment.is_power_of_two() || alignment > max_alignment {
             return Err(BaleError::InvalidAlignment(alignment));
         }
         if !(Self::MIN_PATH_SIZE..=Self::MAX_PATH_SIZE).contains(&path_size) {
@@ -93,8 +117,14 @@ impl BaleEocd {
     }
 
     /// Returns the alignment in bytes.
+    ///
+    /// Returns 1 if `alignment_pow2` exceeds [`MAX_ALIGNMENT_POW2`](Self::MAX_ALIGNMENT_POW2).
+    /// Callers should use [`is_valid()`](Self::is_valid) to detect invalid values.
     #[must_use]
     pub const fn alignment(&self) -> u32 {
+        if self.alignment_pow2 > Self::MAX_ALIGNMENT_POW2 {
+            return 1;
+        }
         1 << self.alignment_pow2
     }
 
@@ -110,26 +140,27 @@ impl BaleEocd {
         (self.version_major, self.version_minor, self.version_patch)
     }
 
-    /// Validates the magic signature.
+    /// Validates the structure fields.
+    ///
+    /// Checks:
+    /// - Magic signature is "BALE"
+    /// - `alignment_pow2` is within valid range (≤ 24)
+    /// - `path_size` is in range 1..=2048
+    ///
+    /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
+    /// silently ignored for forward compatibility with future format extensions.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.magic.get() == Self::MAGIC
+            && self.alignment_pow2 <= Self::MAX_ALIGNMENT_POW2
+            && (Self::MIN_PATH_SIZE..=Self::MAX_PATH_SIZE).contains(&self.path_size.get())
     }
 }
 
 impl Default for BaleEocd {
     /// Returns a `BaleEocd` with default settings (4096 alignment, 256 path size).
     fn default() -> Self {
-        let (major, minor, patch) = Self::CURRENT_VERSION;
-        Self {
-            magic: U32::new(Self::MAGIC),
-            version_major: major,
-            version_minor: minor,
-            version_patch: patch,
-            alignment_pow2: 12, // 2^12 = 4096
-            path_size: U16::new(256),
-            reserved: [0u8; Self::RESERVED_SIZE],
-        }
+        Self::new()
     }
 }
 
@@ -256,5 +287,76 @@ mod tests {
     fn path_size_boundaries_are_valid() {
         assert!(BaleEocd::new_with_options(4096, BaleEocd::MIN_PATH_SIZE).is_ok());
         assert!(BaleEocd::new_with_options(4096, BaleEocd::MAX_PATH_SIZE).is_ok());
+    }
+
+    /// Alignment exceeding 16 MB returns an error.
+    #[test]
+    fn alignment_too_large_returns_error() {
+        let too_large = 1u32 << 25; // 32 MB
+        let result = BaleEocd::new_with_options(too_large, 256);
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(n)) if n == too_large));
+    }
+
+    /// Alignment at max (16 MB) is valid.
+    #[test]
+    fn max_alignment_is_valid() {
+        let max_align = 1u32 << BaleEocd::MAX_ALIGNMENT_POW2;
+        assert!(BaleEocd::new_with_options(max_align, 256).is_ok());
+    }
+
+    // ==================== Malformed Input Tests ====================
+
+    /// Invalid magic signature fails is_valid().
+    #[test]
+    fn invalid_magic_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.magic = U32::new(0x12345678);
+        assert!(!bale.is_valid());
+    }
+
+    /// alignment_pow2 just over limit fails is_valid().
+    #[test]
+    fn alignment_pow2_over_limit_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.alignment_pow2 = BaleEocd::MAX_ALIGNMENT_POW2 + 1; // 25
+        assert!(!bale.is_valid());
+        // alignment() returns fallback value of 1.
+        assert_eq!(bale.alignment(), 1);
+    }
+
+    /// alignment_pow2 at max u8 fails is_valid().
+    #[test]
+    fn alignment_pow2_max_u8_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.alignment_pow2 = 255;
+        assert!(!bale.is_valid());
+        // alignment() returns fallback value of 1.
+        assert_eq!(bale.alignment(), 1);
+    }
+
+    /// path_size = 0 fails is_valid().
+    #[test]
+    fn path_size_zero_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.path_size = U16::new(0);
+        assert!(!bale.is_valid());
+    }
+
+    /// path_size above max fails is_valid().
+    #[test]
+    fn path_size_over_max_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.path_size = U16::new(3000);
+        assert!(!bale.is_valid());
+    }
+
+    /// Non-zero reserved bytes with valid fields still passes is_valid().
+    #[test]
+    fn nonzero_reserved_passes_validation() {
+        let mut bale = BaleEocd::new();
+        bale.reserved[0] = 0xFF;
+        bale.reserved[100] = 0xAB;
+        // is_valid() ignores reserved field for forward compatibility.
+        assert!(bale.is_valid());
     }
 }
