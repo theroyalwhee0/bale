@@ -55,9 +55,27 @@ impl ArchivePath {
         self.0.is_empty()
     }
 
+    /// Creates an `ArchivePath` from raw bytes without validation.
+    ///
+    /// Use this when reading paths from an existing archive. The bytes are stored
+    /// as-is and may contain:
+    /// - Non-UTF-8 sequences
+    /// - Backslashes (not converted to forward slashes)
+    /// - `..` or `.` components (not resolved)
+    /// - Leading or trailing slashes (not stripped)
+    ///
+    /// Paths created this way may compare differently than equivalent paths created
+    /// via [`TryFrom`], which normalizes the input. Use [`into_normalized`](Self::into_normalized)
+    /// to normalize an archive-read path for comparison. For user-supplied paths,
+    /// prefer the `TryFrom` implementations.
+    #[must_use]
+    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
+        Self(bytes.as_ref().to_vec())
+    }
+
     /// Consumes this path and returns a normalized version.
     ///
-    /// This is useful for paths created via [`From<Vec<u8>>`] that may contain
+    /// This is useful for paths created via [`from_bytes`](Self::from_bytes) that may contain
     /// backslashes, `..` components, or other non-normalized content. After
     /// normalization, the path can be compared with paths created via [`TryFrom`].
     ///
@@ -129,41 +147,17 @@ impl AsRef<[u8]> for ArchivePath {
     }
 }
 
-/// Creates an `ArchivePath` from raw bytes without validation.
-///
-/// Use this when reading paths from an existing archive. The bytes are stored
-/// as-is and may contain:
-/// - Non-UTF-8 sequences
-/// - Backslashes (not converted to forward slashes)
-/// - `..` or `.` components (not resolved)
-/// - Leading or trailing slashes (not stripped)
-///
-/// Paths created this way may compare differently than equivalent paths created
-/// via [`TryFrom`], which normalizes the input. Use [`ArchivePath::into_normalized`]
-/// to normalize an archive-read path for comparison. For user-supplied paths,
-/// prefer the `TryFrom` implementations.
+/// See [`ArchivePath::from_bytes`] for details.
 impl From<Vec<u8>> for ArchivePath {
     fn from(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
 }
 
-/// Creates an `ArchivePath` from raw bytes without validation.
-///
-/// Use this when reading paths from an existing archive. The bytes are stored
-/// as-is and may contain:
-/// - Non-UTF-8 sequences
-/// - Backslashes (not converted to forward slashes)
-/// - `..` or `.` components (not resolved)
-/// - Leading or trailing slashes (not stripped)
-///
-/// Paths created this way may compare differently than equivalent paths created
-/// via [`TryFrom`], which normalizes the input. Use [`ArchivePath::into_normalized`]
-/// to normalize an archive-read path for comparison. For user-supplied paths,
-/// prefer the `TryFrom` implementations.
+/// See [`ArchivePath::from_bytes`] for details.
 impl From<&[u8]> for ArchivePath {
     fn from(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
+        Self::from_bytes(bytes)
     }
 }
 
