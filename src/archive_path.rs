@@ -20,7 +20,7 @@ use crate::BaleError;
 /// # Construction
 ///
 /// - Use [`from_bytes`](Self::from_bytes) for zero-copy wrapping of archive data
-/// - Use `TryFrom<&str>`, `TryFrom<&Path>`, etc. for user input (normalizes, always owned)
+/// - Use [`TryFrom<&str>`], [`TryFrom<&Path>`], etc. for user input (normalizes, always owned)
 ///
 /// # Ordering
 ///
@@ -78,7 +78,7 @@ impl<'a> ArchivePath<'a> {
     /// Paths created this way may compare differently than equivalent paths created
     /// via [`TryFrom`], which normalizes the input. Use [`into_normalized`](Self::into_normalized)
     /// to normalize an archive-read path for comparison. For user-supplied paths,
-    /// prefer the `TryFrom` implementations.
+    /// prefer the [`TryFrom`] implementations.
     #[must_use]
     pub fn from_bytes(bytes: &'a [u8]) -> Self {
         Self(Cow::Borrowed(bytes))
@@ -277,8 +277,9 @@ impl From<ArchivePath<'_>> for Vec<u8> {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the path is empty or attempts
-/// to escape the archive root via `..` components.
+/// Returns `BaleError::InvalidPath` if the path is empty, contains
+/// whitespace-only components, or attempts to escape the archive root
+/// via `..` components.
 impl TryFrom<&str> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -291,8 +292,9 @@ impl TryFrom<&str> for ArchivePath<'static> {
 ///
 /// # Errors
 ///
-/// Returns `BaleError::InvalidPath` if the path is empty or attempts
-/// to escape the archive root via `..` components.
+/// Returns `BaleError::InvalidPath` if the path is empty, contains
+/// whitespace-only components, or attempts to escape the archive root
+/// via `..` components.
 impl TryFrom<String> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -306,7 +308,8 @@ impl TryFrom<String> for ArchivePath<'static> {
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
-/// is empty, or attempts to escape the archive root via `..` components.
+/// is empty, contains whitespace-only components, or attempts to escape
+/// the archive root via `..` components.
 impl TryFrom<&Path> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -321,7 +324,8 @@ impl TryFrom<&Path> for ArchivePath<'static> {
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the path is not valid UTF-8,
-/// is empty, or attempts to escape the archive root via `..` components.
+/// is empty, contains whitespace-only components, or attempts to escape
+/// the archive root via `..` components.
 impl TryFrom<PathBuf> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -335,7 +339,8 @@ impl TryFrom<PathBuf> for ArchivePath<'static> {
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
-/// is empty, or attempts to escape the archive root via `..` components.
+/// is empty, contains whitespace-only components, or attempts to escape
+/// the archive root via `..` components.
 impl TryFrom<&OsStr> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -349,7 +354,8 @@ impl TryFrom<&OsStr> for ArchivePath<'static> {
 /// # Errors
 ///
 /// Returns `BaleError::InvalidPath` if the string is not valid UTF-8,
-/// is empty, or attempts to escape the archive root via `..` components.
+/// is empty, contains whitespace-only components, or attempts to escape
+/// the archive root via `..` components.
 impl TryFrom<OsString> for ArchivePath<'static> {
     type Error = BaleError;
 
@@ -562,6 +568,18 @@ mod tests {
         prop::collection::vec(valid_component(), 1..=5).prop_map(|components| components.join("/"))
     }
 
+    /// Strategy for valid path component that may contain interior spaces.
+    fn component_with_spaces() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,19}"
+            .prop_filter("must not be whitespace-only", |s| !s.trim().is_empty())
+    }
+
+    /// Strategy for paths with components that may contain interior spaces.
+    fn path_with_spaces() -> impl Strategy<Value = String> {
+        prop::collection::vec(component_with_spaces(), 1..=5)
+            .prop_map(|components| components.join("/"))
+    }
+
     proptest! {
         /// Valid paths are accepted and produce non-empty results.
         #[test]
@@ -678,6 +696,17 @@ mod tests {
             prop_assert!(ArchivePath::try_from(OsStr::new(&path)).is_ok());
             // OsString
             prop_assert!(ArchivePath::try_from(OsString::from(&path)).is_ok());
+        }
+
+        /// Components with interior spaces are accepted.
+        #[test]
+        fn interior_spaces_accepted(path in path_with_spaces()) {
+            let result = ArchivePath::try_from(path.as_str());
+            prop_assert!(result.is_ok(), "path with interior spaces rejected: {:?}", path);
+            let archive_path = result.unwrap();
+            // Outer path is trimmed, but interior spaces should be preserved.
+            // Compare against trimmed input since normalize_bytes trims the outer path.
+            prop_assert_eq!(archive_path.as_str().unwrap(), path.trim());
         }
     }
 }
