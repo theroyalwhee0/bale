@@ -22,6 +22,12 @@ use crate::BaleError;
 /// - Use [`from_bytes`](Self::from_bytes) for zero-copy wrapping of archive data
 /// - Use `TryFrom<&str>`, `TryFrom<&Path>`, etc. for user input (normalizes, always owned)
 ///
+/// # Ordering
+///
+/// The `Ord` implementation compares bytes lexicographically (ASCII order).
+/// This means uppercase letters sort before lowercase (`"A/b"` < `"a/b"`).
+/// Ordering is case-sensitive and not locale-aware.
+///
 /// # Display
 ///
 /// The `Display` implementation uses lossy UTF-8 conversion, replacing invalid
