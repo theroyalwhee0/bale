@@ -56,7 +56,7 @@ impl BaleEocd {
     pub const MAX_PATH_SIZE: u16 = 2048;
 
     /// Maximum alignment power (2^24 = 16 MB).
-    pub(crate) const MAX_ALIGNMENT_POW2: u8 = 24;
+    pub const MAX_ALIGNMENT_POW2: u8 = 24;
 
     /// Default alignment power (2^12 = 4096 bytes).
     pub const DEFAULT_ALIGNMENT_POW2: u8 = 12;
@@ -132,6 +132,9 @@ impl BaleEocd {
     ///
     /// Returns `None` if `alignment_pow2` exceeds [`MAX_ALIGNMENT_POW2`](Self::MAX_ALIGNMENT_POW2).
     /// Note: `alignment_pow2 = 0` is valid and returns `Some(1)` (no alignment).
+    ///
+    /// This check is also covered by [`is_valid()`](Self::is_valid), so callers who
+    /// validate first can safely unwrap.
     #[must_use]
     pub const fn alignment(&self) -> Option<u32> {
         if self.alignment_pow2 > Self::MAX_ALIGNMENT_POW2 {
@@ -161,6 +164,8 @@ impl BaleEocd {
     ///
     /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
     /// silently ignored for forward compatibility with future format extensions.
+    ///
+    /// For error propagation, use [`validated()`](Self::validated) instead.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
         let path_size = self.path_size.get();
@@ -168,6 +173,22 @@ impl BaleEocd {
             && self.alignment_pow2 <= Self::MAX_ALIGNMENT_POW2
             && path_size >= Self::MIN_PATH_SIZE
             && path_size <= Self::MAX_PATH_SIZE
+    }
+
+    /// Validates the structure and returns a reference or an error.
+    ///
+    /// This is a convenience wrapper around [`is_valid()`](Self::is_valid) for
+    /// use with the `?` operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::Corrupted` if any validation check fails.
+    pub fn validated(&self) -> Result<&Self, BaleError> {
+        if self.is_valid() {
+            Ok(self)
+        } else {
+            Err(BaleError::Corrupted("invalid BaleEocd header".into()))
+        }
     }
 }
 
@@ -385,5 +406,20 @@ mod tests {
         bale.reserved[100] = 0xAB;
         // is_valid() ignores reserved field for forward compatibility.
         assert!(bale.is_valid());
+    }
+
+    /// validated() returns Ok for valid headers.
+    #[test]
+    fn validated_returns_ok_for_valid() {
+        let bale = BaleEocd::new();
+        assert!(bale.validated().is_ok());
+    }
+
+    /// validated() returns Err for invalid headers.
+    #[test]
+    fn validated_returns_err_for_invalid() {
+        let mut bale = BaleEocd::new();
+        bale.magic = U32::new(0x12345678);
+        assert!(bale.validated().is_err());
     }
 }
