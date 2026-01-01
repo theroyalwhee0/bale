@@ -17,8 +17,11 @@ pub fn run(
     for file in files {
         let name = file.file_name().unwrap_or(file.as_os_str());
         let dest = Path::new(prefix).join(name);
-        let archive_path = ArchivePath::try_from_path(&dest)?;
-        writer.add_file(file, archive_path.as_str())?;
+        let archive_path = ArchivePath::try_from(dest)?;
+        writer.add_file(
+            file,
+            archive_path.as_str().expect("path validated as UTF-8"),
+        )?;
     }
 
     writer.sync()?;
