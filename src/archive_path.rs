@@ -55,6 +55,23 @@ impl ArchivePath {
         self.0.is_empty()
     }
 
+    /// Consumes this path and returns a normalized version.
+    ///
+    /// This is useful for paths created via [`From<Vec<u8>>`] that may contain
+    /// backslashes, `..` components, or other non-normalized content. After
+    /// normalization, the path can be compared with paths created via [`TryFrom`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidPath` if:
+    /// - The path is not valid UTF-8
+    /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
+    /// - The path is empty after normalization
+    pub fn into_normalized(self) -> Result<ArchivePath, BaleError> {
+        let s = self.as_str().ok_or(BaleError::InvalidPath)?;
+        Ok(Self(Self::normalize_str(s)?))
+    }
+
     /// Normalizes a path string for archive storage.
     ///
     /// - Trims leading/trailing whitespace from the entire path
@@ -72,10 +89,10 @@ impl ArchivePath {
     /// Returns `BaleError::InvalidPath` if:
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
-    fn normalize(path: &str) -> Result<Vec<u8>, BaleError> {
+    fn normalize_str(path: impl AsRef<str>) -> Result<Vec<u8>, BaleError> {
         let mut components: Vec<&str> = Vec::new();
 
-        for part in path.trim().split(['/', '\\']) {
+        for part in path.as_ref().trim().split(['/', '\\']) {
             match part {
                 "" | "." => {}
                 ".." => {
@@ -122,8 +139,9 @@ impl AsRef<[u8]> for ArchivePath {
 /// - Leading or trailing slashes (not stripped)
 ///
 /// Paths created this way may compare differently than equivalent paths created
-/// via [`TryFrom`], which normalizes the input. For user-supplied paths, prefer
-/// the `TryFrom` implementations.
+/// via [`TryFrom`], which normalizes the input. Use [`ArchivePath::into_normalized`]
+/// to normalize an archive-read path for comparison. For user-supplied paths,
+/// prefer the `TryFrom` implementations.
 impl From<Vec<u8>> for ArchivePath {
     fn from(bytes: Vec<u8>) -> Self {
         Self(bytes)
@@ -140,8 +158,9 @@ impl From<Vec<u8>> for ArchivePath {
 /// - Leading or trailing slashes (not stripped)
 ///
 /// Paths created this way may compare differently than equivalent paths created
-/// via [`TryFrom`], which normalizes the input. For user-supplied paths, prefer
-/// the `TryFrom` implementations.
+/// via [`TryFrom`], which normalizes the input. Use [`ArchivePath::into_normalized`]
+/// to normalize an archive-read path for comparison. For user-supplied paths,
+/// prefer the `TryFrom` implementations.
 impl From<&[u8]> for ArchivePath {
     fn from(bytes: &[u8]) -> Self {
         Self(bytes.to_vec())
@@ -165,7 +184,7 @@ impl TryFrom<&str> for ArchivePath {
     type Error = BaleError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize(s)?))
+        Ok(Self(Self::normalize_str(s)?))
     }
 }
 
@@ -179,7 +198,7 @@ impl TryFrom<String> for ArchivePath {
     type Error = BaleError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize(&s)?))
+        Ok(Self(Self::normalize_str(&s)?))
     }
 }
 
@@ -194,7 +213,7 @@ impl TryFrom<&Path> for ArchivePath {
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let s = path.to_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Self::normalize(s)?))
+        Ok(Self(Self::normalize_str(s)?))
     }
 }
 
@@ -274,6 +293,24 @@ mod tests {
         let path = ArchivePath::from(b"foo/bar".to_vec());
         assert_eq!(path.as_str(), Some("foo/bar"));
         assert_eq!(path.as_bytes(), b"foo/bar");
+    }
+
+    /// into_normalized normalizes a raw-bytes path for comparison.
+    #[test]
+    fn into_normalized_works() {
+        let raw = ArchivePath::from(b"foo\\bar/../baz".to_vec());
+        let user = ArchivePath::try_from("foo/baz").unwrap();
+        // Before normalization, they differ
+        assert_ne!(raw, user);
+        // After normalization, they match
+        assert_eq!(raw.into_normalized().unwrap(), user);
+    }
+
+    /// into_normalized rejects invalid UTF-8.
+    #[test]
+    fn into_normalized_rejects_invalid_utf8() {
+        let path = ArchivePath::from(vec![0xFF, 0xFE]);
+        assert!(path.into_normalized().is_err());
     }
 
     /// Invalid UTF-8 bytes return None from as_str but display lossily.
