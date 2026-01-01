@@ -38,13 +38,18 @@ impl ArchivePath {
         &self.0
     }
 
-    /// Returns the length in bytes.
+    /// Returns the length of the path in bytes.
+    ///
+    /// This is the byte length, not the number of path components or characters.
     #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Returns true if the path is empty.
+    /// Returns true if the path has zero bytes.
+    ///
+    /// Note: Paths created via [`TryFrom`] are never empty (empty paths are rejected).
+    /// This can only be true for paths created via [`From<Vec<u8>>`] with an empty vector.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -52,12 +57,15 @@ impl ArchivePath {
 
     /// Normalizes a path string for archive storage.
     ///
-    /// - Trims leading/trailing whitespace
+    /// - Trims leading/trailing whitespace from the entire path
     /// - Converts backslashes to forward slashes
     /// - Removes `.` components
     /// - Resolves `..` components (errors if escaping root)
     /// - Removes leading/trailing slashes
     /// - Collapses multiple slashes
+    ///
+    /// Whitespace within path components is preserved (spaces in filenames are valid).
+    /// For example, `"foo/ bar /baz"` normalizes to `"foo/ bar /baz"`.
     ///
     /// # Errors
     ///
@@ -88,12 +96,40 @@ impl ArchivePath {
 
         Ok(components.join("/").into_bytes())
     }
+
+    /// Returns a displayable wrapper that avoids allocation for valid UTF-8 paths.
+    ///
+    /// For paths that are valid UTF-8, this writes directly without copying.
+    /// For paths with invalid UTF-8, this falls back to lossy conversion.
+    #[must_use]
+    pub fn display(&self) -> Display<'_> {
+        Display(self)
+    }
+}
+
+/// A wrapper for displaying an [`ArchivePath`] efficiently.
+///
+/// This type avoids allocation when the path is valid UTF-8, falling back to
+/// lossy conversion only when necessary.
+///
+/// Created by [`ArchivePath::display`].
+pub struct Display<'a>(&'a ArchivePath);
+
+impl fmt::Display for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.as_str() {
+            Some(s) => f.write_str(s),
+            None => write!(f, "{}", String::from_utf8_lossy(&self.0.0)),
+        }
+    }
 }
 
 /// Displays the path, using lossy UTF-8 conversion for invalid bytes.
+///
+/// This delegates to [`Display`] which avoids allocation for valid UTF-8 paths.
 impl fmt::Display for ArchivePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(&self.0))
+        fmt::Display::fmt(&self.display(), f)
     }
 }
 
@@ -106,7 +142,16 @@ impl AsRef<[u8]> for ArchivePath {
 
 /// Creates an `ArchivePath` from raw bytes without validation.
 ///
-/// Use this when reading paths from an existing archive.
+/// Use this when reading paths from an existing archive. The bytes are stored
+/// as-is and may contain:
+/// - Non-UTF-8 sequences
+/// - Backslashes (not converted to forward slashes)
+/// - `..` or `.` components (not resolved)
+/// - Leading or trailing slashes (not stripped)
+///
+/// Paths created this way may compare differently than equivalent paths created
+/// via [`TryFrom`], which normalizes the input. For user-supplied paths, prefer
+/// the `TryFrom` implementations.
 impl From<Vec<u8>> for ArchivePath {
     fn from(bytes: Vec<u8>) -> Self {
         Self(bytes)
@@ -115,7 +160,16 @@ impl From<Vec<u8>> for ArchivePath {
 
 /// Creates an `ArchivePath` from raw bytes without validation.
 ///
-/// Use this when reading paths from an existing archive.
+/// Use this when reading paths from an existing archive. The bytes are stored
+/// as-is and may contain:
+/// - Non-UTF-8 sequences
+/// - Backslashes (not converted to forward slashes)
+/// - `..` or `.` components (not resolved)
+/// - Leading or trailing slashes (not stripped)
+///
+/// Paths created this way may compare differently than equivalent paths created
+/// via [`TryFrom`], which normalizes the input. For user-supplied paths, prefer
+/// the `TryFrom` implementations.
 impl From<&[u8]> for ArchivePath {
     fn from(bytes: &[u8]) -> Self {
         Self(bytes.to_vec())
@@ -233,6 +287,13 @@ mod tests {
     fn dotdot_resolves_parent() {
         let path = ArchivePath::try_from("foo/bar/../baz").unwrap();
         assert_eq!(path.as_str(), Some("foo/baz"));
+    }
+
+    /// Mixed slashes are normalized before resolving dot-dot.
+    #[test]
+    fn mixed_slashes_with_dotdot() {
+        let path = ArchivePath::try_from("foo/bar\\baz/../qux").unwrap();
+        assert_eq!(path.as_str(), Some("foo/bar/qux"));
     }
 
     /// Raw bytes can be used to create an ArchivePath (no validation).
