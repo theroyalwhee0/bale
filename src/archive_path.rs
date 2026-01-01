@@ -109,7 +109,9 @@ impl<'a> ArchivePath<'a> {
     /// - The path is empty after normalization
     pub fn normalize(&self) -> Result<ArchivePath<'static>, BaleError> {
         let s = self.as_str().ok_or(BaleError::InvalidPath)?;
-        Ok(ArchivePath(Self::normalize_bytes(s)?))
+        Ok(ArchivePath(Cow::Owned(
+            Self::normalize_bytes(s)?.into_owned(),
+        )))
     }
 
     /// Consumes this path and returns a normalized, owned version.
@@ -139,15 +141,25 @@ impl<'a> ArchivePath<'a> {
     /// Whitespace within path components is preserved (spaces in filenames are valid).
     /// For example, `"foo/ bar /baz"` normalizes to `"foo/ bar /baz"`.
     ///
+    /// Returns a borrowed slice if the path is already normalized, avoiding allocation.
+    ///
     /// # Errors
     ///
     /// Returns `BaleError::InvalidPath` if:
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
-    fn normalize_bytes(path: impl AsRef<str>) -> Result<Cow<'static, [u8]>, BaleError> {
+    fn normalize_bytes(path: &str) -> Result<Cow<'_, [u8]>, BaleError> {
+        let trimmed = path.trim();
+
+        // Fast path: check if already normalized.
+        if Self::is_normalized(trimmed) {
+            return Ok(Cow::Borrowed(trimmed.as_bytes()));
+        }
+
+        // Slow path: build normalized version.
         let mut components: Vec<&str> = Vec::new();
 
-        for part in path.as_ref().trim().split(['/', '\\']) {
+        for part in trimmed.split(['/', '\\']) {
             match part {
                 "" | "." => {}
                 ".." => {
@@ -167,6 +179,41 @@ impl<'a> ArchivePath<'a> {
         }
 
         Ok(Cow::Owned(components.join("/").into_bytes()))
+    }
+
+    /// Checks if a path string is already in normalized form.
+    ///
+    /// A normalized path has:
+    /// - No backslashes
+    /// - No leading or trailing slashes
+    /// - No consecutive slashes
+    /// - No `.` or `..` components
+    /// - At least one component
+    fn is_normalized(path: &str) -> bool {
+        // Must not be empty.
+        if path.is_empty() {
+            return false;
+        }
+
+        // No backslashes.
+        if path.contains('\\') {
+            return false;
+        }
+
+        // No leading or trailing slashes.
+        if path.starts_with('/') || path.ends_with('/') {
+            return false;
+        }
+
+        // Check each component.
+        for component in path.split('/') {
+            // No empty components (consecutive slashes) or special components.
+            if component.is_empty() || component == "." || component == ".." {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -226,7 +273,7 @@ impl TryFrom<&str> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize_bytes(s)?))
+        Ok(Self(Cow::Owned(Self::normalize_bytes(s)?.into_owned())))
     }
 }
 
@@ -240,7 +287,7 @@ impl TryFrom<String> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Ok(Self(Self::normalize_bytes(&s)?))
+        Ok(Self(Cow::Owned(Self::normalize_bytes(&s)?.into_owned())))
     }
 }
 
@@ -255,7 +302,7 @@ impl TryFrom<&Path> for ArchivePath<'static> {
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let s = path.to_str().ok_or(BaleError::InvalidPath)?;
-        Ok(Self(Self::normalize_bytes(s)?))
+        Ok(Self(Cow::Owned(Self::normalize_bytes(s)?.into_owned())))
     }
 }
 
@@ -366,6 +413,53 @@ mod tests {
         assert_ne!(raw, user);
         // After normalization, they match
         assert_eq!(raw.into_normalized().unwrap(), user);
+    }
+
+    /// is_normalized returns true for already-normalized paths.
+    #[test]
+    fn is_normalized_detects_normalized() {
+        assert!(ArchivePath::is_normalized("foo"));
+        assert!(ArchivePath::is_normalized("foo/bar"));
+        assert!(ArchivePath::is_normalized("foo/bar/baz"));
+        assert!(ArchivePath::is_normalized("a/b/c/d/e"));
+    }
+
+    /// is_normalized returns false for paths needing normalization.
+    #[test]
+    fn is_normalized_detects_unnormalized() {
+        // Backslashes
+        assert!(!ArchivePath::is_normalized("foo\\bar"));
+        // Leading slash
+        assert!(!ArchivePath::is_normalized("/foo"));
+        // Trailing slash
+        assert!(!ArchivePath::is_normalized("foo/"));
+        // Consecutive slashes
+        assert!(!ArchivePath::is_normalized("foo//bar"));
+        // Dot component
+        assert!(!ArchivePath::is_normalized("foo/./bar"));
+        // Dot-dot component
+        assert!(!ArchivePath::is_normalized("foo/../bar"));
+        // Empty
+        assert!(!ArchivePath::is_normalized(""));
+    }
+
+    /// normalize_bytes returns borrowed for already-normalized paths.
+    #[test]
+    fn normalize_bytes_borrows_when_unchanged() {
+        let input = "foo/bar/baz";
+        let result = ArchivePath::normalize_bytes(input).unwrap();
+        // Should be borrowed, not owned
+        assert!(matches!(result, Cow::Borrowed(_)));
+        // Should point to the input's bytes
+        assert!(std::ptr::eq(result.as_ref().as_ptr(), input.as_ptr()));
+    }
+
+    /// normalize_bytes returns owned for paths needing changes.
+    #[test]
+    fn normalize_bytes_copies_when_changed() {
+        let result = ArchivePath::normalize_bytes("foo\\bar").unwrap();
+        assert!(matches!(result, Cow::Owned(_)));
+        assert_eq!(result.as_ref(), b"foo/bar");
     }
 
     /// into_normalized rejects invalid UTF-8.
