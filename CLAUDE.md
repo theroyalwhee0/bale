@@ -133,6 +133,8 @@ cargo test               # Test (alternative)
 cargo clippy             # Lint
 cargo fmt                # Format
 git precommit --all      # Run all checks
+cargo-coverage --overview       # Coverage summary
+cargo-coverage <file>...        # Coverage for specific files
 ```
 
 ## Testing
@@ -184,17 +186,17 @@ Expected output goes in matching `.stdout` files.
 ├─────────────────────────────────────┤
 │ Central Directory Headers           │ ← Fixed stride entries
 ├─────────────────────────────────────┤
-│ [ZIP64 EOCD Record - if needed]     │ ← Optional, for large archives
-│ [ZIP64 EOCD Locator - if needed]    │
-├─────────────────────────────────────┤
-│ EOCD (22 bytes) + BaleEocd (234 b)  │ ← 256-byte trailer
+│ ZIP64 EOCD (56 bytes)               │ ← Always present
+│ ZIP64 EOCD Locator (20 bytes)       │
+│ EOCD (22 bytes)                     │
+│ BaleEocd (158 bytes)                │ ← 256-byte trailer total
 └─────────────────────────────────────┘
 ```
 
 ### BaleEocd (EOCD Comment)
 
-234-byte structure stored as the EOCD comment field. Combined with the 22-byte
-EOCD, the total trailer is exactly 256 bytes for efficient single-read access.
+158-byte structure stored as the EOCD comment field. Combined with ZIP64 EOCD
+(56), ZIP64 Locator (20), and EOCD (22), the trailer is exactly 256 bytes.
 
 | Offset | Size | Field                                   |
 | ------ | ---- | --------------------------------------- |
@@ -204,12 +206,12 @@ EOCD, the total trailer is exactly 256 bytes for efficient single-read access.
 | 6      | 1    | Patch version                           |
 | 7      | 1    | Alignment power (2^N, e.g., 12 = 4096)  |
 | 8      | 2    | Path size (1-2048, little-endian)       |
-| 10     | 224  | Reserved (zeros)                        |
+| 10     | 148  | Reserved (zeros)                        |
 
 ### ZIP64 Compatibility
 
-ZIP64 structures are placed *before* the standard EOCD, so the comment field
-remains available at the end of the archive. The BaleMetadata comment is valid
-for both standard and ZIP64 archives.
+ZIP64 structures are always present to maintain a fixed 256-byte trailer size.
+The ZIP64 EOCD Locator must be exactly 20 bytes, positioned immediately before
+the EOCD (required by ZIP tools that search backward from EOCD).
 
 Reference: [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)
