@@ -10,6 +10,8 @@ use std::path::Path;
 /// This struct provides zero-copy access to archive contents by memory-mapping
 /// the underlying file. A shared lock is held on the file for the lifetime of
 /// this struct, allowing multiple concurrent readers while preventing writers.
+///
+/// The lock is automatically released when this struct is dropped.
 pub struct MappedArchive {
     /// The underlying file handle (kept open to maintain the lock).
     #[allow(dead_code)]
@@ -70,7 +72,18 @@ impl MappedArchive {
 ///
 /// This struct provides mutable access to archive contents via memory-mapping.
 /// An exclusive lock is held on the file for the lifetime of this struct,
-/// preventing other readers and writers.
+/// preventing other readers and writers. The lock is automatically released
+/// when this struct is dropped.
+///
+/// # Important: Call `sync()` before dropping
+///
+/// The file may be pre-allocated beyond the logical content length. Callers
+/// **must** call [`sync()`](Self::sync) before dropping to truncate the file
+/// to its logical length. Failure to do so leaves the file at the pre-allocated
+/// size with undefined content beyond the logical data.
+///
+/// There is no `Drop` implementation that calls `sync()` because `Drop` cannot
+/// propagate errors. The caller is responsible for explicit synchronization.
 pub struct MappedArchiveMut {
     /// The underlying file handle (kept open to maintain the lock).
     file: File,
@@ -86,9 +99,13 @@ impl MappedArchiveMut {
 
     /// Creates a new empty archive file with pre-allocated space.
     ///
+    /// Fails if the file already exists to prevent accidental overwrites.
+    /// Use [`open()`](Self::open) to modify an existing file.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The file already exists
     /// - The file cannot be created
     /// - The exclusive lock cannot be acquired
     /// - Memory mapping fails
@@ -98,9 +115,13 @@ impl MappedArchiveMut {
 
     /// Creates a new empty archive file with specified initial capacity.
     ///
+    /// Fails if the file already exists to prevent accidental overwrites.
+    /// Use [`open()`](Self::open) to modify an existing file.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The file already exists
     /// - The file cannot be created
     /// - The exclusive lock cannot be acquired
     /// - Memory mapping fails
@@ -122,6 +143,12 @@ impl MappedArchiveMut {
     }
 
     /// Opens an existing archive file for read-write access.
+    ///
+    /// The logical length is set to the current file size. If a previous session
+    /// called [`reserve()`](Self::reserve) but crashed before [`sync()`](Self::sync),
+    /// the file may contain pre-allocated zeros beyond the actual content. The
+    /// caller is responsible for validating content or using a higher-level API
+    /// (like `ArchiveWriter`) that stores the logical length in the archive trailer.
     ///
     /// # Errors
     ///
@@ -190,6 +217,9 @@ impl MappedArchiveMut {
     }
 
     /// Resizes the underlying file and remaps.
+    ///
+    /// This only changes the file capacity, not the logical length (`len`).
+    /// The caller (typically `reserve`) is responsible for managing `len`.
     fn resize_file(&mut self, new_capacity: usize) -> Result<(), BaleError> {
         // Flush before resizing.
         self.mmap.flush()?;
