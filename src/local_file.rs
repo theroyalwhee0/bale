@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn roundtrip() {
         const FILE_SIZE: u32 = 1024;
-        const TEST_CRC: u32 = 0xDEADBEEF;
+        const TEST_CRC: u32 = 0xD87F7E0C; // crc32(b"test")
         const TEST_DATE: u16 = 0x58CF; // 2024-06-15
         const TEST_TIME: u16 = 0x6955; // 13:10:42
 
