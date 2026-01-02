@@ -2,7 +2,7 @@
 
 use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive,
-    Zip64Eocd, Zip64EocdLocator,
+    Zip64Eocd, parse_trailer,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -46,61 +46,15 @@ impl ArchiveReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let mmap = MappedArchive::open(path)?;
 
-        // Parse and validate trailer, extracting owned copies.
-        let (zip64_eocd, eocd, bale_eocd) = Self::parse_trailer(&mmap)?;
+        // Parse and validate trailer.
+        let trailer = parse_trailer(mmap.as_bytes())?;
 
         Ok(Self {
             mmap,
-            zip64_eocd,
-            eocd,
-            bale_eocd,
+            zip64_eocd: trailer.zip64_eocd,
+            eocd: trailer.eocd,
+            bale_eocd: trailer.bale_eocd,
         })
-    }
-
-    /// Parses and validates the trailer, returning owned copies of structures.
-    ///
-    /// The trailer layout is: ZIP64 EOCD (64) + Locator (32) + EOCD (22) + BaleEocd (138) = 256 bytes.
-    fn parse_trailer(mmap: &MappedArchive) -> Result<(Zip64Eocd, Eocd, BaleEocd), BaleError> {
-        let bytes = mmap.as_bytes();
-
-        // Check minimum size.
-        if bytes.len() < BaleEocd::COMBINED_SIZE {
-            return Err(BaleError::TooSmall {
-                size: bytes.len() as u64,
-                minimum: BaleEocd::COMBINED_SIZE as u64,
-            });
-        }
-
-        // Parse trailer from the last 256 bytes.
-        let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
-        let trailer = &bytes[trailer_start..];
-
-        // Parse ZIP64 EOCD (first 64 bytes of trailer).
-        let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
-            .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
-        zip64_eocd.validated()?;
-
-        // Parse ZIP64 EOCD Locator (next 32 bytes).
-        let locator_start = Zip64Eocd::SIZE;
-        let zip64_locator = Zip64EocdLocator::ref_from_bytes(
-            &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
-        )
-        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
-        zip64_locator.validated()?;
-
-        // Parse EOCD (next 22 bytes).
-        let eocd_start = locator_start + Zip64EocdLocator::SIZE;
-        let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
-            .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
-        eocd.validated()?;
-
-        // Parse BaleEocd (final 138 bytes).
-        let bale_start = eocd_start + Eocd::SIZE;
-        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
-            .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
-        bale_eocd.validated()?;
-
-        Ok((*zip64_eocd, *eocd, *bale_eocd))
     }
 
     /// Returns the number of entries in the archive.

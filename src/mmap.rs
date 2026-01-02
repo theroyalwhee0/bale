@@ -79,11 +79,21 @@ impl MappedArchive {
 ///
 /// The file may be pre-allocated beyond the logical content length. When this
 /// struct is dropped, [`sync()`](Self::sync) is called automatically to truncate
-/// the file to its logical length. However, any errors during sync are silently
+/// the file to its committed length. However, any errors during sync are silently
 /// ignored since `Drop` cannot propagate errors.
 ///
 /// For proper error handling, call [`sync()`](Self::sync) explicitly before
 /// dropping and handle the `Result`.
+///
+/// # Logical vs committed length
+///
+/// This struct tracks two lengths:
+/// - **Logical length** ([`len()`](Self::len)): The current write position, used
+///   by [`extend()`](Self::extend) and [`as_bytes()`](Self::as_bytes).
+/// - **Committed length**: The file size to preserve on disk, set by
+///   [`sync()`](Self::sync). On drop, the file is truncated to
+///   `max(len, committed_len)` to preserve synced content even if the logical
+///   length was later reduced for overwriting.
 pub struct MappedArchiveMut {
     /// The underlying file handle (kept open to maintain the lock).
     file: File,
@@ -91,6 +101,8 @@ pub struct MappedArchiveMut {
     mmap: memmap2::MmapMut,
     /// Current logical length (may be less than capacity due to pre-allocation).
     len: usize,
+    /// Committed file length to preserve on drop.
+    committed_len: usize,
 }
 
 impl MappedArchiveMut {
@@ -139,7 +151,12 @@ impl MappedArchiveMut {
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-        Ok(Self { file, mmap, len: 0 })
+        Ok(Self {
+            file,
+            mmap,
+            len: 0,
+            committed_len: 0,
+        })
     }
 
     /// Opens an existing archive file for read-write access.
@@ -166,7 +183,12 @@ impl MappedArchiveMut {
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-        Ok(Self { file, mmap, len })
+        Ok(Self {
+            file,
+            mmap,
+            len,
+            committed_len: len,
+        })
     }
 
     /// Returns the logical length of the archive in bytes.
@@ -260,14 +282,29 @@ impl MappedArchiveMut {
         Ok(())
     }
 
-    /// Flushes changes to disk and truncates file to logical length.
+    /// Flushes changes to disk and truncates file to committed length.
+    ///
+    /// The file is truncated to `max(len, committed_len)` to preserve any
+    /// previously synced content, even if the logical length was reduced
+    /// for overwriting. After truncating, the mmap is remapped to match
+    /// the new file size.
     ///
     /// # Errors
     ///
-    /// Returns an error if flushing or truncating fails.
+    /// Returns an error if flushing, truncating, or remapping fails.
     pub fn sync(&mut self) -> Result<(), BaleError> {
+        // Preserve the larger of logical length and committed length.
+        // This ensures previously synced content isn't lost when len is
+        // temporarily reduced (e.g., for overwriting a central directory).
+        let file_len = self.len.max(self.committed_len);
         self.mmap.flush()?;
-        self.file.set_len(self.len as u64)?;
+        self.file.set_len(file_len as u64)?;
+        self.committed_len = file_len;
+        // Remap to match new file size so capacity() is accurate.
+        // SAFETY: We hold an exclusive lock on the file.
+        #[allow(unsafe_code)]
+        let new_mmap = unsafe { memmap2::MmapMut::map_mut(&self.file)? };
+        self.mmap = new_mmap;
         Ok(())
     }
 }

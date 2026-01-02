@@ -2,12 +2,18 @@
 
 use crate::{
     BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
-    MappedArchiveMut, Zip64Eocd, Zip64EocdLocator,
+    MappedArchiveMut, Zip64Eocd, Zip64EocdLocator, parse_trailer,
 };
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use zerocopy::{FromBytes, IntoBytes};
+
+/// Pre-allocated zero buffer for padding (avoids allocation for common cases).
+///
+/// Sized to match the default alignment (4096 bytes). For larger alignments,
+/// padding is written in chunks from this buffer.
+static ZERO_PAD: [u8; 4096] = [0u8; 4096];
 
 /// An in-memory Central Directory entry.
 ///
@@ -39,6 +45,8 @@ pub struct ArchiveWriter {
     bale_eocd: BaleEocd,
     /// Current write offset (end of file data).
     write_offset: usize,
+    /// Whether the archive has been modified since the last sync.
+    dirty: bool,
 }
 
 impl ArchiveWriter {
@@ -82,6 +90,7 @@ impl ArchiveWriter {
             entries: Vec::new(),
             bale_eocd,
             write_offset: 0,
+            dirty: true, // New archive needs initial sync to write trailer.
         })
     }
 
@@ -99,43 +108,10 @@ impl ArchiveWriter {
         let mmap = MappedArchiveMut::open(path)?;
         let bytes = mmap.as_bytes();
 
-        // Parse trailer (last 256 bytes: ZIP64 EOCD + Locator + EOCD + BaleEocd).
-        if bytes.len() < BaleEocd::COMBINED_SIZE {
-            return Err(BaleError::TooSmall {
-                size: bytes.len() as u64,
-                minimum: BaleEocd::COMBINED_SIZE as u64,
-            });
-        }
-
-        let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
-        let trailer = &bytes[trailer_start..];
-
-        // Parse ZIP64 EOCD (first 64 bytes of trailer).
-        let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
-            .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
-        zip64_eocd.validated()?;
-
-        // Parse ZIP64 EOCD Locator (next 32 bytes).
-        let locator_start = Zip64Eocd::SIZE;
-        let zip64_locator = Zip64EocdLocator::ref_from_bytes(
-            &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
-        )
-        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
-        zip64_locator.validated()?;
-
-        // Parse EOCD (next 22 bytes).
-        let eocd_start = locator_start + Zip64EocdLocator::SIZE;
-        let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
-            .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
-        eocd.validated()?;
-
-        // Parse BaleEocd (final 138 bytes).
-        let bale_start = eocd_start + Eocd::SIZE;
-        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
-            .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
-        bale_eocd.validated()?;
-
-        let bale_eocd = *bale_eocd;
+        // Parse and validate trailer.
+        let trailer = parse_trailer(bytes)?;
+        let bale_eocd = trailer.bale_eocd;
+        let zip64_eocd = trailer.zip64_eocd;
         let path_size = bale_eocd.path_size() as usize;
 
         // Use ZIP64 values as authoritative source.
@@ -174,6 +150,7 @@ impl ArchiveWriter {
             entries,
             bale_eocd,
             write_offset,
+            dirty: false, // Existing archive is already synced.
         })
     }
 
@@ -218,6 +195,8 @@ impl ArchiveWriter {
     ///
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
+    /// - The data size exceeds 4GB (ZIP format limitation)
+    /// - The archive offset would exceed 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     pub fn add_entry(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError> {
         let path_bytes = path.as_bytes();
@@ -231,6 +210,27 @@ impl ArchiveWriter {
         let alignment = self.alignment() as usize;
         let local_header_stride = LocalFileHeader::stride(path_size);
         let data_size = data.len();
+
+        // Validate data size fits in u32 (ZIP format limitation).
+        let data_size_u32: u32 = data_size.try_into().map_err(|_| {
+            BaleError::SizeOverflow(format!(
+                "data size {} exceeds maximum of {} bytes",
+                data_size,
+                u32::MAX
+            ))
+        })?;
+
+        // Record the local header offset before writing.
+        let local_offset = self.write_offset;
+
+        // Validate offset fits in u32 (ZIP format limitation).
+        let local_offset_u32: u32 = local_offset.try_into().map_err(|_| {
+            BaleError::SizeOverflow(format!(
+                "archive offset {} exceeds maximum of {} bytes",
+                local_offset,
+                u32::MAX
+            ))
+        })?;
 
         // Calculate aligned entry size: header + path + data + padding.
         let unaligned_size = local_header_stride + data_size;
@@ -250,29 +250,30 @@ impl ArchiveWriter {
         // Get current time.
         let mtime = DosDateTime::from(std::time::SystemTime::now());
 
-        // Record the local header offset before writing.
-        let local_offset = self.write_offset;
-
         // Build local file header.
-        let local_header = LocalFileHeader::new(data_size as u32, crc, mtime, path_size as u16);
+        let local_header = LocalFileHeader::new(data_size_u32, crc, mtime, path_size as u16);
 
         // Write to mmap: header + path + data + padding.
         self.mmap.extend(local_header.as_bytes())?;
         self.mmap.extend(&padded_path)?;
         self.mmap.extend(data)?;
-        if padding > 0 {
-            let zeros = vec![0u8; padding];
-            self.mmap.extend(&zeros)?;
+
+        // Write padding using static buffer (no allocation for common cases).
+        let mut remaining = padding;
+        while remaining > 0 {
+            let chunk = remaining.min(ZERO_PAD.len());
+            self.mmap.extend(&ZERO_PAD[..chunk])?;
+            remaining -= chunk;
         }
 
         self.write_offset += aligned_size;
 
         // Build Central Directory entry.
         let cd_header = CentralDirectoryHeader::new(
-            data_size as u32,
+            data_size_u32,
             crc,
             mtime,
-            local_offset as u32,
+            local_offset_u32,
             mode,
             path_size as u16,
         );
@@ -282,10 +283,17 @@ impl ArchiveWriter {
             path: padded_path,
         });
 
+        self.dirty = true;
         Ok(())
     }
 
     /// Adds a file from the filesystem to the archive.
+    ///
+    /// # Memory usage
+    ///
+    /// This method reads the entire file into memory before writing to the
+    /// archive. For very large files, consider using [`add_entry()`](Self::add_entry)
+    /// with a streaming approach, or ensure sufficient memory is available.
     ///
     /// # Arguments
     ///
@@ -297,6 +305,7 @@ impl ArchiveWriter {
     /// Returns an error if:
     /// - The source file cannot be read
     /// - The archive path exceeds path_size
+    /// - The file size exceeds 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     pub fn add_file(&mut self, src: impl AsRef<Path>, archive_path: &str) -> Result<(), BaleError> {
         let src = src.as_ref();
@@ -323,12 +332,13 @@ impl ArchiveWriter {
         self.add_entry(archive_path, &data, mode)
     }
 
-    /// Deletes an entry by path.
+    /// Deletes all entries matching a path.
     ///
-    /// Removes the entry from the Central Directory. The file data remains
+    /// Removes all matching entries from the Central Directory. If duplicate
+    /// entries exist (from shadowing), all are removed. The file data remains
     /// in the archive (orphaned) until a compact operation.
     ///
-    /// Returns `true` if an entry was deleted, `false` if not found.
+    /// Returns `true` if any entries were deleted, `false` if none matched.
     ///
     /// # Arguments
     ///
@@ -341,7 +351,7 @@ impl ArchiveWriter {
             return false;
         }
 
-        // Find and remove matching entries (last match for shadowing).
+        // Find and remove matching entries.
         let initial_len = self.entries.len();
         self.entries.retain(|entry| {
             // Check if path matches (with null padding).
@@ -349,7 +359,11 @@ impl ArchiveWriter {
                 && entry.path[path_bytes.len()..].iter().all(|&b| b == 0))
         });
 
-        self.entries.len() < initial_len
+        let deleted = self.entries.len() < initial_len;
+        if deleted {
+            self.dirty = true;
+        }
+        deleted
     }
 
     /// Flushes all changes to disk.
@@ -358,10 +372,16 @@ impl ArchiveWriter {
     /// Locator, EOCD, and BaleEocd). The CD starts at an aligned offset for
     /// efficient mmap access. The file is truncated to the logical size.
     ///
+    /// If no changes have been made since the last sync, this is a no-op.
+    ///
     /// # Errors
     ///
     /// Returns an error if writing or syncing fails.
     pub fn sync(&mut self) -> Result<(), BaleError> {
+        if !self.dirty {
+            return Ok(());
+        }
+
         let path_size = self.path_size();
         let cd_stride = CentralDirectoryHeader::stride(path_size);
 
@@ -432,7 +452,14 @@ impl ArchiveWriter {
         bytes[offset..offset + BaleEocd::SIZE].copy_from_slice(self.bale_eocd.as_bytes());
 
         // Sync to disk.
-        self.mmap.sync()
+        self.mmap.sync()?;
+
+        // Reset mmap length to write_offset so subsequent add_entry calls
+        // overwrite the CD correctly. The CD will be rewritten on next sync.
+        self.mmap.set_len(self.write_offset)?;
+
+        self.dirty = false;
+        Ok(())
     }
 }
 
@@ -633,5 +660,36 @@ mod tests {
         let entry = reader.find_entry("source.txt").unwrap();
         let data = reader.read_data(entry).unwrap();
         assert_eq!(data, b"file contents");
+    }
+
+    /// Adding entries after sync works correctly (same writer instance).
+    #[test]
+    fn add_after_sync() {
+        use crate::ArchiveReader;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+
+            // First add-sync cycle.
+            writer.add_entry("first.txt", b"first", 0o644).unwrap();
+            writer.sync().unwrap();
+
+            // Second add-sync cycle on same writer.
+            writer.add_entry("second.txt", b"second", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Verify both entries are readable.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 2);
+
+        let first = reader.find_entry("first.txt").unwrap();
+        assert_eq!(reader.read_data(first).unwrap(), b"first");
+
+        let second = reader.find_entry("second.txt").unwrap();
+        assert_eq!(reader.read_data(second).unwrap(), b"second");
     }
 }

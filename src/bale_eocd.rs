@@ -219,6 +219,78 @@ impl Default for BaleEocd {
     }
 }
 
+/// Parsed trailer components returned by [`parse_trailer`].
+#[derive(Debug, Clone, Copy)]
+pub struct ParsedTrailer {
+    /// ZIP64 End of Central Directory record.
+    pub zip64_eocd: Zip64Eocd,
+    /// Standard End of Central Directory record.
+    pub eocd: Eocd,
+    /// Bale-specific EOCD extension.
+    pub bale_eocd: BaleEocd,
+}
+
+/// Parses and validates the 256-byte trailer from archive bytes.
+///
+/// The trailer layout is:
+/// - ZIP64 EOCD (56 bytes)
+/// - ZIP64 EOCD Locator (20 bytes)
+/// - EOCD (22 bytes)
+/// - BaleEocd (158 bytes)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The archive is too small to contain a trailer
+/// - Any signature is invalid
+/// - Any structure fails validation
+pub fn parse_trailer(bytes: &[u8]) -> Result<ParsedTrailer, BaleError> {
+    use zerocopy::FromBytes;
+
+    // Check minimum size.
+    if bytes.len() < BaleEocd::COMBINED_SIZE {
+        return Err(BaleError::TooSmall {
+            size: bytes.len() as u64,
+            minimum: BaleEocd::COMBINED_SIZE as u64,
+        });
+    }
+
+    // Parse trailer from the last 256 bytes.
+    let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
+    let trailer = &bytes[trailer_start..];
+
+    // Parse ZIP64 EOCD (first 56 bytes of trailer).
+    let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
+        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
+    zip64_eocd.validated()?;
+
+    // Parse ZIP64 EOCD Locator (next 20 bytes).
+    let locator_start = Zip64Eocd::SIZE;
+    let zip64_locator = Zip64EocdLocator::ref_from_bytes(
+        &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
+    )
+    .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
+    zip64_locator.validated()?;
+
+    // Parse EOCD (next 22 bytes).
+    let eocd_start = locator_start + Zip64EocdLocator::SIZE;
+    let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
+        .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
+    eocd.validated()?;
+
+    // Parse BaleEocd (final 158 bytes).
+    let bale_start = eocd_start + Eocd::SIZE;
+    let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
+        .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
+    bale_eocd.validated()?;
+
+    Ok(ParsedTrailer {
+        zip64_eocd: *zip64_eocd,
+        eocd: *eocd,
+        bale_eocd: *bale_eocd,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

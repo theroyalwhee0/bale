@@ -31,7 +31,7 @@ mod zip64_eocd;
 mod zip64_eocd_locator;
 
 pub use archive_path::ArchivePath;
-pub use bale_eocd::BaleEocd;
+pub use bale_eocd::{BaleEocd, ParsedTrailer, parse_trailer};
 pub use central_dir::CentralDirectoryHeader;
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use dos_time::DosDateTime;

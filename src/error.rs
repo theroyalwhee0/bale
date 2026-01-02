@@ -57,4 +57,8 @@ pub enum BaleError {
     /// Invalid DOS date/time value.
     #[error("invalid DOS date/time: {0}")]
     InvalidDosDateTime(String),
+
+    /// Size exceeds ZIP format limits.
+    #[error("size overflow: {0}")]
+    SizeOverflow(String),
 }
