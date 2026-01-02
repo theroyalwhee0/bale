@@ -110,8 +110,18 @@ impl BaleEocd {
     /// - Returns `BaleError::InvalidPathSize` if `path_size` is not in range 1..=2048.
     pub fn new_with_options(alignment: u32, path_size: u16) -> Result<Self, BaleError> {
         let max_alignment = 1u32 << Self::MAX_ALIGNMENT_POW2;
-        if !alignment.is_power_of_two() || alignment > max_alignment {
-            return Err(BaleError::InvalidAlignment(alignment));
+        if alignment == 0 {
+            return Err(BaleError::InvalidAlignment("0 is not a power of 2".into()));
+        }
+        if !alignment.is_power_of_two() {
+            return Err(BaleError::InvalidAlignment(format!(
+                "{alignment} is not a power of 2"
+            )));
+        }
+        if alignment > max_alignment {
+            return Err(BaleError::InvalidAlignment(format!(
+                "{alignment} exceeds maximum of {max_alignment}"
+            )));
         }
         if !(Self::MIN_PATH_SIZE..=Self::MAX_PATH_SIZE).contains(&path_size) {
             return Err(BaleError::InvalidPathSize(path_size));
@@ -142,9 +152,11 @@ impl BaleEocd {
     /// who validate first can safely unwrap.
     pub fn alignment(&self) -> Result<u32, BaleError> {
         if self.alignment_pow2 > Self::MAX_ALIGNMENT_POW2 {
-            return Err(BaleError::InvalidAlignment(
-                1u32.wrapping_shl(u32::from(self.alignment_pow2)),
-            ));
+            return Err(BaleError::InvalidAlignment(format!(
+                "2^{} exceeds maximum of 2^{}",
+                self.alignment_pow2,
+                Self::MAX_ALIGNMENT_POW2
+            )));
         }
         Ok(1 << self.alignment_pow2)
     }
@@ -315,14 +327,14 @@ mod tests {
     #[test]
     fn invalid_alignment_returns_error() {
         let result = BaleEocd::new_with_options(1000, 256);
-        assert!(matches!(result, Err(BaleError::InvalidAlignment(1000))));
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("1000")));
     }
 
     /// Zero alignment returns an error.
     #[test]
     fn zero_alignment_returns_error() {
         let result = BaleEocd::new_with_options(0, 256);
-        assert!(matches!(result, Err(BaleError::InvalidAlignment(0))));
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("0")));
     }
 
     /// Zero path size returns an error.
@@ -352,7 +364,7 @@ mod tests {
     fn alignment_too_large_returns_error() {
         let too_large = 1u32 << 25; // 32 MB
         let result = BaleEocd::new_with_options(too_large, 256);
-        assert!(matches!(result, Err(BaleError::InvalidAlignment(n)) if n == too_large));
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("exceeds")));
     }
 
     /// Alignment at max (16 MB) is valid.

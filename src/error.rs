@@ -25,9 +25,9 @@ pub enum BaleError {
         max: usize,
     },
 
-    /// Alignment is not a power of 2.
-    #[error("invalid alignment: {0} is not a power of 2")]
-    InvalidAlignment(u32),
+    /// Invalid alignment value.
+    #[error("invalid alignment: {0}")]
+    InvalidAlignment(String),
 
     /// Path size is outside valid range (1-2048).
     #[error("invalid path size: {0} is not in range 1..=2048")]
