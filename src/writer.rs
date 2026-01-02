@@ -1,8 +1,8 @@
 //! Append-only archive writer using memory-mapped I/O.
 
 use crate::{
-    BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
-    MappedArchiveMut, Zip64Eocd, Zip64EocdLocator, parse_trailer,
+    BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, LocalFileHeader, MappedArchiveMut,
+    Trailer,
 };
 use std::fs::File;
 use std::io::Read;
@@ -109,14 +109,13 @@ impl ArchiveWriter {
         let bytes = mmap.as_bytes();
 
         // Parse and validate trailer.
-        let trailer = parse_trailer(bytes)?;
+        let trailer = Trailer::from_archive_bytes(bytes)?;
         let bale_eocd = trailer.bale_eocd;
-        let zip64_eocd = trailer.zip64_eocd;
-        let path_size = bale_eocd.path_size() as usize;
+        let path_size = trailer.path_size() as usize;
 
-        // Use ZIP64 values as authoritative source.
-        let cd_offset = zip64_eocd.cd_offset() as usize;
-        let entry_count = zip64_eocd.cd_entries() as usize;
+        // Use convenience methods which resolve ZIP64 overflow markers.
+        let cd_offset = trailer.cd_offset() as usize;
+        let entry_count = trailer.entry_count() as usize;
         let stride = CentralDirectoryHeader::stride(path_size);
 
         // Parse Central Directory entries.
@@ -412,44 +411,16 @@ impl ArchiveWriter {
             offset += cd_stride;
         }
 
-        // Write ZIP64 EOCD.
+        // Write trailer (ZIP64 EOCD + Locator + EOCD + BaleEocd).
         let zip64_eocd_offset = offset;
-        let zip64_eocd = Zip64Eocd::new(entry_count, cd_size as u64, cd_offset as u64);
-        bytes[offset..offset + Zip64Eocd::SIZE].copy_from_slice(zip64_eocd.as_bytes());
-        offset += Zip64Eocd::SIZE;
-
-        // Write ZIP64 EOCD Locator.
-        let zip64_locator = Zip64EocdLocator::new(zip64_eocd_offset as u64);
-        bytes[offset..offset + Zip64EocdLocator::SIZE].copy_from_slice(zip64_locator.as_bytes());
-        offset += Zip64EocdLocator::SIZE;
-
-        // Write EOCD with overflow markers if values exceed limits.
-        let eocd_entries = if entry_count > u64::from(u16::MAX) {
-            u16::MAX
-        } else {
-            entry_count as u16
-        };
-        let eocd_cd_size = if cd_size > u32::MAX as usize {
-            u32::MAX
-        } else {
-            cd_size as u32
-        };
-        let eocd_cd_offset = if cd_offset > u32::MAX as usize {
-            u32::MAX
-        } else {
-            cd_offset as u32
-        };
-        let eocd = Eocd::new_with_comment(
-            eocd_entries,
-            eocd_cd_size,
-            eocd_cd_offset,
-            BaleEocd::SIZE as u16,
+        let trailer = Trailer::new(
+            entry_count,
+            cd_size as u64,
+            cd_offset as u64,
+            zip64_eocd_offset as u64,
+            self.bale_eocd,
         );
-        bytes[offset..offset + Eocd::SIZE].copy_from_slice(eocd.as_bytes());
-        offset += Eocd::SIZE;
-
-        // Write BaleEocd.
-        bytes[offset..offset + BaleEocd::SIZE].copy_from_slice(self.bale_eocd.as_bytes());
+        bytes[offset..offset + Trailer::SIZE].copy_from_slice(&trailer.to_bytes());
 
         // Sync to disk.
         self.mmap.sync()?;

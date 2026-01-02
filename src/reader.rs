@@ -2,7 +2,7 @@
 
 use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive,
-    Zip64Eocd, parse_trailer,
+    Trailer, Zip64Eocd,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -26,12 +26,8 @@ use zerocopy::FromBytes;
 pub struct ArchiveReader {
     /// The memory-mapped archive.
     mmap: MappedArchive,
-    /// Parsed ZIP64 EOCD from the trailer (authoritative source for CD values).
-    zip64_eocd: Zip64Eocd,
-    /// Parsed EOCD from the trailer.
-    eocd: Eocd,
-    /// Parsed BaleEocd from the trailer.
-    bale_eocd: BaleEocd,
+    /// Parsed trailer containing all end-of-archive structures.
+    trailer: Trailer,
 }
 
 impl ArchiveReader {
@@ -47,26 +43,21 @@ impl ArchiveReader {
         let mmap = MappedArchive::open(path)?;
 
         // Parse and validate trailer.
-        let trailer = parse_trailer(mmap.as_bytes())?;
+        let trailer = Trailer::from_archive_bytes(mmap.as_bytes())?;
 
-        Ok(Self {
-            mmap,
-            zip64_eocd: trailer.zip64_eocd,
-            eocd: trailer.eocd,
-            bale_eocd: trailer.bale_eocd,
-        })
+        Ok(Self { mmap, trailer })
     }
 
     /// Returns the number of entries in the archive.
     #[must_use]
     pub fn entry_count(&self) -> usize {
-        self.zip64_eocd.cd_entries() as usize
+        self.trailer.entry_count() as usize
     }
 
     /// Returns the configured path size for this archive.
     #[must_use]
     pub fn path_size(&self) -> usize {
-        self.bale_eocd.path_size() as usize
+        self.trailer.path_size() as usize
     }
 
     /// Returns the configured alignment for this archive.
@@ -77,7 +68,7 @@ impl ArchiveReader {
     /// opened via [`open()`](Self::open) since validation occurs on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment().expect("alignment_pow2 invalid")
+        self.trailer.alignment()
     }
 
     /// Returns the raw bytes for a Central Directory entry at the given index.
@@ -90,7 +81,7 @@ impl ArchiveReader {
         }
 
         let bytes = self.mmap.as_bytes();
-        let cd_offset = self.zip64_eocd.cd_offset() as usize;
+        let cd_offset = self.trailer.cd_offset() as usize;
         let stride = CentralDirectoryHeader::stride(self.path_size());
 
         // Use checked arithmetic to prevent overflow on malicious archives.
@@ -203,22 +194,28 @@ impl ArchiveReader {
         Ok(&bytes[data_start..data_end])
     }
 
+    /// Returns a reference to the parsed trailer.
+    #[must_use]
+    pub fn trailer(&self) -> &Trailer {
+        &self.trailer
+    }
+
     /// Returns a reference to the ZIP64 EOCD.
     #[must_use]
     pub fn zip64_eocd(&self) -> &Zip64Eocd {
-        &self.zip64_eocd
+        &self.trailer.zip64_eocd
     }
 
     /// Returns a reference to the EOCD.
     #[must_use]
     pub fn eocd(&self) -> &Eocd {
-        &self.eocd
+        &self.trailer.eocd
     }
 
     /// Returns a reference to the BaleEocd.
     #[must_use]
     pub fn bale_eocd(&self) -> &BaleEocd {
-        &self.bale_eocd
+        &self.trailer.bale_eocd
     }
 
     /// Verifies the CRC-32 checksum for an entry.
@@ -311,7 +308,7 @@ impl ArchiveReader {
         let path_size = self.path_size();
         let alignment = self.alignment() as usize;
         let local_header_stride = LocalFileHeader::stride(path_size);
-        let cd_offset = self.zip64_eocd.cd_offset() as usize;
+        let cd_offset = self.trailer.cd_offset() as usize;
 
         let mut expected_offset: usize = 0;
 

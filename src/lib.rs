@@ -5,16 +5,12 @@
 
 /// Validated, normalized paths within a bale archive.
 mod archive_path;
-/// Bale-specific EOCD extension.
-mod bale_eocd;
 /// Central Directory Header for ZIP entries.
 mod central_dir;
 /// Archive compaction.
 mod compact;
 /// MS-DOS date/time format for ZIP archives.
 mod dos_time;
-/// End of Central Directory record.
-mod eocd;
 /// Error types for bale operations.
 mod error;
 /// Local File Header for ZIP entries.
@@ -23,23 +19,18 @@ mod local_file;
 mod mmap;
 /// Zero-copy archive reader.
 mod reader;
+/// Unified archive tail (trailer) structures.
+pub mod tail;
 /// Append-only archive writer.
 mod writer;
-/// ZIP64 End of Central Directory record.
-mod zip64_eocd;
-/// ZIP64 End of Central Directory Locator.
-mod zip64_eocd_locator;
 
 pub use archive_path::ArchivePath;
-pub use bale_eocd::{BaleEocd, ParsedTrailer, parse_trailer};
 pub use central_dir::CentralDirectoryHeader;
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use dos_time::DosDateTime;
-pub use eocd::Eocd;
 pub use error::BaleError;
 pub use local_file::LocalFileHeader;
 pub use mmap::{MappedArchive, MappedArchiveMut};
 pub use reader::ArchiveReader;
+pub use tail::{BaleEocd, Eocd, Trailer, Zip64Eocd, Zip64EocdLocator};
 pub use writer::ArchiveWriter;
-pub use zip64_eocd::Zip64Eocd;
-pub use zip64_eocd_locator::Zip64EocdLocator;
