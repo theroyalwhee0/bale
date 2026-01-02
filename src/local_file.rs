@@ -135,8 +135,8 @@ mod tests {
     fn roundtrip() {
         const FILE_SIZE: u32 = 1024;
         const TEST_CRC: u32 = 0xDEADBEEF;
-        const TEST_DATE: u16 = 0x58CF;
-        const TEST_TIME: u16 = 0x6955;
+        const TEST_DATE: u16 = 0x58CF; // 2024-06-15
+        const TEST_TIME: u16 = 0x6955; // 13:10:42
 
         let mtime = DosDateTime::from_date_time_parts(TEST_DATE, TEST_TIME);
         let header = LocalFileHeader::new(FILE_SIZE, TEST_CRC, mtime, BaleEocd::DEFAULT_PATH_SIZE);

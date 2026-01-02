@@ -197,8 +197,10 @@ mod tests {
         const FILE_SIZE: u32 = 1024;
         const TEST_CRC: u32 = 0xDEADBEEF;
         const LOCAL_OFFSET: u32 = 4096;
+        const TEST_DATE: u16 = 0x58CF; // 2024-06-15
+        const TEST_TIME: u16 = 0x6955; // 13:10:42
 
-        let mtime = DosDateTime::from_date_time_parts(0x58CF, 0x6955);
+        let mtime = DosDateTime::from_date_time_parts(TEST_DATE, TEST_TIME);
         let header = CentralDirectoryHeader::new(
             FILE_SIZE,
             TEST_CRC,
