@@ -1,9 +1,40 @@
 //! Archive compaction to reclaim space from orphaned data.
 
-use crate::{ArchiveReader, ArchiveWriter, BaleError};
+use crate::{ArchivePath, ArchiveReader, ArchiveWriter, BaleError};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Guard that deletes a temp file on drop unless marked to persist.
+struct TempFileGuard {
+    /// Path to the temp file.
+    path: PathBuf,
+    /// If true, the file is kept (renamed to final destination).
+    persist: bool,
+}
+
+impl TempFileGuard {
+    /// Creates a guard for the given path.
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            persist: false,
+        }
+    }
+
+    /// Marks the file to be persisted (not deleted on drop).
+    fn persist(&mut self) {
+        self.persist = true;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if !self.persist {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
 
 /// Statistics from a compact operation.
 #[derive(Debug, Clone, Copy, Default)]
@@ -57,7 +88,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
         let trimmed: Vec<u8> = path_bytes.iter().copied().take_while(|&b| b != 0).collect();
 
         // Track all entries, we'll deduplicate later by keeping last occurrence.
-        entries_to_copy.push((header, path_bytes.to_vec(), trimmed.clone()));
+        entries_to_copy.push((header, path_bytes.to_vec(), trimmed));
     }
 
     // Deduplicate: reverse, keep first of each path, reverse back.
@@ -77,6 +108,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
     let entries_removed = total_entries - final_entries.len();
 
     // Create temp file in same directory (for atomic rename).
+    // TempFileGuard ensures cleanup on error.
     let parent = path.parent().unwrap_or(Path::new("."));
     let temp_path = parent.join(format!(
         ".{}.compact.tmp",
@@ -84,6 +116,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
             .and_then(|s| s.to_str())
             .unwrap_or("archive")
     ));
+    let mut guard = TempFileGuard::new(temp_path.clone());
 
     // Write compacted archive.
     {
@@ -93,18 +126,14 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
             // Read the data from the original archive.
             let data = reader.read_data(header)?;
 
-            // Get the path as a string (trimmed).
-            let path_str: String = path_bytes
-                .iter()
-                .copied()
-                .take_while(|&b| b != 0)
-                .map(|b| b as char)
-                .collect();
+            // Get the path as a validated UTF-8 string.
+            let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
+            let path_str = archive_path.to_str_checked()?;
 
             // Get mode from external attributes.
             let mode = header.external_attrs.get() >> 16;
 
-            writer.add_entry(&path_str, data, mode)?;
+            writer.add_entry(path_str, data, mode)?;
         }
 
         writer.sync()?;
@@ -115,6 +144,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
 
     // Atomic rename.
     fs::rename(&temp_path, path)?;
+    guard.persist();
 
     Ok(CompactStats {
         original_size,
@@ -159,8 +189,9 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     // First pass: count occurrences of each path.
     let mut path_counts: HashMap<String, usize> = HashMap::new();
     for (_header, path_bytes) in reader.iter_entries() {
-        let path_str = bytes_to_path_string(path_bytes);
-        *path_counts.entry(path_str).or_insert(0) += 1;
+        let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
+        let path_str = archive_path.to_str_checked()?;
+        *path_counts.entry(path_str.to_owned()).or_insert(0) += 1;
     }
 
     // Check if there are any duplicates.
@@ -176,7 +207,8 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     let mut renames: Vec<(String, String)> = Vec::new();
 
     for (header, path_bytes) in reader.iter_entries() {
-        let original_path = bytes_to_path_string(path_bytes);
+        let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
+        let original_path = archive_path.to_str_checked()?.to_owned();
         let total_count = path_counts[&original_path];
         let occurrence = {
             let entry = path_occurrences.entry(original_path.clone()).or_insert(0);
@@ -187,9 +219,19 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
         // Determine the new path name.
         let new_path = if total_count > 1 && occurrence < total_count {
             // This is a duplicate that's not the last occurrence - rename it.
-            let renamed = insert_suffix(&original_path, occurrence);
-            renames.push((original_path, renamed.clone()));
-            renamed
+            let renamed = archive_path.with_suffix(occurrence)?;
+
+            // Verify renamed path fits within path_size.
+            if renamed.len() > path_size as usize {
+                return Err(BaleError::PathTooLong {
+                    path: renamed.to_string(),
+                    max: path_size as usize,
+                });
+            }
+
+            let renamed_str = renamed.to_string();
+            renames.push((original_path, renamed_str.clone()));
+            renamed_str
         } else {
             // Either not a duplicate, or it's the last occurrence - keep original.
             original_path
@@ -202,6 +244,7 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Create temp file in same directory (for atomic rename).
+    // TempFileGuard ensures cleanup on error.
     let parent = path.parent().unwrap_or(Path::new("."));
     let temp_path = parent.join(format!(
         ".{}.rename.tmp",
@@ -209,6 +252,7 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
             .and_then(|s| s.to_str())
             .unwrap_or("archive")
     ));
+    let mut guard = TempFileGuard::new(temp_path.clone());
 
     // Write archive with renamed entries.
     {
@@ -225,38 +269,12 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
 
     // Atomic rename.
     fs::rename(&temp_path, path)?;
+    guard.persist();
 
     Ok(RenameStats {
         entries_renamed: renames.len(),
         renames,
     })
-}
-
-/// Inserts a numeric suffix before the file extension.
-///
-/// Examples:
-/// - `file.txt` + 1 → `file(1).txt`
-/// - `archive.tar.gz` + 2 → `archive.tar(2).gz`
-/// - `noext` + 3 → `noext(3)`
-fn insert_suffix(path: &str, number: usize) -> String {
-    if let Some(dot_pos) = path.rfind('.') {
-        // Has extension: insert suffix before the last dot.
-        let (stem, ext) = path.split_at(dot_pos);
-        format!("{}({}){}", stem, number, ext)
-    } else {
-        // No extension: append suffix at the end.
-        format!("{}({})", path, number)
-    }
-}
-
-/// Converts path bytes to a trimmed string.
-fn bytes_to_path_string(path_bytes: &[u8]) -> String {
-    path_bytes
-        .iter()
-        .copied()
-        .take_while(|&b| b != 0)
-        .map(|b| b as char)
-        .collect()
 }
 
 #[cfg(test)]
@@ -336,11 +354,10 @@ mod tests {
         let paths: Vec<String> = reader
             .iter_entries()
             .map(|(_, p)| {
-                p.iter()
-                    .copied()
-                    .take_while(|&b| b != 0)
-                    .map(|b| b as char)
-                    .collect()
+                ArchivePath::from_null_padded_bytes(p)
+                    .to_str_checked()
+                    .unwrap()
+                    .to_owned()
             })
             .collect();
 
@@ -373,16 +390,49 @@ mod tests {
     /// Insert suffix before file extension.
     #[test]
     fn insert_suffix_with_extension() {
-        assert_eq!(insert_suffix("file.txt", 1), "file(1).txt");
-        assert_eq!(insert_suffix("image.png", 2), "image(2).png");
-        assert_eq!(insert_suffix("archive.tar.gz", 3), "archive.tar(3).gz");
+        let path = ArchivePath::from_bytes(b"file.txt");
+        assert_eq!(path.with_suffix(1).unwrap().as_str(), Some("file(1).txt"));
+
+        let path = ArchivePath::from_bytes(b"image.png");
+        assert_eq!(path.with_suffix(2).unwrap().as_str(), Some("image(2).png"));
+
+        let path = ArchivePath::from_bytes(b"archive.tar.gz");
+        assert_eq!(
+            path.with_suffix(3).unwrap().as_str(),
+            Some("archive.tar(3).gz")
+        );
     }
 
     /// Insert suffix for files without extension.
     #[test]
     fn insert_suffix_no_extension() {
-        assert_eq!(insert_suffix("README", 1), "README(1)");
-        assert_eq!(insert_suffix("Makefile", 5), "Makefile(5)");
+        let path = ArchivePath::from_bytes(b"README");
+        assert_eq!(path.with_suffix(1).unwrap().as_str(), Some("README(1)"));
+
+        let path = ArchivePath::from_bytes(b"Makefile");
+        assert_eq!(path.with_suffix(5).unwrap().as_str(), Some("Makefile(5)"));
+    }
+
+    /// Insert suffix handles directories with dots correctly.
+    #[test]
+    fn insert_suffix_directory_with_dot() {
+        // Directory has a dot, but file has no extension.
+        let path = ArchivePath::from_bytes(b"foo.d/bar");
+        assert_eq!(path.with_suffix(1).unwrap().as_str(), Some("foo.d/bar(1)"));
+
+        // Directory has a dot, file has extension.
+        let path = ArchivePath::from_bytes(b"foo.d/bar.txt");
+        assert_eq!(
+            path.with_suffix(2).unwrap().as_str(),
+            Some("foo.d/bar(2).txt")
+        );
+
+        // Nested directories with dots.
+        let path = ArchivePath::from_bytes(b"a.b/c.d/file.ext");
+        assert_eq!(
+            path.with_suffix(3).unwrap().as_str(),
+            Some("a.b/c.d/file(3).ext")
+        );
     }
 
     /// Rename duplicates on archive with no duplicates does nothing.
@@ -476,7 +526,12 @@ mod tests {
         let reader = ArchiveReader::open(&path).unwrap();
         let paths: Vec<String> = reader
             .iter_entries()
-            .map(|(_, p)| bytes_to_path_string(p))
+            .map(|(_, p)| {
+                ArchivePath::from_null_padded_bytes(p)
+                    .to_str_checked()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
 
         assert_eq!(paths, vec!["a.txt", "z(1).txt", "z.txt"]);

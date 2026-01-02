@@ -6,6 +6,12 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 ///
 /// This structure precedes each file's data in the archive.
 /// For bale archives, the filename is always `path_size` bytes (null-padded).
+///
+/// # Layout
+///
+/// Uses `#[repr(C)]` with `Unaligned` because all fields are zerocopy
+/// little-endian types (`U16`, `U32`), which are 1-byte aligned. ZIP headers
+/// can appear at any byte offset in an archive, so unaligned access is required.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct LocalFileHeader {
@@ -47,9 +53,11 @@ impl LocalFileHeader {
     const COMPRESSION_STORE: u16 = 0;
 
     /// Returns the total stride (header + filename) for a given path size.
+    ///
+    /// Uses saturating addition to avoid overflow on pathological inputs.
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
-        Self::SIZE + path_size
+        Self::SIZE.saturating_add(path_size)
     }
 
     /// Creates a new `LocalFileHeader` for an uncompressed file.
@@ -81,6 +89,10 @@ impl LocalFileHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BaleEocd;
+
+    /// Test path size (smaller than default for variety).
+    const TEST_PATH_SIZE: u16 = 128;
 
     /// The fixed header portion is exactly 30 bytes per ZIP spec.
     #[test]
@@ -91,34 +103,52 @@ mod tests {
         );
     }
 
-    /// Stride includes header (30) plus filename field.
+    /// Stride includes header plus filename field.
     #[test]
     fn stride_is_header_plus_path() {
-        assert_eq!(LocalFileHeader::stride(256), 30 + 256);
-        assert_eq!(LocalFileHeader::stride(128), 30 + 128);
+        let default_path = BaleEocd::DEFAULT_PATH_SIZE as usize;
+        let test_path = TEST_PATH_SIZE as usize;
+        assert_eq!(
+            LocalFileHeader::stride(default_path),
+            LocalFileHeader::SIZE + default_path
+        );
+        assert_eq!(
+            LocalFileHeader::stride(test_path),
+            LocalFileHeader::SIZE + test_path
+        );
     }
 
     /// New headers must have the correct ZIP signature.
     #[test]
     fn new_header_has_correct_signature() {
-        let header = LocalFileHeader::new(100, 0x12345678, DosDateTime::default(), 256);
+        let header = LocalFileHeader::new(
+            100,
+            0x12345678,
+            DosDateTime::default(),
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
         assert_eq!(header.signature.get(), LocalFileHeader::SIGNATURE);
     }
 
     /// Header can be serialized and deserialized without data loss.
     #[test]
     fn roundtrip() {
-        let mtime = DosDateTime::new(0x58CF, 0x6955);
-        let header = LocalFileHeader::new(1024, 0xDEADBEEF, mtime, 256);
+        const FILE_SIZE: u32 = 1024;
+        const TEST_CRC: u32 = 0xD87F7E0C; // crc32(b"test")
+        const TEST_DATE: u16 = 0x58CF; // 2024-06-15
+        const TEST_TIME: u16 = 0x6955; // 13:10:42
+
+        let mtime = DosDateTime::from_date_time_parts(TEST_DATE, TEST_TIME);
+        let header = LocalFileHeader::new(FILE_SIZE, TEST_CRC, mtime, BaleEocd::DEFAULT_PATH_SIZE);
         let bytes = header.as_bytes();
         assert_eq!(bytes.len(), LocalFileHeader::SIZE);
 
         let restored = LocalFileHeader::ref_from_bytes(bytes).unwrap();
         assert_eq!(restored.signature.get(), LocalFileHeader::SIGNATURE);
-        assert_eq!(restored.uncompressed_size.get(), 1024);
-        assert_eq!(restored.crc32.get(), 0xDEADBEEF);
-        assert_eq!(restored.mod_date.get(), 0x58CF);
-        assert_eq!(restored.mod_time.get(), 0x6955);
-        assert_eq!(restored.filename_length.get(), 256);
+        assert_eq!(restored.uncompressed_size.get(), FILE_SIZE);
+        assert_eq!(restored.crc32.get(), TEST_CRC);
+        assert_eq!(restored.mod_date.get(), TEST_DATE);
+        assert_eq!(restored.mod_time.get(), TEST_TIME);
+        assert_eq!(restored.filename_length.get(), BaleEocd::DEFAULT_PATH_SIZE);
     }
 }

@@ -1,1 +1,2 @@
 error: Archive contains orphaned data (run 'bale compact' to reclaim)
+error: check failed: 1 issue(s) found

@@ -25,9 +25,13 @@ mod mmap;
 mod reader;
 /// Append-only archive writer.
 mod writer;
+/// ZIP64 End of Central Directory record.
+mod zip64_eocd;
+/// ZIP64 End of Central Directory Locator.
+mod zip64_eocd_locator;
 
 pub use archive_path::ArchivePath;
-pub use bale_eocd::BaleEocd;
+pub use bale_eocd::{BaleEocd, ParsedTrailer, parse_trailer};
 pub use central_dir::CentralDirectoryHeader;
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use dos_time::DosDateTime;
@@ -37,3 +41,5 @@ pub use local_file::LocalFileHeader;
 pub use mmap::{MappedArchive, MappedArchiveMut};
 pub use reader::ArchiveReader;
 pub use writer::ArchiveWriter;
+pub use zip64_eocd::Zip64Eocd;
+pub use zip64_eocd_locator::Zip64EocdLocator;

@@ -12,4 +12,7 @@ pub enum BaleCliError {
     /// I/O error.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// Archive check found issues.
+    #[error("check failed: {0} issue(s) found")]
+    CheckFailed(usize),
 }

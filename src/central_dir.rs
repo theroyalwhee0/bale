@@ -7,6 +7,12 @@ use crate::DosDateTime;
 ///
 /// These headers appear after all local file entries and before the EOCD.
 /// For bale archives, the filename is always `path_size` bytes (null-padded).
+///
+/// # Layout
+///
+/// Uses `#[repr(C)]` with `Unaligned` because all fields are zerocopy
+/// little-endian types (`U16`, `U32`), which are 1-byte aligned. ZIP headers
+/// can appear at any byte offset in an archive, so unaligned access is required.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct CentralDirectoryHeader {
@@ -54,6 +60,10 @@ impl CentralDirectoryHeader {
     pub const SIZE: usize = 46;
 
     /// Version made by: Unix (3) in high byte, ZIP 1.0 (10) in low byte.
+    ///
+    /// Bale archives always report Unix as the creation OS, regardless of the
+    /// host platform. This ensures consistent external attributes interpretation
+    /// (Unix permissions in upper 16 bits of `external_attrs`).
     const VERSION_MADE_BY_UNIX: u16 = (3 << 8) | 10;
 
     /// Version needed to extract for STORE method.
@@ -63,9 +73,11 @@ impl CentralDirectoryHeader {
     const COMPRESSION_STORE: u16 = 0;
 
     /// Returns the total stride (header + filename) for a given path size.
+    ///
+    /// Uses saturating addition to avoid overflow on pathological inputs.
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
-        Self::SIZE + path_size
+        Self::SIZE.saturating_add(path_size)
     }
 
     /// Creates a new `CentralDirectoryHeader` for an uncompressed file.
@@ -88,7 +100,8 @@ impl CentralDirectoryHeader {
         path_size: u16,
     ) -> Self {
         // External attributes: Unix mode in upper 16 bits.
-        let external_attrs = unix_mode << 16;
+        // Mask to 16 bits to ensure upper bits don't interfere.
+        let external_attrs = (unix_mode & 0xFFFF) << 16;
 
         Self {
             signature: U32::new(Self::SIGNATURE),
@@ -115,6 +128,16 @@ impl CentralDirectoryHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BaleEocd;
+
+    /// Test path size (smaller than default for variety).
+    const TEST_PATH_SIZE: u16 = 128;
+
+    /// Standard Unix file permissions (rw-r--r--).
+    const UNIX_MODE_FILE: u32 = 0o644;
+
+    /// Executable Unix permissions (rwxr-xr-x).
+    const UNIX_MODE_EXEC: u32 = 0o755;
 
     /// The fixed header portion is exactly 46 bytes per ZIP spec.
     #[test]
@@ -125,42 +148,75 @@ mod tests {
         );
     }
 
-    /// Stride includes header (46) plus filename field.
+    /// Stride includes header plus filename field.
     #[test]
     fn stride_is_header_plus_path() {
-        assert_eq!(CentralDirectoryHeader::stride(256), 46 + 256);
-        assert_eq!(CentralDirectoryHeader::stride(128), 46 + 128);
+        let default_path = BaleEocd::DEFAULT_PATH_SIZE as usize;
+        let test_path = TEST_PATH_SIZE as usize;
+        assert_eq!(
+            CentralDirectoryHeader::stride(default_path),
+            CentralDirectoryHeader::SIZE + default_path
+        );
+        assert_eq!(
+            CentralDirectoryHeader::stride(test_path),
+            CentralDirectoryHeader::SIZE + test_path
+        );
     }
 
     /// New headers must have the correct ZIP signature.
     #[test]
     fn new_header_has_correct_signature() {
-        let header =
-            CentralDirectoryHeader::new(100, 0x12345678, DosDateTime::default(), 0, 0o644, 256);
+        let header = CentralDirectoryHeader::new(
+            100,
+            0x12345678,
+            DosDateTime::default(),
+            0,
+            UNIX_MODE_FILE,
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
         assert_eq!(header.signature.get(), CentralDirectoryHeader::SIGNATURE);
     }
 
     /// Unix permissions are stored in the upper 16 bits of external_attrs.
     #[test]
     fn unix_mode_in_external_attrs() {
-        let header = CentralDirectoryHeader::new(100, 0, DosDateTime::default(), 0, 0o755, 256);
-        // 0o755 = 0x1ED, shifted left 16 bits = 0x01ED0000
-        assert_eq!(header.external_attrs.get(), 0o755 << 16);
+        let header = CentralDirectoryHeader::new(
+            100,
+            0,
+            DosDateTime::default(),
+            0,
+            UNIX_MODE_EXEC,
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
+        assert_eq!(header.external_attrs.get(), UNIX_MODE_EXEC << 16);
     }
 
     /// Header can be serialized and deserialized without data loss.
     #[test]
     fn roundtrip() {
-        let mtime = DosDateTime::new(0x58CF, 0x6955);
-        let header = CentralDirectoryHeader::new(1024, 0xDEADBEEF, mtime, 4096, 0o644, 256);
+        const FILE_SIZE: u32 = 1024;
+        const TEST_CRC: u32 = 0xD87F7E0C; // crc32(b"test")
+        const LOCAL_OFFSET: u32 = 4096;
+        const TEST_DATE: u16 = 0x58CF; // 2024-06-15
+        const TEST_TIME: u16 = 0x6955; // 13:10:42
+
+        let mtime = DosDateTime::from_date_time_parts(TEST_DATE, TEST_TIME);
+        let header = CentralDirectoryHeader::new(
+            FILE_SIZE,
+            TEST_CRC,
+            mtime,
+            LOCAL_OFFSET,
+            UNIX_MODE_FILE,
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
         let bytes = header.as_bytes();
         assert_eq!(bytes.len(), CentralDirectoryHeader::SIZE);
 
         let restored = CentralDirectoryHeader::ref_from_bytes(bytes).unwrap();
         assert_eq!(restored.signature.get(), CentralDirectoryHeader::SIGNATURE);
-        assert_eq!(restored.uncompressed_size.get(), 1024);
-        assert_eq!(restored.crc32.get(), 0xDEADBEEF);
-        assert_eq!(restored.local_header_offset.get(), 4096);
-        assert_eq!(restored.filename_length.get(), 256);
+        assert_eq!(restored.uncompressed_size.get(), FILE_SIZE);
+        assert_eq!(restored.crc32.get(), TEST_CRC);
+        assert_eq!(restored.local_header_offset.get(), LOCAL_OFFSET);
+        assert_eq!(restored.filename_length.get(), BaleEocd::DEFAULT_PATH_SIZE);
     }
 }

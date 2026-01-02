@@ -27,9 +27,9 @@ pub struct Cli {
 /// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create a file or update its modification time.
+    /// Create an empty bale archive or update its modification time.
     Touch {
-        /// The file to touch.
+        /// The archive to create or touch.
         path: PathBuf,
     },
     /// Add files to a bale archive.
@@ -62,6 +62,9 @@ pub enum Command {
     Delete {
         /// The archive to modify.
         archive: PathBuf,
+        /// Don't error if entries are not found.
+        #[arg(long)]
+        ignore_missing: bool,
         /// Entries to delete.
         #[arg(required = true)]
         entries: Vec<String>,
@@ -75,8 +78,8 @@ pub enum Command {
     Check {
         /// The archive to check.
         archive: PathBuf,
-        /// Attempt to fix issues found.
-        #[arg(long)]
-        fix: bool,
+        /// Suppress output (exit code only).
+        #[arg(short, long)]
+        quiet: bool,
     },
 }

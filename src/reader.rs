@@ -1,6 +1,9 @@
 //! Zero-copy archive reader using memory-mapped I/O.
 
-use crate::{BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive};
+use crate::{
+    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive,
+    Zip64Eocd, parse_trailer,
+};
 use std::collections::HashSet;
 use std::path::Path;
 use zerocopy::FromBytes;
@@ -23,6 +26,8 @@ use zerocopy::FromBytes;
 pub struct ArchiveReader {
     /// The memory-mapped archive.
     mmap: MappedArchive,
+    /// Parsed ZIP64 EOCD from the trailer (authoritative source for CD values).
+    zip64_eocd: Zip64Eocd,
     /// Parsed EOCD from the trailer.
     eocd: Eocd,
     /// Parsed BaleEocd from the trailer.
@@ -37,67 +42,25 @@ impl ArchiveReader {
     /// Returns an error if:
     /// - The file cannot be opened or memory-mapped
     /// - The archive is too small to contain a valid trailer
-    /// - The EOCD or BaleEocd signature is invalid
+    /// - Any trailer signature is invalid (ZIP64 EOCD, Locator, EOCD, or BaleEocd)
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let mmap = MappedArchive::open(path)?;
 
-        // Parse and validate trailer, extracting owned copies.
-        let (eocd, bale_eocd) = Self::parse_trailer(&mmap)?;
+        // Parse and validate trailer.
+        let trailer = parse_trailer(mmap.as_bytes())?;
 
         Ok(Self {
             mmap,
-            eocd,
-            bale_eocd,
+            zip64_eocd: trailer.zip64_eocd,
+            eocd: trailer.eocd,
+            bale_eocd: trailer.bale_eocd,
         })
-    }
-
-    /// Parses and validates the trailer, returning owned copies of EOCD and BaleEocd.
-    fn parse_trailer(mmap: &MappedArchive) -> Result<(Eocd, BaleEocd), BaleError> {
-        let bytes = mmap.as_bytes();
-
-        // Check minimum size.
-        if bytes.len() < BaleEocd::COMBINED_SIZE {
-            return Err(BaleError::TooSmall {
-                size: bytes.len() as u64,
-                minimum: BaleEocd::COMBINED_SIZE as u64,
-            });
-        }
-
-        // Parse trailer from the last 256 bytes.
-        let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
-        let trailer = &bytes[trailer_start..];
-
-        // Parse EOCD (first 22 bytes of trailer).
-        let eocd = Eocd::ref_from_bytes(&trailer[..Eocd::SIZE])
-            .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
-
-        // Validate EOCD signature.
-        if eocd.signature.get() != Eocd::SIGNATURE {
-            return Err(BaleError::InvalidSignature {
-                expected: Eocd::SIGNATURE,
-                found: eocd.signature.get(),
-            });
-        }
-
-        // Parse BaleEocd (remaining 234 bytes).
-        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[Eocd::SIZE..])
-            .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
-
-        // Validate BaleEocd magic.
-        if !bale_eocd.is_valid() {
-            return Err(BaleError::InvalidSignature {
-                expected: BaleEocd::MAGIC,
-                found: bale_eocd.magic.get(),
-            });
-        }
-
-        Ok((*eocd, *bale_eocd))
     }
 
     /// Returns the number of entries in the archive.
     #[must_use]
     pub fn entry_count(&self) -> usize {
-        self.eocd.cd_entries_total.get() as usize
+        self.zip64_eocd.cd_entries() as usize
     }
 
     /// Returns the configured path size for this archive.
@@ -107,9 +70,57 @@ impl ArchiveReader {
     }
 
     /// Returns the configured alignment for this archive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `alignment_pow2` is invalid. This cannot happen for archives
+    /// opened via [`open()`](Self::open) since validation occurs on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment()
+        self.bale_eocd.alignment().expect("alignment_pow2 invalid")
+    }
+
+    /// Returns the raw bytes for a Central Directory entry at the given index.
+    ///
+    /// Returns `None` if the index is out of bounds, arithmetic overflows,
+    /// or the entry extends beyond the mapped region.
+    fn cd_entry_bytes(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.entry_count() {
+            return None;
+        }
+
+        let bytes = self.mmap.as_bytes();
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
+        let stride = CentralDirectoryHeader::stride(self.path_size());
+
+        // Use checked arithmetic to prevent overflow on malicious archives.
+        let offset_from_cd = index.checked_mul(stride)?;
+        let entry_start = cd_offset.checked_add(offset_from_cd)?;
+        let entry_end = entry_start.checked_add(stride)?;
+
+        if entry_end > bytes.len() {
+            return None;
+        }
+
+        Some(&bytes[entry_start..entry_end])
+    }
+
+    /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.
+    ///
+    /// The returned path borrows directly from the memory-mapped archive.
+    /// Returns `None` if the index is out of bounds.
+    #[must_use]
+    pub fn get_path(&self, index: usize) -> Option<ArchivePath<'_>> {
+        let entry_bytes = self.cd_entry_bytes(index)?;
+        let path_bytes = &entry_bytes[CentralDirectoryHeader::SIZE..];
+
+        // Trim null padding for the ArchivePath.
+        let end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+
+        Some(ArchivePath::from_bytes(&path_bytes[..end]))
     }
 
     /// Returns an iterator over all Central Directory entries.
@@ -117,20 +128,10 @@ impl ArchiveReader {
     /// Each item is a tuple of (header, path_bytes) where path_bytes is the
     /// null-padded path from the CD entry.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&CentralDirectoryHeader, &[u8])> {
-        let bytes = self.mmap.as_bytes();
-        let cd_offset = self.eocd.cd_offset.get() as usize;
-        let path_size = self.path_size();
-        let stride = CentralDirectoryHeader::stride(path_size);
         let entry_count = self.entry_count();
 
         (0..entry_count).filter_map(move |i| {
-            let entry_start = cd_offset + i * stride;
-            let entry_end = entry_start + stride;
-            if entry_end > bytes.len() {
-                return None;
-            }
-
-            let entry_bytes = &bytes[entry_start..entry_end];
+            let entry_bytes = self.cd_entry_bytes(i)?;
             let header = CentralDirectoryHeader::ref_from_bytes(
                 &entry_bytes[..CentralDirectoryHeader::SIZE],
             )
@@ -143,7 +144,10 @@ impl ArchiveReader {
 
     /// Finds an entry by path using linear scan.
     ///
-    /// Returns the last matching entry (for shadowed duplicates).
+    /// Returns the last matching entry. Bale uses append-only shadowing: when
+    /// a file is updated, the new version is appended and the old version
+    /// remains but is "shadowed". The last occurrence is the current version.
+    ///
     /// The path comparison is byte-exact against the null-padded path.
     #[must_use]
     pub fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader> {
@@ -181,8 +185,14 @@ impl ArchiveReader {
         let data_size = entry.uncompressed_size.get() as usize;
 
         // Calculate where the data starts (after LocalFileHeader + path).
-        let data_start = local_offset + LocalFileHeader::stride(path_size);
-        let data_end = data_start + data_size;
+        // Use checked arithmetic to prevent overflow on malicious archives.
+        let local_stride = LocalFileHeader::stride(path_size);
+        let data_start = local_offset
+            .checked_add(local_stride)
+            .ok_or_else(|| BaleError::Corrupted("offset overflow".to_string()))?;
+        let data_end = data_start
+            .checked_add(data_size)
+            .ok_or_else(|| BaleError::Corrupted("size overflow".to_string()))?;
 
         if data_end > bytes.len() {
             return Err(BaleError::Corrupted(format!(
@@ -191,6 +201,12 @@ impl ArchiveReader {
         }
 
         Ok(&bytes[data_start..data_end])
+    }
+
+    /// Returns a reference to the ZIP64 EOCD.
+    #[must_use]
+    pub fn zip64_eocd(&self) -> &Zip64Eocd {
+        &self.zip64_eocd
     }
 
     /// Returns a reference to the EOCD.
@@ -236,8 +252,16 @@ impl ArchiveReader {
     /// by `compact` are always sorted.
     #[must_use]
     pub fn is_sorted(&self) -> bool {
-        let entries: Vec<_> = self.iter_entries().collect();
-        entries.windows(2).all(|w| w[0].1 <= w[1].1)
+        let mut prev: Option<&[u8]> = None;
+        for (_, path) in self.iter_entries() {
+            if let Some(p) = prev
+                && p > path
+            {
+                return false;
+            }
+            prev = Some(path);
+        }
+        true
     }
 
     /// Returns a list of duplicate paths in the archive.
@@ -248,18 +272,18 @@ impl ArchiveReader {
     #[must_use]
     pub fn find_duplicates(&self) -> Vec<String> {
         let mut seen: HashSet<&[u8]> = HashSet::new();
-        let mut duplicates: Vec<String> = Vec::new();
+        let mut duplicate_set: HashSet<&[u8]> = HashSet::new();
 
         for (_header, path_bytes) in self.iter_entries() {
             if !seen.insert(path_bytes) {
-                let path = Self::path_to_string(path_bytes);
-                if !duplicates.contains(&path) {
-                    duplicates.push(path);
-                }
+                duplicate_set.insert(path_bytes);
             }
         }
 
-        duplicates
+        duplicate_set
+            .into_iter()
+            .map(Self::path_to_string)
+            .collect()
     }
 
     /// Checks if the archive contains orphaned data.
@@ -267,18 +291,27 @@ impl ArchiveReader {
     /// Orphaned data exists when there are gaps between entries or between
     /// the last entry and the Central Directory. This can occur after
     /// deletions or when entries are shadowed.
+    ///
+    /// Entries are sorted by `local_header_offset` before checking, since ZIP
+    /// does not require the Central Directory to be in offset order.
+    ///
+    /// Returns `true` if arithmetic overflow occurs (conservative answer for
+    /// potentially malicious archives).
     #[must_use]
     pub fn has_orphaned_data(&self) -> bool {
-        let entries: Vec<_> = self.iter_entries().collect();
+        let mut entries: Vec<_> = self.iter_entries().collect();
 
         if entries.is_empty() {
             return false;
         }
 
+        // Sort by local_header_offset since CD order may differ from file order.
+        entries.sort_by_key(|(header, _)| header.local_header_offset.get());
+
         let path_size = self.path_size();
         let alignment = self.alignment() as usize;
         let local_header_stride = LocalFileHeader::stride(path_size);
-        let cd_offset = self.eocd.cd_offset.get() as usize;
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
 
         let mut expected_offset: usize = 0;
 
@@ -292,9 +325,15 @@ impl ArchiveReader {
             }
 
             // Calculate next expected offset (aligned).
-            let entry_size = local_header_stride + data_size;
-            let aligned_size = entry_size.div_ceil(alignment) * alignment;
-            expected_offset = local_offset + aligned_size;
+            // Use checked arithmetic; overflow indicates corruption.
+            let Some(entry_size) = local_header_stride.checked_add(data_size) else {
+                return true;
+            };
+            let aligned_size = entry_size.div_ceil(alignment).saturating_mul(alignment);
+            let Some(next_offset) = local_offset.checked_add(aligned_size) else {
+                return true;
+            };
+            expected_offset = next_offset;
         }
 
         // Check if CD starts right after the last entry.
@@ -328,16 +367,17 @@ mod tests {
         assert!(matches!(result, Err(BaleError::TooSmall { .. })));
     }
 
-    /// Opening a file with invalid EOCD signature returns error.
+    /// Opening a file with invalid signatures returns error.
     #[test]
-    fn invalid_eocd_signature() {
+    fn invalid_trailer_signature() {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        file.write_all(&[0u8; 256]).unwrap(); // All zeros, invalid signature
+        file.write_all(&[0u8; 256]).unwrap(); // All zeros, invalid signatures
 
         let result = ArchiveReader::open(file.path());
+        // Will fail on ZIP64 EOCD signature (first structure checked).
         assert!(matches!(result, Err(BaleError::InvalidSignature { .. })));
     }
 

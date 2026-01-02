@@ -1,19 +1,17 @@
-use crate::{BaleError, Eocd};
+use crate::{BaleError, Eocd, Zip64Eocd, Zip64EocdLocator};
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Bale-specific EOCD extension stored as the ZIP comment field.
 ///
-/// This 234-byte structure follows the standard 22-byte EOCD, making the
-/// combined trailer exactly 256 bytes for efficient single-read access.
+/// This 158-byte structure follows the standard 22-byte EOCD. Combined with
+/// the ZIP64 structures, the total trailer is exactly 256 bytes for efficient
+/// single-read access.
 ///
 /// Contains archive-level configuration:
 /// - Version information for format compatibility
 /// - Alignment power (2^N) for file data placement
 /// - Path size limit for fixed-stride entries
-///
-/// The structure remains valid even for ZIP64 archives since ZIP64 records
-/// are placed before the standard EOCD.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct BaleEocd {
@@ -29,7 +27,10 @@ pub struct BaleEocd {
     pub alignment_pow2: u8,
     /// Maximum path size in bytes (1-2048).
     pub path_size: U16,
-    /// Reserved for future use (must be zero).
+    /// Reserved for future use.
+    ///
+    /// Writers must set this to all zeros. Readers should ignore non-zero bytes
+    /// for forward compatibility with future format extensions.
     pub reserved: [u8; Self::RESERVED_SIZE],
 }
 
@@ -37,14 +38,17 @@ impl BaleEocd {
     /// Magic signature bytes: "BALE".
     pub const MAGIC: u32 = 0x454C_4142; // "BALE" as little-endian u32
 
-    /// Total size of this structure in bytes (256 - 22 = 234).
-    pub const SIZE: usize = 234;
+    /// Total size of this structure in bytes.
+    pub const SIZE: usize = 158;
 
-    /// Combined size of EOCD + BaleEocd for single-read access.
-    pub const COMBINED_SIZE: usize = Eocd::SIZE + Self::SIZE; // 256
+    /// Combined size of the full trailer for single-read access.
+    ///
+    /// Includes ZIP64 EOCD (56) + ZIP64 EOCD Locator (20) + EOCD (22) + BaleEocd (158) = 256 bytes.
+    pub const COMBINED_SIZE: usize =
+        Zip64Eocd::SIZE + Zip64EocdLocator::SIZE + Eocd::SIZE + Self::SIZE; // 256
 
     /// Size of the reserved field.
-    const RESERVED_SIZE: usize = Self::SIZE - 10; // 224 bytes
+    const RESERVED_SIZE: usize = Self::SIZE - 10; // 148 bytes
 
     /// Minimum allowed path size.
     pub const MIN_PATH_SIZE: u16 = 1;
@@ -52,13 +56,44 @@ impl BaleEocd {
     /// Maximum allowed path size.
     pub const MAX_PATH_SIZE: u16 = 2048;
 
-    /// Current format version.
+    /// Maximum alignment power (2^24 = 16 MB).
+    pub const MAX_ALIGNMENT_POW2: u8 = 24;
+
+    /// Default alignment power (2^12 = 4096 bytes).
+    pub const DEFAULT_ALIGNMENT_POW2: u8 = 12;
+
+    /// Default alignment in bytes (4096 = page size).
+    pub const DEFAULT_ALIGNMENT: u32 = 1 << Self::DEFAULT_ALIGNMENT_POW2;
+
+    /// Default path size in bytes.
+    pub const DEFAULT_PATH_SIZE: u16 = 256;
+
+    /// Current format version (major, minor, patch).
+    ///
+    /// Version compatibility policy:
+    /// - **Major**: Breaking format change. Readers should refuse incompatible major versions.
+    /// - **Minor**: Backward-compatible additions. Older readers can safely read newer minor versions.
+    /// - **Patch**: Implementation-only changes with no format impact.
+    ///
+    /// Currently, version checking is not enforced; all versions are accepted.
     pub const CURRENT_VERSION: (u8, u8, u8) = (0, 1, 0);
 
-    /// Creates a new `BaleEocd` with default settings (4096 alignment, 256 path size).
+    /// Creates a new `BaleEocd` with default settings.
+    ///
+    /// Uses [`DEFAULT_ALIGNMENT`](Self::DEFAULT_ALIGNMENT) (4096) and
+    /// [`DEFAULT_PATH_SIZE`](Self::DEFAULT_PATH_SIZE) (256).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let (major, minor, patch) = Self::CURRENT_VERSION;
+        Self {
+            magic: U32::new(Self::MAGIC),
+            version_major: major,
+            version_minor: minor,
+            version_patch: patch,
+            alignment_pow2: Self::DEFAULT_ALIGNMENT_POW2,
+            path_size: U16::new(Self::DEFAULT_PATH_SIZE),
+            reserved: [0u8; Self::RESERVED_SIZE],
+        }
     }
 
     /// Creates a new `BaleEocd` with the given parameters.
@@ -70,11 +105,23 @@ impl BaleEocd {
     ///
     /// # Errors
     ///
-    /// - Returns `BaleError::InvalidAlignment` if `alignment` is not a power of 2 or is zero.
+    /// - Returns `BaleError::InvalidAlignment` if `alignment` is not a power of 2,
+    ///   is zero, or exceeds 16 MB (2^24).
     /// - Returns `BaleError::InvalidPathSize` if `path_size` is not in range 1..=2048.
     pub fn new_with_options(alignment: u32, path_size: u16) -> Result<Self, BaleError> {
+        let max_alignment = 1u32 << Self::MAX_ALIGNMENT_POW2;
+        if alignment == 0 {
+            return Err(BaleError::InvalidAlignment("0 is not a power of 2".into()));
+        }
         if !alignment.is_power_of_two() {
-            return Err(BaleError::InvalidAlignment(alignment));
+            return Err(BaleError::InvalidAlignment(format!(
+                "{alignment} is not a power of 2"
+            )));
+        }
+        if alignment > max_alignment {
+            return Err(BaleError::InvalidAlignment(format!(
+                "{alignment} exceeds maximum of {max_alignment}"
+            )));
         }
         if !(Self::MIN_PATH_SIZE..=Self::MAX_PATH_SIZE).contains(&path_size) {
             return Err(BaleError::InvalidPathSize(path_size));
@@ -93,14 +140,30 @@ impl BaleEocd {
     }
 
     /// Returns the alignment in bytes.
-    #[must_use]
-    pub const fn alignment(&self) -> u32 {
-        1 << self.alignment_pow2
+    ///
+    /// Note: `alignment_pow2 = 0` is valid and returns `Ok(1)` (no alignment).
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidAlignment` if `alignment_pow2` exceeds
+    /// [`MAX_ALIGNMENT_POW2`](Self::MAX_ALIGNMENT_POW2).
+    ///
+    /// This check is also covered by [`is_valid()`](Self::is_valid), so callers
+    /// who validate first can safely unwrap.
+    pub fn alignment(&self) -> Result<u32, BaleError> {
+        if self.alignment_pow2 > Self::MAX_ALIGNMENT_POW2 {
+            return Err(BaleError::InvalidAlignment(format!(
+                "2^{} exceeds maximum of 2^{}",
+                self.alignment_pow2,
+                Self::MAX_ALIGNMENT_POW2
+            )));
+        }
+        Ok(1 << self.alignment_pow2)
     }
 
     /// Returns the maximum path size.
     #[must_use]
-    pub fn path_size(&self) -> u16 {
+    pub const fn path_size(&self) -> u16 {
         self.path_size.get()
     }
 
@@ -110,66 +173,176 @@ impl BaleEocd {
         (self.version_major, self.version_minor, self.version_patch)
     }
 
-    /// Validates the magic signature.
+    /// Validates the structure fields.
+    ///
+    /// Checks:
+    /// - Magic signature is "BALE"
+    /// - `alignment_pow2` is within valid range (≤ 24)
+    /// - `path_size` is in range 1..=2048
+    ///
+    /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
+    /// silently ignored for forward compatibility with future format extensions.
+    ///
+    /// For error propagation, use [`validated()`](Self::validated) instead.
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
+        let path_size = self.path_size.get();
         self.magic.get() == Self::MAGIC
+            && self.alignment_pow2 <= Self::MAX_ALIGNMENT_POW2
+            && path_size >= Self::MIN_PATH_SIZE
+            && path_size <= Self::MAX_PATH_SIZE
+    }
+
+    /// Validates the structure and returns a reference or an error.
+    ///
+    /// This is a convenience wrapper around [`is_valid()`](Self::is_valid) for
+    /// use with the `?` operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::Corrupted` if any validation check fails.
+    pub fn validated(&self) -> Result<&Self, BaleError> {
+        if self.is_valid() {
+            Ok(self)
+        } else {
+            Err(BaleError::Corrupted("invalid BaleEocd header".into()))
+        }
     }
 }
 
 impl Default for BaleEocd {
-    /// Returns a `BaleEocd` with default settings (4096 alignment, 256 path size).
+    /// Returns a `BaleEocd` with default settings.
+    ///
+    /// See [`BaleEocd::new()`] for details.
     fn default() -> Self {
-        let (major, minor, patch) = Self::CURRENT_VERSION;
-        Self {
-            magic: U32::new(Self::MAGIC),
-            version_major: major,
-            version_minor: minor,
-            version_patch: patch,
-            alignment_pow2: 12, // 2^12 = 4096
-            path_size: U16::new(256),
-            reserved: [0u8; Self::RESERVED_SIZE],
-        }
+        Self::new()
     }
+}
+
+/// Parsed trailer components returned by [`parse_trailer`].
+#[derive(Debug, Clone, Copy)]
+pub struct ParsedTrailer {
+    /// ZIP64 End of Central Directory record.
+    pub zip64_eocd: Zip64Eocd,
+    /// Standard End of Central Directory record.
+    pub eocd: Eocd,
+    /// Bale-specific EOCD extension.
+    pub bale_eocd: BaleEocd,
+}
+
+/// Parses and validates the 256-byte trailer from archive bytes.
+///
+/// The trailer layout is:
+/// - ZIP64 EOCD (56 bytes)
+/// - ZIP64 EOCD Locator (20 bytes)
+/// - EOCD (22 bytes)
+/// - BaleEocd (158 bytes)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The archive is too small to contain a trailer
+/// - Any signature is invalid
+/// - Any structure fails validation
+pub fn parse_trailer(bytes: &[u8]) -> Result<ParsedTrailer, BaleError> {
+    use zerocopy::FromBytes;
+
+    // Check minimum size.
+    if bytes.len() < BaleEocd::COMBINED_SIZE {
+        return Err(BaleError::TooSmall {
+            size: bytes.len() as u64,
+            minimum: BaleEocd::COMBINED_SIZE as u64,
+        });
+    }
+
+    // Parse trailer from the last 256 bytes.
+    let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
+    let trailer = &bytes[trailer_start..];
+
+    // Parse ZIP64 EOCD (first 56 bytes of trailer).
+    let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
+        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
+    zip64_eocd.validated()?;
+
+    // Parse ZIP64 EOCD Locator (next 20 bytes).
+    let locator_start = Zip64Eocd::SIZE;
+    let zip64_locator = Zip64EocdLocator::ref_from_bytes(
+        &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
+    )
+    .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
+    zip64_locator.validated()?;
+
+    // Parse EOCD (next 22 bytes).
+    let eocd_start = locator_start + Zip64EocdLocator::SIZE;
+    let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
+        .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
+    eocd.validated()?;
+
+    // Parse BaleEocd (final 158 bytes).
+    let bale_start = eocd_start + Eocd::SIZE;
+    let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
+        .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
+    bale_eocd.validated()?;
+
+    Ok(ParsedTrailer {
+        zip64_eocd: *zip64_eocd,
+        eocd: *eocd,
+        bale_eocd: *bale_eocd,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Zip64Eocd, Zip64EocdLocator};
 
-    /// Structure must be exactly 234 bytes (256 - 22 for EOCD).
+    /// Structure must be exactly 158 bytes.
     #[test]
-    fn size_is_234_bytes() {
+    fn size_is_158_bytes() {
         assert_eq!(std::mem::size_of::<BaleEocd>(), BaleEocd::SIZE);
-        assert_eq!(BaleEocd::SIZE, 234);
+        assert_eq!(BaleEocd::SIZE, 158);
     }
 
-    /// Combined EOCD + BaleEocd is exactly 256 bytes.
+    /// Combined trailer is exactly 256 bytes.
     #[test]
     fn combined_size_is_256_bytes() {
         assert_eq!(BaleEocd::COMBINED_SIZE, 256);
-        assert_eq!(Eocd::SIZE + BaleEocd::SIZE, 256);
+        assert_eq!(
+            Zip64Eocd::SIZE + Zip64EocdLocator::SIZE + Eocd::SIZE + BaleEocd::SIZE,
+            256
+        );
     }
 
-    /// Default settings use 4096 alignment and 256 path size.
+    /// Default settings use DEFAULT_ALIGNMENT and DEFAULT_PATH_SIZE.
     #[test]
     fn default_settings() {
         let bale = BaleEocd::new();
-        assert_eq!(bale.alignment(), 4096);
-        assert_eq!(bale.path_size(), 256);
+        assert_eq!(bale.alignment().unwrap(), BaleEocd::DEFAULT_ALIGNMENT);
+        assert_eq!(bale.path_size(), BaleEocd::DEFAULT_PATH_SIZE);
         assert!(bale.is_valid());
     }
 
     /// Alignment is correctly encoded as power of 2.
     #[test]
     fn alignment_encoding() {
-        let bale = BaleEocd::new_with_options(4096, 256).unwrap();
-        assert_eq!(bale.alignment_pow2, 12); // 2^12 = 4096
-        assert_eq!(bale.alignment(), 4096);
+        let bale =
+            BaleEocd::new_with_options(BaleEocd::DEFAULT_ALIGNMENT, BaleEocd::DEFAULT_PATH_SIZE)
+                .unwrap();
+        assert_eq!(bale.alignment_pow2, BaleEocd::DEFAULT_ALIGNMENT_POW2);
+        assert_eq!(bale.alignment().unwrap(), BaleEocd::DEFAULT_ALIGNMENT);
 
         let bale = BaleEocd::new_with_options(512, 256).unwrap();
         assert_eq!(bale.alignment_pow2, 9); // 2^9 = 512
-        assert_eq!(bale.alignment(), 512);
+        assert_eq!(bale.alignment().unwrap(), 512);
+    }
+
+    /// Minimum alignment (1 byte, pow2 = 0) is valid.
+    #[test]
+    fn min_alignment_is_valid() {
+        let bale = BaleEocd::new_with_options(1, 256).unwrap();
+        assert_eq!(bale.alignment_pow2, 0);
+        assert_eq!(bale.alignment().unwrap(), 1);
+        assert!(bale.is_valid());
     }
 
     /// Path size is stored correctly.
@@ -210,7 +383,7 @@ mod tests {
 
         let restored = BaleEocd::ref_from_bytes(bytes).unwrap();
         assert!(restored.is_valid());
-        assert_eq!(restored.alignment(), 8192);
+        assert_eq!(restored.alignment().unwrap(), 8192);
         assert_eq!(restored.path_size(), 512);
         assert_eq!(restored.version(), BaleEocd::CURRENT_VERSION);
     }
@@ -226,14 +399,14 @@ mod tests {
     #[test]
     fn invalid_alignment_returns_error() {
         let result = BaleEocd::new_with_options(1000, 256);
-        assert!(matches!(result, Err(BaleError::InvalidAlignment(1000))));
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("1000")));
     }
 
     /// Zero alignment returns an error.
     #[test]
     fn zero_alignment_returns_error() {
         let result = BaleEocd::new_with_options(0, 256);
-        assert!(matches!(result, Err(BaleError::InvalidAlignment(0))));
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("0")));
     }
 
     /// Zero path size returns an error.
@@ -256,5 +429,91 @@ mod tests {
     fn path_size_boundaries_are_valid() {
         assert!(BaleEocd::new_with_options(4096, BaleEocd::MIN_PATH_SIZE).is_ok());
         assert!(BaleEocd::new_with_options(4096, BaleEocd::MAX_PATH_SIZE).is_ok());
+    }
+
+    /// Alignment exceeding 16 MB returns an error.
+    #[test]
+    fn alignment_too_large_returns_error() {
+        let too_large = 1u32 << 25; // 32 MB
+        let result = BaleEocd::new_with_options(too_large, 256);
+        assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("exceeds")));
+    }
+
+    /// Alignment at max (16 MB) is valid.
+    #[test]
+    fn max_alignment_is_valid() {
+        let max_align = 1u32 << BaleEocd::MAX_ALIGNMENT_POW2;
+        assert!(BaleEocd::new_with_options(max_align, 256).is_ok());
+    }
+
+    // ==================== Malformed Input Tests ====================
+
+    /// Invalid magic signature fails is_valid().
+    #[test]
+    fn invalid_magic_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.magic = U32::new(0x12345678);
+        assert!(!bale.is_valid());
+    }
+
+    /// alignment_pow2 just over limit fails is_valid().
+    #[test]
+    fn alignment_pow2_over_limit_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.alignment_pow2 = BaleEocd::MAX_ALIGNMENT_POW2 + 1; // 25
+        assert!(!bale.is_valid());
+        // alignment() returns Err for invalid values.
+        assert!(bale.alignment().is_err());
+    }
+
+    /// alignment_pow2 at max u8 fails is_valid().
+    #[test]
+    fn alignment_pow2_max_u8_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.alignment_pow2 = 255;
+        assert!(!bale.is_valid());
+        // alignment() returns Err for invalid values.
+        assert!(bale.alignment().is_err());
+    }
+
+    /// path_size = 0 fails is_valid().
+    #[test]
+    fn path_size_zero_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.path_size = U16::new(0);
+        assert!(!bale.is_valid());
+    }
+
+    /// path_size above max fails is_valid().
+    #[test]
+    fn path_size_over_max_fails_validation() {
+        let mut bale = BaleEocd::new();
+        bale.path_size = U16::new(3000);
+        assert!(!bale.is_valid());
+    }
+
+    /// Non-zero reserved bytes with valid fields still passes is_valid().
+    #[test]
+    fn nonzero_reserved_passes_validation() {
+        let mut bale = BaleEocd::new();
+        bale.reserved[0] = 0xFF;
+        bale.reserved[100] = 0xAB;
+        // is_valid() ignores reserved field for forward compatibility.
+        assert!(bale.is_valid());
+    }
+
+    /// validated() returns Ok for valid headers.
+    #[test]
+    fn validated_returns_ok_for_valid() {
+        let bale = BaleEocd::new();
+        assert!(bale.validated().is_ok());
+    }
+
+    /// validated() returns Err for invalid headers.
+    #[test]
+    fn validated_returns_err_for_invalid() {
+        let mut bale = BaleEocd::new();
+        bale.magic = U32::new(0x12345678);
+        assert!(bale.validated().is_err());
     }
 }

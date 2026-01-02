@@ -25,17 +25,21 @@ pub enum BaleError {
         max: usize,
     },
 
-    /// Alignment is not a power of 2.
-    #[error("invalid alignment: {0} is not a power of 2")]
-    InvalidAlignment(u32),
+    /// Invalid alignment value.
+    #[error("invalid alignment: {0}")]
+    InvalidAlignment(String),
 
     /// Path size is outside valid range (1-2048).
     #[error("invalid path size: {0} is not in range 1..=2048")]
     InvalidPathSize(u16),
 
-    /// Path contains invalid UTF-8.
-    #[error("invalid path: not valid UTF-8")]
+    /// Path is invalid (traversal, empty, or malformed).
+    #[error("invalid path")]
     InvalidPath,
+
+    /// Path contains invalid UTF-8.
+    #[error("invalid UTF-8 in path: {0}")]
+    InvalidUtf8(#[from] std::str::Utf8Error),
 
     /// Archive is too small to contain a valid trailer.
     #[error("archive too small: {size} bytes, minimum is {minimum}")]
@@ -53,4 +57,12 @@ pub enum BaleError {
     /// Archive data is corrupted or invalid.
     #[error("corrupted archive: {0}")]
     Corrupted(String),
+
+    /// Invalid DOS date/time value.
+    #[error("invalid DOS date/time: {0}")]
+    InvalidDosDateTime(String),
+
+    /// Size exceeds ZIP format limits.
+    #[error("size overflow: {0}")]
+    SizeOverflow(String),
 }

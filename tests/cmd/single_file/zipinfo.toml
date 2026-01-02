@@ -1,3 +1,2 @@
 bin.path = "/usr/bin/env"
 args = ["zipinfo", "tests/fixtures/valid/single_file.bale"]
-status.code = 0

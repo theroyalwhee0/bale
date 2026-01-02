@@ -10,6 +10,8 @@ use std::path::Path;
 /// This struct provides zero-copy access to archive contents by memory-mapping
 /// the underlying file. A shared lock is held on the file for the lifetime of
 /// this struct, allowing multiple concurrent readers while preventing writers.
+///
+/// The lock is automatically released when this struct is dropped.
 pub struct MappedArchive {
     /// The underlying file handle (kept open to maintain the lock).
     #[allow(dead_code)]
@@ -70,7 +72,28 @@ impl MappedArchive {
 ///
 /// This struct provides mutable access to archive contents via memory-mapping.
 /// An exclusive lock is held on the file for the lifetime of this struct,
-/// preventing other readers and writers.
+/// preventing other readers and writers. The lock is automatically released
+/// when this struct is dropped.
+///
+/// # Automatic sync on drop
+///
+/// The file may be pre-allocated beyond the logical content length. When this
+/// struct is dropped, [`sync()`](Self::sync) is called automatically to truncate
+/// the file to its committed length. However, any errors during sync are silently
+/// ignored since `Drop` cannot propagate errors.
+///
+/// For proper error handling, call [`sync()`](Self::sync) explicitly before
+/// dropping and handle the `Result`.
+///
+/// # Logical vs committed length
+///
+/// This struct tracks two lengths:
+/// - **Logical length** ([`len()`](Self::len)): The current write position, used
+///   by [`extend()`](Self::extend) and [`as_bytes()`](Self::as_bytes).
+/// - **Committed length**: The file size to preserve on disk, set by
+///   [`sync()`](Self::sync). On drop, the file is truncated to
+///   `max(len, committed_len)` to preserve synced content even if the logical
+///   length was later reduced for overwriting.
 pub struct MappedArchiveMut {
     /// The underlying file handle (kept open to maintain the lock).
     file: File,
@@ -78,6 +101,8 @@ pub struct MappedArchiveMut {
     mmap: memmap2::MmapMut,
     /// Current logical length (may be less than capacity due to pre-allocation).
     len: usize,
+    /// Committed file length to preserve on drop.
+    committed_len: usize,
 }
 
 impl MappedArchiveMut {
@@ -86,9 +111,13 @@ impl MappedArchiveMut {
 
     /// Creates a new empty archive file with pre-allocated space.
     ///
+    /// Fails if the file already exists to prevent accidental overwrites.
+    /// Use [`open()`](Self::open) to modify an existing file.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The file already exists
     /// - The file cannot be created
     /// - The exclusive lock cannot be acquired
     /// - Memory mapping fails
@@ -98,9 +127,13 @@ impl MappedArchiveMut {
 
     /// Creates a new empty archive file with specified initial capacity.
     ///
+    /// Fails if the file already exists to prevent accidental overwrites.
+    /// Use [`open()`](Self::open) to modify an existing file.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The file already exists
     /// - The file cannot be created
     /// - The exclusive lock cannot be acquired
     /// - Memory mapping fails
@@ -118,10 +151,21 @@ impl MappedArchiveMut {
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-        Ok(Self { file, mmap, len: 0 })
+        Ok(Self {
+            file,
+            mmap,
+            len: 0,
+            committed_len: 0,
+        })
     }
 
     /// Opens an existing archive file for read-write access.
+    ///
+    /// The logical length is set to the current file size. If a previous session
+    /// called [`reserve()`](Self::reserve) but crashed before [`sync()`](Self::sync),
+    /// the file may contain pre-allocated zeros beyond the actual content. The
+    /// caller is responsible for validating content or using a higher-level API
+    /// (like `ArchiveWriter`) that stores the logical length in the archive trailer.
     ///
     /// # Errors
     ///
@@ -139,7 +183,12 @@ impl MappedArchiveMut {
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-        Ok(Self { file, mmap, len })
+        Ok(Self {
+            file,
+            mmap,
+            len,
+            committed_len: len,
+        })
     }
 
     /// Returns the logical length of the archive in bytes.
@@ -190,6 +239,9 @@ impl MappedArchiveMut {
     }
 
     /// Resizes the underlying file and remaps.
+    ///
+    /// This only changes the file capacity, not the logical length (`len`).
+    /// The caller (typically `reserve`) is responsible for managing `len`.
     fn resize_file(&mut self, new_capacity: usize) -> Result<(), BaleError> {
         // Flush before resizing.
         self.mmap.flush()?;
@@ -230,15 +282,42 @@ impl MappedArchiveMut {
         Ok(())
     }
 
-    /// Flushes changes to disk and truncates file to logical length.
+    /// Flushes changes to disk and truncates file to committed length.
+    ///
+    /// The file is truncated to `max(len, committed_len)` to preserve any
+    /// previously synced content, even if the logical length was reduced
+    /// for overwriting. After truncating, the mmap is remapped to match
+    /// the new file size.
     ///
     /// # Errors
     ///
-    /// Returns an error if flushing or truncating fails.
+    /// Returns an error if flushing, truncating, or remapping fails.
     pub fn sync(&mut self) -> Result<(), BaleError> {
+        // Preserve the larger of logical length and committed length.
+        // This ensures previously synced content isn't lost when len is
+        // temporarily reduced (e.g., for overwriting a central directory).
+        let file_len = self.len.max(self.committed_len);
         self.mmap.flush()?;
-        self.file.set_len(self.len as u64)?;
+        self.file.set_len(file_len as u64)?;
+        self.committed_len = file_len;
+        // Remap to match new file size so capacity() is accurate.
+        // SAFETY: We hold an exclusive lock on the file.
+        #[allow(unsafe_code)]
+        let new_mmap = unsafe { memmap2::MmapMut::map_mut(&self.file)? };
+        self.mmap = new_mmap;
         Ok(())
+    }
+}
+
+impl Drop for MappedArchiveMut {
+    /// Automatically syncs the archive on drop.
+    ///
+    /// Logs an error if sync fails. For proper error handling, call
+    /// [`sync()`](Self::sync) explicitly before dropping.
+    fn drop(&mut self) {
+        if let Err(e) = self.sync() {
+            log::error!("MappedArchiveMut::sync() failed on drop: {e}");
+        }
     }
 }
 

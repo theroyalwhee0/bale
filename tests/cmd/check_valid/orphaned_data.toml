@@ -1,3 +1,3 @@
 bin.name = "bale"
 args = ["check", "tests/fixtures/valid/orphaned_data.bale"]
-status.code = 0
+status.code = 1
