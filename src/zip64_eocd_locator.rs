@@ -54,10 +54,12 @@ impl Zip64EocdLocator {
 
     // ==================== Validation ====================
 
-    /// Validates the ZIP64 EOCD Locator signature.
+    /// Validates the ZIP64 EOCD Locator signature and disk count.
+    ///
+    /// Bale archives are always single-file, so `total_disks` must be 1.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
-        self.signature.get() == Self::SIGNATURE
+        self.signature.get() == Self::SIGNATURE && self.total_disks.get() == 1
     }
 
     /// Validates the structure and returns a reference or an error.
@@ -125,6 +127,14 @@ mod tests {
     fn invalid_signature_fails_validation() {
         let mut locator = Zip64EocdLocator::new(0);
         locator.signature = U32::new(0x12345678);
+        assert!(!locator.is_valid());
+    }
+
+    /// Invalid total_disks fails is_valid().
+    #[test]
+    fn invalid_total_disks_fails_validation() {
+        let mut locator = Zip64EocdLocator::new(0);
+        locator.total_disks = U32::new(2); // Bale requires single-file (1)
         assert!(!locator.is_valid());
     }
 

@@ -98,10 +98,13 @@ impl Zip64Eocd {
 
     // ==================== Validation ====================
 
-    /// Validates the ZIP64 EOCD signature.
+    /// Validates the ZIP64 EOCD signature and record size.
+    ///
+    /// The record size must be at least 44 bytes (the standard ZIP64 EOCD
+    /// data size). The ZIP spec allows extensible data after these 44 bytes.
     #[must_use]
     pub const fn is_valid(&self) -> bool {
-        self.signature.get() == Self::SIGNATURE
+        self.signature.get() == Self::SIGNATURE && self.record_size.get() >= Self::RECORD_DATA_SIZE
     }
 
     /// Validates the structure and returns a reference or an error.
@@ -170,6 +173,22 @@ mod tests {
         let mut eocd = Zip64Eocd::new(0, 0, 0);
         eocd.signature = U32::new(0x12345678);
         assert!(!eocd.is_valid());
+    }
+
+    /// Invalid record_size fails is_valid().
+    #[test]
+    fn invalid_record_size_fails_validation() {
+        let mut eocd = Zip64Eocd::new(0, 0, 0);
+        eocd.record_size = U64::new(43); // Less than required 44
+        assert!(!eocd.is_valid());
+    }
+
+    /// record_size >= 44 passes validation (allows extensible data).
+    #[test]
+    fn larger_record_size_passes_validation() {
+        let mut eocd = Zip64Eocd::new(0, 0, 0);
+        eocd.record_size = U64::new(100); // Larger than 44 is allowed
+        assert!(eocd.is_valid());
     }
 
     /// validated() returns Ok for valid ZIP64 EOCD.
