@@ -2,4 +2,4 @@ bin.name = "bale"
 args = ["check", "--fix", "duplicate_paths.bale"]
 fs.sandbox = true
 fs.base = "fix_duplicates"
-status.code = 0
+status.code = 1

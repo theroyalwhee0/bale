@@ -2,7 +2,7 @@
 
 use crate::{
     BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
-    MappedArchiveMut,
+    MappedArchiveMut, Zip64Eocd, Zip64EocdLocator,
 };
 use std::fs::File;
 use std::io::Read;
@@ -99,7 +99,7 @@ impl ArchiveWriter {
         let mmap = MappedArchiveMut::open(path)?;
         let bytes = mmap.as_bytes();
 
-        // Parse trailer (last 256 bytes).
+        // Parse trailer (last 256 bytes: ZIP64 EOCD + Locator + EOCD + BaleEocd).
         if bytes.len() < BaleEocd::COMBINED_SIZE {
             return Err(BaleError::TooSmall {
                 size: bytes.len() as u64,
@@ -110,32 +110,37 @@ impl ArchiveWriter {
         let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
         let trailer = &bytes[trailer_start..];
 
-        // Parse EOCD.
-        let eocd = Eocd::ref_from_bytes(&trailer[..Eocd::SIZE])
+        // Parse ZIP64 EOCD (first 64 bytes of trailer).
+        let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
+            .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
+        zip64_eocd.validated()?;
+
+        // Parse ZIP64 EOCD Locator (next 32 bytes).
+        let locator_start = Zip64Eocd::SIZE;
+        let zip64_locator = Zip64EocdLocator::ref_from_bytes(
+            &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
+        )
+        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
+        zip64_locator.validated()?;
+
+        // Parse EOCD (next 22 bytes).
+        let eocd_start = locator_start + Zip64EocdLocator::SIZE;
+        let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
             .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
+        eocd.validated()?;
 
-        if eocd.signature.get() != Eocd::SIGNATURE {
-            return Err(BaleError::InvalidSignature {
-                expected: Eocd::SIGNATURE,
-                found: eocd.signature.get(),
-            });
-        }
-
-        // Parse BaleEocd.
-        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[Eocd::SIZE..])
+        // Parse BaleEocd (final 138 bytes).
+        let bale_start = eocd_start + Eocd::SIZE;
+        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
             .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
-
-        if !bale_eocd.is_valid() {
-            return Err(BaleError::InvalidSignature {
-                expected: BaleEocd::MAGIC,
-                found: bale_eocd.magic.get(),
-            });
-        }
+        bale_eocd.validated()?;
 
         let bale_eocd = *bale_eocd;
         let path_size = bale_eocd.path_size() as usize;
-        let cd_offset = eocd.cd_offset.get() as usize;
-        let entry_count = eocd.cd_entries_total.get() as usize;
+
+        // Use ZIP64 values as authoritative source.
+        let cd_offset = zip64_eocd.cd_offset() as usize;
+        let entry_count = zip64_eocd.cd_entries() as usize;
         let stride = CentralDirectoryHeader::stride(path_size);
 
         // Parse Central Directory entries.
@@ -349,8 +354,9 @@ impl ArchiveWriter {
 
     /// Flushes all changes to disk.
     ///
-    /// Rewrites the Central Directory, EOCD, and BaleEocd trailer.
-    /// The file is truncated to the logical size.
+    /// Rewrites the Central Directory and full trailer (ZIP64 EOCD, ZIP64 EOCD
+    /// Locator, EOCD, and BaleEocd). The CD starts at an aligned offset for
+    /// efficient mmap access. The file is truncated to the logical size.
     ///
     /// # Errors
     ///
@@ -360,10 +366,14 @@ impl ArchiveWriter {
         let cd_stride = CentralDirectoryHeader::stride(path_size);
 
         // Calculate CD size.
+        let entry_count = self.entries.len() as u64;
         let cd_size = self.entries.len() * cd_stride;
 
-        // Calculate total size: file data + CD + EOCD + BaleEocd.
+        // CD starts at write_offset, which is already aligned (each file entry
+        // is padded to alignment). This ensures efficient mmap access to the CD.
         let cd_offset = self.write_offset;
+
+        // Calculate total size: file data + CD + trailer.
         let total_size = cd_offset + cd_size + BaleEocd::COMBINED_SIZE;
 
         // Ensure capacity and set length.
@@ -382,11 +392,37 @@ impl ArchiveWriter {
             offset += cd_stride;
         }
 
-        // Write EOCD.
+        // Write ZIP64 EOCD.
+        let zip64_eocd_offset = offset;
+        let zip64_eocd = Zip64Eocd::new(entry_count, cd_size as u64, cd_offset as u64);
+        bytes[offset..offset + Zip64Eocd::SIZE].copy_from_slice(zip64_eocd.as_bytes());
+        offset += Zip64Eocd::SIZE;
+
+        // Write ZIP64 EOCD Locator.
+        let zip64_locator = Zip64EocdLocator::new(zip64_eocd_offset as u64);
+        bytes[offset..offset + Zip64EocdLocator::SIZE].copy_from_slice(zip64_locator.as_bytes());
+        offset += Zip64EocdLocator::SIZE;
+
+        // Write EOCD with overflow markers if values exceed limits.
+        let eocd_entries = if entry_count > u64::from(u16::MAX) {
+            u16::MAX
+        } else {
+            entry_count as u16
+        };
+        let eocd_cd_size = if cd_size > u32::MAX as usize {
+            u32::MAX
+        } else {
+            cd_size as u32
+        };
+        let eocd_cd_offset = if cd_offset > u32::MAX as usize {
+            u32::MAX
+        } else {
+            cd_offset as u32
+        };
         let eocd = Eocd::new_with_comment(
-            self.entries.len() as u16,
-            cd_size as u32,
-            cd_offset as u32,
+            eocd_entries,
+            eocd_cd_size,
+            eocd_cd_offset,
             BaleEocd::SIZE as u16,
         );
         bytes[offset..offset + Eocd::SIZE].copy_from_slice(eocd.as_bytes());

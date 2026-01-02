@@ -2,4 +2,4 @@ bin.name = "bale"
 args = ["check", "--fix", "single_file.bale"]
 fs.sandbox = true
 fs.base = "fix_already_sorted"
-status.code = 0
+status.code = 1

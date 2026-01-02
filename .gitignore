@@ -7,8 +7,6 @@
 !Cargo.toml
 !CLAUDE.md
 !README.md
-
-# Whitelist lint files.
 !.markdownlintrc
 !clippy.toml
 
@@ -17,6 +15,11 @@
 !src/
 !src/**/
 !src/**/*.rs
+
+# Whitelist documentation files.
+!docs/
+!docs/**/
+!docs/**/*.md
 
 # Whitelist test files.
 !tests/

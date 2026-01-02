@@ -2,6 +2,7 @@
 
 use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, Eocd, LocalFileHeader, MappedArchive,
+    Zip64Eocd, Zip64EocdLocator,
 };
 use std::collections::HashSet;
 use std::path::Path;
@@ -25,6 +26,8 @@ use zerocopy::FromBytes;
 pub struct ArchiveReader {
     /// The memory-mapped archive.
     mmap: MappedArchive,
+    /// Parsed ZIP64 EOCD from the trailer (authoritative source for CD values).
+    zip64_eocd: Zip64Eocd,
     /// Parsed EOCD from the trailer.
     eocd: Eocd,
     /// Parsed BaleEocd from the trailer.
@@ -39,22 +42,25 @@ impl ArchiveReader {
     /// Returns an error if:
     /// - The file cannot be opened or memory-mapped
     /// - The archive is too small to contain a valid trailer
-    /// - The EOCD or BaleEocd signature is invalid
+    /// - Any trailer signature is invalid (ZIP64 EOCD, Locator, EOCD, or BaleEocd)
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let mmap = MappedArchive::open(path)?;
 
         // Parse and validate trailer, extracting owned copies.
-        let (eocd, bale_eocd) = Self::parse_trailer(&mmap)?;
+        let (zip64_eocd, eocd, bale_eocd) = Self::parse_trailer(&mmap)?;
 
         Ok(Self {
             mmap,
+            zip64_eocd,
             eocd,
             bale_eocd,
         })
     }
 
-    /// Parses and validates the trailer, returning owned copies of EOCD and BaleEocd.
-    fn parse_trailer(mmap: &MappedArchive) -> Result<(Eocd, BaleEocd), BaleError> {
+    /// Parses and validates the trailer, returning owned copies of structures.
+    ///
+    /// The trailer layout is: ZIP64 EOCD (64) + Locator (32) + EOCD (22) + BaleEocd (138) = 256 bytes.
+    fn parse_trailer(mmap: &MappedArchive) -> Result<(Zip64Eocd, Eocd, BaleEocd), BaleError> {
         let bytes = mmap.as_bytes();
 
         // Check minimum size.
@@ -69,37 +75,38 @@ impl ArchiveReader {
         let trailer_start = bytes.len() - BaleEocd::COMBINED_SIZE;
         let trailer = &bytes[trailer_start..];
 
-        // Parse EOCD (first 22 bytes of trailer).
-        let eocd = Eocd::ref_from_bytes(&trailer[..Eocd::SIZE])
+        // Parse ZIP64 EOCD (first 64 bytes of trailer).
+        let zip64_eocd = Zip64Eocd::ref_from_bytes(&trailer[..Zip64Eocd::SIZE])
+            .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD: {e}")))?;
+        zip64_eocd.validated()?;
+
+        // Parse ZIP64 EOCD Locator (next 32 bytes).
+        let locator_start = Zip64Eocd::SIZE;
+        let zip64_locator = Zip64EocdLocator::ref_from_bytes(
+            &trailer[locator_start..locator_start + Zip64EocdLocator::SIZE],
+        )
+        .map_err(|e| BaleError::Corrupted(format!("invalid ZIP64 EOCD Locator: {e}")))?;
+        zip64_locator.validated()?;
+
+        // Parse EOCD (next 22 bytes).
+        let eocd_start = locator_start + Zip64EocdLocator::SIZE;
+        let eocd = Eocd::ref_from_bytes(&trailer[eocd_start..eocd_start + Eocd::SIZE])
             .map_err(|e| BaleError::Corrupted(format!("invalid EOCD: {e}")))?;
+        eocd.validated()?;
 
-        // Validate EOCD signature.
-        if eocd.signature.get() != Eocd::SIGNATURE {
-            return Err(BaleError::InvalidSignature {
-                expected: Eocd::SIGNATURE,
-                found: eocd.signature.get(),
-            });
-        }
-
-        // Parse BaleEocd (remaining 234 bytes).
-        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[Eocd::SIZE..])
+        // Parse BaleEocd (final 138 bytes).
+        let bale_start = eocd_start + Eocd::SIZE;
+        let bale_eocd = BaleEocd::ref_from_bytes(&trailer[bale_start..])
             .map_err(|e| BaleError::Corrupted(format!("invalid BaleEocd: {e}")))?;
+        bale_eocd.validated()?;
 
-        // Validate BaleEocd magic.
-        if !bale_eocd.is_valid() {
-            return Err(BaleError::InvalidSignature {
-                expected: BaleEocd::MAGIC,
-                found: bale_eocd.magic.get(),
-            });
-        }
-
-        Ok((*eocd, *bale_eocd))
+        Ok((*zip64_eocd, *eocd, *bale_eocd))
     }
 
     /// Returns the number of entries in the archive.
     #[must_use]
     pub fn entry_count(&self) -> usize {
-        self.eocd.cd_entries_total.get() as usize
+        self.zip64_eocd.cd_entries() as usize
     }
 
     /// Returns the configured path size for this archive.
@@ -126,7 +133,7 @@ impl ArchiveReader {
     #[must_use]
     pub fn get_path(&self, index: usize) -> Option<ArchivePath<'_>> {
         let bytes = self.mmap.as_bytes();
-        let cd_offset = self.eocd.cd_offset.get() as usize;
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
         let path_size = self.path_size();
         let stride = CentralDirectoryHeader::stride(path_size);
 
@@ -158,7 +165,7 @@ impl ArchiveReader {
     /// null-padded path from the CD entry.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&CentralDirectoryHeader, &[u8])> {
         let bytes = self.mmap.as_bytes();
-        let cd_offset = self.eocd.cd_offset.get() as usize;
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
         let path_size = self.path_size();
         let stride = CentralDirectoryHeader::stride(path_size);
         let entry_count = self.entry_count();
@@ -231,6 +238,12 @@ impl ArchiveReader {
         }
 
         Ok(&bytes[data_start..data_end])
+    }
+
+    /// Returns a reference to the ZIP64 EOCD.
+    #[must_use]
+    pub fn zip64_eocd(&self) -> &Zip64Eocd {
+        &self.zip64_eocd
     }
 
     /// Returns a reference to the EOCD.
@@ -318,7 +331,7 @@ impl ArchiveReader {
         let path_size = self.path_size();
         let alignment = self.alignment() as usize;
         let local_header_stride = LocalFileHeader::stride(path_size);
-        let cd_offset = self.eocd.cd_offset.get() as usize;
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
 
         let mut expected_offset: usize = 0;
 
@@ -368,16 +381,17 @@ mod tests {
         assert!(matches!(result, Err(BaleError::TooSmall { .. })));
     }
 
-    /// Opening a file with invalid EOCD signature returns error.
+    /// Opening a file with invalid signatures returns error.
     #[test]
-    fn invalid_eocd_signature() {
+    fn invalid_trailer_signature() {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
         let mut file = NamedTempFile::new().unwrap();
-        file.write_all(&[0u8; 256]).unwrap(); // All zeros, invalid signature
+        file.write_all(&[0u8; 256]).unwrap(); // All zeros, invalid signatures
 
         let result = ArchiveReader::open(file.path());
+        // Will fail on ZIP64 EOCD signature (first structure checked).
         assert!(matches!(result, Err(BaleError::InvalidSignature { .. })));
     }
 

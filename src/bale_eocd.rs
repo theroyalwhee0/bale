@@ -1,19 +1,17 @@
-use crate::{BaleError, Eocd};
+use crate::{BaleError, Eocd, Zip64Eocd, Zip64EocdLocator};
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Bale-specific EOCD extension stored as the ZIP comment field.
 ///
-/// This 234-byte structure follows the standard 22-byte EOCD, making the
-/// combined trailer exactly 256 bytes for efficient single-read access.
+/// This 158-byte structure follows the standard 22-byte EOCD. Combined with
+/// the ZIP64 structures, the total trailer is exactly 256 bytes for efficient
+/// single-read access.
 ///
 /// Contains archive-level configuration:
 /// - Version information for format compatibility
 /// - Alignment power (2^N) for file data placement
 /// - Path size limit for fixed-stride entries
-///
-/// The structure remains valid even for ZIP64 archives since ZIP64 records
-/// are placed before the standard EOCD.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct BaleEocd {
@@ -40,14 +38,17 @@ impl BaleEocd {
     /// Magic signature bytes: "BALE".
     pub const MAGIC: u32 = 0x454C_4142; // "BALE" as little-endian u32
 
-    /// Total size of this structure in bytes (256 - 22 = 234).
-    pub const SIZE: usize = 234;
+    /// Total size of this structure in bytes.
+    pub const SIZE: usize = 158;
 
-    /// Combined size of EOCD + BaleEocd for single-read access.
-    pub const COMBINED_SIZE: usize = Eocd::SIZE + Self::SIZE; // 256
+    /// Combined size of the full trailer for single-read access.
+    ///
+    /// Includes ZIP64 EOCD (56) + ZIP64 EOCD Locator (20) + EOCD (22) + BaleEocd (158) = 256 bytes.
+    pub const COMBINED_SIZE: usize =
+        Zip64Eocd::SIZE + Zip64EocdLocator::SIZE + Eocd::SIZE + Self::SIZE; // 256
 
     /// Size of the reserved field.
-    const RESERVED_SIZE: usize = Self::SIZE - 10; // 224 bytes
+    const RESERVED_SIZE: usize = Self::SIZE - 10; // 148 bytes
 
     /// Minimum allowed path size.
     pub const MIN_PATH_SIZE: u16 = 1;
@@ -204,19 +205,23 @@ impl Default for BaleEocd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Zip64Eocd, Zip64EocdLocator};
 
-    /// Structure must be exactly 234 bytes (256 - 22 for EOCD).
+    /// Structure must be exactly 158 bytes.
     #[test]
-    fn size_is_234_bytes() {
+    fn size_is_158_bytes() {
         assert_eq!(std::mem::size_of::<BaleEocd>(), BaleEocd::SIZE);
-        assert_eq!(BaleEocd::SIZE, 234);
+        assert_eq!(BaleEocd::SIZE, 158);
     }
 
-    /// Combined EOCD + BaleEocd is exactly 256 bytes.
+    /// Combined trailer is exactly 256 bytes.
     #[test]
     fn combined_size_is_256_bytes() {
         assert_eq!(BaleEocd::COMBINED_SIZE, 256);
-        assert_eq!(Eocd::SIZE + BaleEocd::SIZE, 256);
+        assert_eq!(
+            Zip64Eocd::SIZE + Zip64EocdLocator::SIZE + Eocd::SIZE + BaleEocd::SIZE,
+            256
+        );
     }
 
     /// Default settings use DEFAULT_ALIGNMENT and DEFAULT_PATH_SIZE.

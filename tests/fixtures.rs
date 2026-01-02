@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use bale::{ArchiveWriter, BaleEocd, Eocd};
+use bale::{ArchiveWriter, BaleEocd, Eocd, Zip64Eocd, Zip64EocdLocator};
 use zerocopy::IntoBytes;
 
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
@@ -28,16 +28,34 @@ fn generate_all_fixtures() {
     generate_bad_crc_bale();
 }
 
-/// Generates an empty bale archive with EOCD + BaleEocd (256 bytes).
+/// Generates an empty bale archive with full 256-byte trailer.
+///
+/// The trailer consists of:
+/// - ZIP64 EOCD (56 bytes)
+/// - ZIP64 EOCD Locator (20 bytes)
+/// - EOCD (22 bytes)
+/// - BaleEocd (158 bytes)
 fn generate_empty_bale() {
     let path = Path::new(VALID_FIXTURES_DIR).join("empty.bale");
     let mut file = File::create(&path).expect("failed to create empty.bale");
 
-    let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
-    let bale_eocd = BaleEocd::new();
+    // ZIP64 EOCD at offset 0 (entry_count=0, cd_size=0, cd_offset=0).
+    let zip64_eocd = Zip64Eocd::new(0, 0, 0);
+    file.write_all(zip64_eocd.as_bytes())
+        .expect("failed to write ZIP64 EOCD");
 
+    // ZIP64 EOCD Locator pointing to offset 0.
+    let zip64_locator = Zip64EocdLocator::new(0);
+    file.write_all(zip64_locator.as_bytes())
+        .expect("failed to write ZIP64 EOCD Locator");
+
+    // EOCD with comment length = BaleEocd::SIZE.
+    let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
     file.write_all(eocd.as_bytes())
         .expect("failed to write EOCD");
+
+    // BaleEocd with default settings.
+    let bale_eocd = BaleEocd::new();
     file.write_all(bale_eocd.as_bytes())
         .expect("failed to write BaleEocd");
 }
@@ -232,7 +250,7 @@ fn generate_bad_crc_bale() {
         .expect("failed to open archive");
 
     let file_len = file.metadata().expect("failed to get metadata").len();
-    let trailer_size = 256u64; // EOCD (22) + BaleEocd (234)
+    let trailer_size = 256u64; // ZIP64 EOCD (56) + Locator (20) + EOCD (22) + BaleEocd (158)
     let cd_header_size = 46u64;
     let path_size = 256u64;
     let cd_entry_size = cd_header_size + path_size;
