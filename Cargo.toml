@@ -30,11 +30,7 @@ memmap2 = "0.9.9"
 
 # Archive format
 crc32fast = "1.5.0"
-flate2 = "1.1.5"
 zerocopy = { version = "0.8.31", features = ["derive"] }
-
-# Parsing
-nom = "8.0.0"
 
 # CLI (optional)
 clap = { version = "4", features = ["derive"], optional = true }
