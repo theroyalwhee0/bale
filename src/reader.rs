@@ -123,9 +123,7 @@ impl ArchiveReader {
     /// opened via [`open()`](Self::open) since validation occurs on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment().expect(
-            "BaleEocd.alignment_pow2 invalid; archive was not opened via ArchiveReader::open()",
-        )
+        self.bale_eocd.alignment().expect("alignment_pow2 invalid")
     }
 
     /// Returns the raw bytes for a Central Directory entry at the given index.
