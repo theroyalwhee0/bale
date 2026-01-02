@@ -24,10 +24,14 @@ enum ArchiveStatus {
 /// - Duplicate path detection
 /// - Orphaned data detection
 ///
+/// When `quiet` is true, suppresses all output (use exit code only).
+///
 /// # Errors
 ///
-/// Returns an error if the archive cannot be opened or read.
-pub fn run(archive_path: impl AsRef<Path>) -> Result<(), BaleCliError> {
+/// Returns an error if:
+/// - The archive cannot be opened or read
+/// - Any integrity issues are found (CRC errors, duplicates, etc.)
+pub fn run(archive_path: impl AsRef<Path>, quiet: bool) -> Result<(), BaleCliError> {
     let reader = ArchiveReader::open(&archive_path)?;
     let mut errors: Vec<String> = Vec::new();
 
@@ -58,24 +62,31 @@ pub fn run(archive_path: impl AsRef<Path>) -> Result<(), BaleCliError> {
         errors.push("Archive contains orphaned data (run 'bale compact' to reclaim)".to_string());
     }
 
-    // Print errors to stderr.
-    #[allow(clippy::print_stderr)]
-    for error in &errors {
-        eprintln!("error: {error}");
+    if !quiet {
+        // Print errors to stderr.
+        #[allow(clippy::print_stderr)]
+        for error in &errors {
+            eprintln!("error: {error}");
+        }
+
+        // Determine status and print result.
+        let status = if is_sorted && !has_duplicates && !has_orphaned_data {
+            ArchiveStatus::Compacted
+        } else {
+            ArchiveStatus::Working
+        };
+
+        #[allow(clippy::print_stdout)]
+        match status {
+            ArchiveStatus::Compacted => println!("Status: Compacted"),
+            ArchiveStatus::Working => println!("Status: Working"),
+        }
     }
 
-    // Determine status and print result.
-    let status = if is_sorted && !has_duplicates && !has_orphaned_data {
-        ArchiveStatus::Compacted
+    // Return error if any issues were found.
+    if errors.is_empty() {
+        Ok(())
     } else {
-        ArchiveStatus::Working
-    };
-
-    #[allow(clippy::print_stdout)]
-    match status {
-        ArchiveStatus::Compacted => println!("Status: Compacted"),
-        ArchiveStatus::Working => println!("Status: Working"),
+        Err(BaleCliError::CheckFailed(errors.len()))
     }
-
-    Ok(())
 }

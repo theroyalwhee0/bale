@@ -80,6 +80,6 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
 
         // Maintenance.
         Command::Compact { archive } => commands::compact::run(archive),
-        Command::Check { archive } => commands::check::run(archive),
+        Command::Check { archive, quiet } => commands::check::run(archive, quiet),
     }
 }

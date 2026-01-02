@@ -78,5 +78,8 @@ pub enum Command {
     Check {
         /// The archive to check.
         archive: PathBuf,
+        /// Suppress output (exit code only).
+        #[arg(short, long)]
+        quiet: bool,
     },
 }
