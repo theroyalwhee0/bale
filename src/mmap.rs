@@ -275,17 +275,11 @@ impl MappedArchiveMut {
 impl Drop for MappedArchiveMut {
     /// Automatically syncs the archive on drop.
     ///
-    /// Logs an error if sync fails, or a trace suggesting explicit sync
-    /// for proper error handling. For production use, call
+    /// Logs an error if sync fails. For proper error handling, call
     /// [`sync()`](Self::sync) explicitly before dropping.
     fn drop(&mut self) {
-        match self.sync() {
-            Ok(()) => {
-                log::trace!("MappedArchiveMut dropped; call sync() explicitly for error handling");
-            }
-            Err(e) => {
-                log::error!("MappedArchiveMut::sync() failed on drop: {e}");
-            }
+        if let Err(e) = self.sync() {
+            log::error!("MappedArchiveMut::sync() failed on drop: {e}");
         }
     }
 }
