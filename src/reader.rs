@@ -123,7 +123,34 @@ impl ArchiveReader {
     /// opened via [`open()`](Self::open) since validation occurs on construction.
     #[must_use]
     pub fn alignment(&self) -> u32 {
-        self.bale_eocd.alignment().expect("validated on open")
+        self.bale_eocd.alignment().expect(
+            "BaleEocd.alignment_pow2 invalid; archive was not opened via ArchiveReader::open()",
+        )
+    }
+
+    /// Returns the raw bytes for a Central Directory entry at the given index.
+    ///
+    /// Returns `None` if the index is out of bounds, arithmetic overflows,
+    /// or the entry extends beyond the mapped region.
+    fn cd_entry_bytes(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.entry_count() {
+            return None;
+        }
+
+        let bytes = self.mmap.as_bytes();
+        let cd_offset = self.zip64_eocd.cd_offset() as usize;
+        let stride = CentralDirectoryHeader::stride(self.path_size());
+
+        // Use checked arithmetic to prevent overflow on malicious archives.
+        let offset_from_cd = index.checked_mul(stride)?;
+        let entry_start = cd_offset.checked_add(offset_from_cd)?;
+        let entry_end = entry_start.checked_add(stride)?;
+
+        if entry_end > bytes.len() {
+            return None;
+        }
+
+        Some(&bytes[entry_start..entry_end])
     }
 
     /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.
@@ -132,25 +159,10 @@ impl ArchiveReader {
     /// Returns `None` if the index is out of bounds.
     #[must_use]
     pub fn get_path(&self, index: usize) -> Option<ArchivePath<'_>> {
-        let bytes = self.mmap.as_bytes();
-        let cd_offset = self.zip64_eocd.cd_offset() as usize;
-        let path_size = self.path_size();
-        let stride = CentralDirectoryHeader::stride(path_size);
+        let entry_bytes = self.cd_entry_bytes(index)?;
+        let path_bytes = &entry_bytes[CentralDirectoryHeader::SIZE..];
 
-        if index >= self.entry_count() {
-            return None;
-        }
-
-        let entry_start = cd_offset + index * stride;
-        let entry_end = entry_start + stride;
-        if entry_end > bytes.len() {
-            return None;
-        }
-
-        let path_start = entry_start + CentralDirectoryHeader::SIZE;
-        let path_bytes = &bytes[path_start..entry_start + stride];
-
-        // Trim null padding for the ArchivePath
+        // Trim null padding for the ArchivePath.
         let end = path_bytes
             .iter()
             .position(|&b| b == 0)
@@ -164,20 +176,10 @@ impl ArchiveReader {
     /// Each item is a tuple of (header, path_bytes) where path_bytes is the
     /// null-padded path from the CD entry.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&CentralDirectoryHeader, &[u8])> {
-        let bytes = self.mmap.as_bytes();
-        let cd_offset = self.zip64_eocd.cd_offset() as usize;
-        let path_size = self.path_size();
-        let stride = CentralDirectoryHeader::stride(path_size);
         let entry_count = self.entry_count();
 
         (0..entry_count).filter_map(move |i| {
-            let entry_start = cd_offset + i * stride;
-            let entry_end = entry_start + stride;
-            if entry_end > bytes.len() {
-                return None;
-            }
-
-            let entry_bytes = &bytes[entry_start..entry_end];
+            let entry_bytes = self.cd_entry_bytes(i)?;
             let header = CentralDirectoryHeader::ref_from_bytes(
                 &entry_bytes[..CentralDirectoryHeader::SIZE],
             )
@@ -190,7 +192,10 @@ impl ArchiveReader {
 
     /// Finds an entry by path using linear scan.
     ///
-    /// Returns the last matching entry (for shadowed duplicates).
+    /// Returns the last matching entry. Bale uses append-only shadowing: when
+    /// a file is updated, the new version is appended and the old version
+    /// remains but is "shadowed". The last occurrence is the current version.
+    ///
     /// The path comparison is byte-exact against the null-padded path.
     #[must_use]
     pub fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader> {
@@ -228,8 +233,14 @@ impl ArchiveReader {
         let data_size = entry.uncompressed_size.get() as usize;
 
         // Calculate where the data starts (after LocalFileHeader + path).
-        let data_start = local_offset + LocalFileHeader::stride(path_size);
-        let data_end = data_start + data_size;
+        // Use checked arithmetic to prevent overflow on malicious archives.
+        let local_stride = LocalFileHeader::stride(path_size);
+        let data_start = local_offset
+            .checked_add(local_stride)
+            .ok_or_else(|| BaleError::Corrupted("offset overflow".to_string()))?;
+        let data_end = data_start
+            .checked_add(data_size)
+            .ok_or_else(|| BaleError::Corrupted("size overflow".to_string()))?;
 
         if data_end > bytes.len() {
             return Err(BaleError::Corrupted(format!(
@@ -289,8 +300,16 @@ impl ArchiveReader {
     /// by `compact` are always sorted.
     #[must_use]
     pub fn is_sorted(&self) -> bool {
-        let entries: Vec<_> = self.iter_entries().collect();
-        entries.windows(2).all(|w| w[0].1 <= w[1].1)
+        let mut prev: Option<&[u8]> = None;
+        for (_, path) in self.iter_entries() {
+            if let Some(p) = prev
+                && p > path
+            {
+                return false;
+            }
+            prev = Some(path);
+        }
+        true
     }
 
     /// Returns a list of duplicate paths in the archive.
@@ -301,18 +320,18 @@ impl ArchiveReader {
     #[must_use]
     pub fn find_duplicates(&self) -> Vec<String> {
         let mut seen: HashSet<&[u8]> = HashSet::new();
-        let mut duplicates: Vec<String> = Vec::new();
+        let mut duplicate_set: HashSet<&[u8]> = HashSet::new();
 
         for (_header, path_bytes) in self.iter_entries() {
             if !seen.insert(path_bytes) {
-                let path = Self::path_to_string(path_bytes);
-                if !duplicates.contains(&path) {
-                    duplicates.push(path);
-                }
+                duplicate_set.insert(path_bytes);
             }
         }
 
-        duplicates
+        duplicate_set
+            .into_iter()
+            .map(Self::path_to_string)
+            .collect()
     }
 
     /// Checks if the archive contains orphaned data.
@@ -320,13 +339,22 @@ impl ArchiveReader {
     /// Orphaned data exists when there are gaps between entries or between
     /// the last entry and the Central Directory. This can occur after
     /// deletions or when entries are shadowed.
+    ///
+    /// Entries are sorted by `local_header_offset` before checking, since ZIP
+    /// does not require the Central Directory to be in offset order.
+    ///
+    /// Returns `true` if arithmetic overflow occurs (conservative answer for
+    /// potentially malicious archives).
     #[must_use]
     pub fn has_orphaned_data(&self) -> bool {
-        let entries: Vec<_> = self.iter_entries().collect();
+        let mut entries: Vec<_> = self.iter_entries().collect();
 
         if entries.is_empty() {
             return false;
         }
+
+        // Sort by local_header_offset since CD order may differ from file order.
+        entries.sort_by_key(|(header, _)| header.local_header_offset.get());
 
         let path_size = self.path_size();
         let alignment = self.alignment() as usize;
@@ -345,9 +373,15 @@ impl ArchiveReader {
             }
 
             // Calculate next expected offset (aligned).
-            let entry_size = local_header_stride + data_size;
-            let aligned_size = entry_size.div_ceil(alignment) * alignment;
-            expected_offset = local_offset + aligned_size;
+            // Use checked arithmetic; overflow indicates corruption.
+            let Some(entry_size) = local_header_stride.checked_add(data_size) else {
+                return true;
+            };
+            let aligned_size = entry_size.div_ceil(alignment).saturating_mul(alignment);
+            let Some(next_offset) = local_offset.checked_add(aligned_size) else {
+                return true;
+            };
+            expected_offset = next_offset;
         }
 
         // Check if CD starts right after the last entry.
