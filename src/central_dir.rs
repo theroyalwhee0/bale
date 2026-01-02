@@ -100,7 +100,8 @@ impl CentralDirectoryHeader {
         path_size: u16,
     ) -> Self {
         // External attributes: Unix mode in upper 16 bits.
-        let external_attrs = unix_mode << 16;
+        // Mask to 16 bits to ensure upper bits don't interfere.
+        let external_attrs = (unix_mode & 0xFFFF) << 16;
 
         Self {
             signature: U32::new(Self::SIGNATURE),
