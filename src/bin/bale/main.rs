@@ -1,4 +1,23 @@
 //! Bale CLI tool for working with bale archives.
+//!
+//! # Commands
+//!
+//! - `touch` - Create an empty archive
+//! - `add` - Add files to an archive
+//! - `list` - List archive contents
+//! - `extract` - Extract files from an archive
+//! - `delete` - Remove entries from an archive
+//! - `compact` - Remove orphaned data and duplicates
+//! - `check` - Validate archive integrity
+//!
+//! # Usage
+//!
+//! ```text
+//! bale touch archive.bale
+//! bale add archive.bale file1.txt file2.txt
+//! bale list archive.bale
+//! bale extract archive.bale -o output_dir
+//! ```
 
 mod cli;
 mod commands;
@@ -12,10 +31,18 @@ use cli::{Cli, Command};
 use error::BaleCliError;
 
 /// Entry point for the bale CLI.
+///
+/// # Exit Codes
+///
+/// - `0` - Success
+/// - `1` - Failure (I/O errors, invalid archives, missing files, etc.)
+///
+/// All errors are printed to stderr before exiting.
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            // CLI tools legitimately print errors to stderr.
             #[allow(clippy::print_stderr)]
             {
                 eprintln!("error: {e}");
@@ -28,19 +55,26 @@ fn main() -> ExitCode {
 /// Runs the CLI with the given arguments.
 fn run(cli: Cli) -> Result<(), BaleCliError> {
     match cli.command {
+        // Archive creation.
         Command::Touch { path } => commands::touch::run(path),
+
+        // Content modification.
         Command::Add {
             archive,
             prefix,
             files,
         } => commands::add::run(archive, &prefix, &files),
+        Command::Delete { archive, entries } => commands::delete::run(archive, &entries),
+
+        // Content access.
         Command::List { archive } => commands::list::run(archive),
         Command::Extract {
             archive,
             output,
             entries,
         } => commands::extract::run(archive, output, &entries),
-        Command::Delete { archive, entries } => commands::delete::run(archive, &entries),
+
+        // Maintenance.
         Command::Compact { archive } => commands::compact::run(archive),
         Command::Check { archive, fix } => commands::check::run(archive, fix),
     }

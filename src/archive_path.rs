@@ -39,7 +39,7 @@ impl<'a> ArchivePath<'a> {
     /// Returns the path as a string slice if it is valid UTF-8.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.0).ok()
+        self.to_str_checked().ok()
     }
 
     /// Returns the path as bytes.
@@ -82,6 +82,102 @@ impl<'a> ArchivePath<'a> {
     #[must_use]
     pub fn from_bytes(bytes: &'a [u8]) -> Self {
         Self(Cow::Borrowed(bytes))
+    }
+
+    /// Creates an `ArchivePath` by borrowing bytes, trimming null padding.
+    ///
+    /// Archive entries use fixed-size path fields padded with null bytes.
+    /// This constructor trims trailing nulls before storing.
+    #[must_use]
+    pub fn from_null_padded_bytes(bytes: &'a [u8]) -> Self {
+        let trimmed = bytes
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(bytes, |pos| &bytes[..pos]);
+        Self(Cow::Borrowed(trimmed))
+    }
+
+    /// Returns the path as a string slice, or an error if not valid UTF-8.
+    ///
+    /// Use this when invalid UTF-8 should be treated as an error rather than
+    /// silently ignored. For optional access, use [`as_str`](Self::as_str).
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidUtf8` if the path is not valid UTF-8.
+    pub fn to_str_checked(&self) -> Result<&str, BaleError> {
+        Ok(std::str::from_utf8(&self.0)?)
+    }
+
+    /// Returns the filename component as bytes (after the last `/`).
+    ///
+    /// For a path like `foo/bar/baz.txt`, returns `baz.txt`.
+    /// For a path with no slashes, returns the entire path.
+    ///
+    /// This method works on raw bytes. For UTF-8 paths, use
+    /// [`file_name_str`](Self::file_name_str) instead.
+    #[must_use]
+    pub fn file_name(&self) -> &[u8] {
+        self.0
+            .iter()
+            .rposition(|&b| b == b'/')
+            .map_or(&self.0[..], |pos| &self.0[pos + 1..])
+    }
+
+    /// Returns the filename component as a string slice.
+    ///
+    /// For a path like `foo/bar/baz.txt`, returns `baz.txt`.
+    /// For a path with no slashes, returns the entire path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidUtf8` if the path is not valid UTF-8.
+    pub fn file_name_str(&self) -> Result<&str, BaleError> {
+        Ok(std::str::from_utf8(self.file_name())?)
+    }
+
+    /// Returns a new path with a numeric suffix inserted before the extension.
+    ///
+    /// Only considers the filename component when looking for extensions,
+    /// so `foo.d/bar` correctly treats `bar` as having no extension.
+    ///
+    /// The returned path is already normalized (no trailing slashes, forward
+    /// slashes only) if the input was normalized.
+    ///
+    /// # Path Size
+    ///
+    /// This method does not check whether the result fits within the archive's
+    /// `path_size`. Callers should verify `result.len() <= path_size` before
+    /// writing to an archive.
+    ///
+    /// # Examples
+    ///
+    /// - `file.txt` + 1 → `file(1).txt`
+    /// - `dir/file.txt` + 2 → `dir/file(2).txt`
+    /// - `foo.d/bar` + 1 → `foo.d/bar(1)`
+    /// - `noext` + 3 → `noext(3)`
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::InvalidUtf8` if the path is not valid UTF-8.
+    pub fn with_suffix(&self, number: usize) -> Result<ArchivePath<'static>, BaleError> {
+        let path = self.to_str_checked()?;
+
+        // Find where the filename starts (after the last slash).
+        let filename_start = path.rfind('/').map_or(0, |pos| pos + 1);
+        let (dir, filename) = path.split_at(filename_start);
+
+        // Look for extension only within the filename.
+        let result = if let Some(dot_pos) = filename.rfind('.') {
+            // Has extension: insert suffix before the last dot in filename.
+            let (stem, ext) = filename.split_at(dot_pos);
+            format!("{dir}{stem}({number}){ext}")
+        } else {
+            // No extension: append suffix at the end.
+            format!("{path}({number})")
+        };
+
+        Ok(ArchivePath(Cow::Owned(result.into_bytes())))
     }
 
     /// Converts this path into an owned version with `'static` lifetime.

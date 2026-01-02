@@ -1,16 +1,19 @@
 //! Extract command implementation.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
-use bale::ArchiveReader;
+use bale::{ArchivePath, ArchiveReader, BaleError};
 
 use crate::error::BaleCliError;
 
 /// Extracts entries from an archive.
 ///
-/// If no entries are specified, extracts all entries.
+/// If no entries are specified, extracts all entries. Paths are validated
+/// via `ArchivePath::normalize()` which rejects traversal attempts (e.g.,
+/// `../../../etc/passwd`) and produces safe relative paths.
 pub fn run(
     archive_path: impl AsRef<Path>,
     output_dir: impl AsRef<Path>,
@@ -23,24 +26,27 @@ pub fn run(
     fs::create_dir_all(output_dir)?;
 
     if entries.is_empty() {
-        // Extract all entries.
+        // Extract all entries in a single pass.
         for (header, path_bytes) in reader.iter_entries() {
             extract_entry(&reader, header, path_bytes, output_dir)?;
         }
     } else {
-        // Extract specified entries.
-        for entry_path in entries {
-            if let Some(header) = reader.find_entry(entry_path) {
-                // Get path bytes from the header by re-iterating (find_entry only returns header).
-                for (h, path_bytes) in reader.iter_entries() {
-                    if std::ptr::eq(h, header) {
-                        extract_entry(&reader, header, path_bytes, output_dir)?;
-                        break;
-                    }
-                }
-            } else {
-                return Err(bale::BaleError::EntryNotFound(entry_path.clone()).into());
+        // Build set of requested paths for O(1) lookup.
+        let mut requested: HashSet<&str> = entries.iter().map(String::as_str).collect();
+
+        // Single pass through archive, extracting matches.
+        for (header, path_bytes) in reader.iter_entries() {
+            let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
+            if let Some(path_str) = archive_path.as_str()
+                && requested.remove(path_str)
+            {
+                extract_entry(&reader, header, path_bytes, output_dir)?;
             }
+        }
+
+        // Report any entries that weren't found.
+        if let Some(missing) = requested.into_iter().next() {
+            return Err(BaleError::EntryNotFound(missing.to_string()).into());
         }
     }
 
@@ -48,21 +54,24 @@ pub fn run(
 }
 
 /// Extracts a single entry to the output directory.
+///
+/// Uses `ArchivePath::normalize()` to validate paths. This rejects any path
+/// that attempts to escape via `..` components and ensures the result is a
+/// safe relative path (no leading slashes, no `..` components).
 fn extract_entry(
     reader: &ArchiveReader,
     header: &bale::CentralDirectoryHeader,
     path_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<(), BaleCliError> {
-    // Convert path bytes to string.
-    let path: String = path_bytes
-        .iter()
-        .copied()
-        .take_while(|&b| b != 0)
-        .map(|b| b as char)
-        .collect();
+    let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
 
-    let dest_path = output_dir.join(&path);
+    // Normalize path: validates UTF-8, rejects `..` traversal, removes
+    // leading slashes. The result is a safe relative path.
+    let normalized = archive_path.normalize()?;
+    let path_str = normalized.as_str().ok_or(BaleError::InvalidPath)?;
+
+    let dest_path = output_dir.join(path_str);
 
     // Create parent directories.
     if let Some(parent) = dest_path.parent() {
@@ -86,7 +95,7 @@ fn extract_entry(
 
     #[allow(clippy::print_stdout)]
     {
-        println!("  extracted: {path}");
+        println!("  extracted: {path_str}");
     }
 
     Ok(())

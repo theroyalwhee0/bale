@@ -27,9 +27,9 @@ pub struct Cli {
 /// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create a file or update its modification time.
+    /// Create an empty bale archive or update its modification time.
     Touch {
-        /// The file to touch.
+        /// The archive to create or touch.
         path: PathBuf,
     },
     /// Add files to a bale archive.

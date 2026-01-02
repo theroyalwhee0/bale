@@ -33,9 +33,13 @@ pub enum BaleError {
     #[error("invalid path size: {0} is not in range 1..=2048")]
     InvalidPathSize(u16),
 
-    /// Path contains invalid UTF-8.
-    #[error("invalid path: not valid UTF-8")]
+    /// Path is invalid (traversal, empty, or malformed).
+    #[error("invalid path")]
     InvalidPath,
+
+    /// Path contains invalid UTF-8.
+    #[error("invalid UTF-8 in path: {0}")]
+    InvalidUtf8(#[from] std::str::Utf8Error),
 
     /// Archive is too small to contain a valid trailer.
     #[error("archive too small: {size} bytes, minimum is {minimum}")]
