@@ -87,19 +87,23 @@ fn format_date_time(mtime: &DosDateTime) -> String {
 
 /// Returns the type indicator character for ls -F style output.
 ///
-/// - `/` for directories
+/// - `/` for directories (unless path already ends with `/`)
 /// - `*` for executable files
 /// - `@` for symlinks
 /// - empty for regular files
 fn get_type_indicator(mode: u32, path: &str) -> &'static str {
     let file_type = mode & 0o170000;
 
+    // Don't add indicator if path already has a trailing slash.
+    if path.ends_with('/') {
+        return "";
+    }
+
     match file_type {
-        0o040000 => "/",                 // Directory
-        0o120000 => "@",                 // Symlink
-        _ if mode & 0o111 != 0 => "*",   // Executable
-        _ if path.ends_with('/') => "/", // Path ends with /
-        _ => "",                         // Regular file
+        0o040000 => "/",               // Directory
+        0o120000 => "@",               // Symlink
+        _ if mode & 0o111 != 0 => "*", // Executable
+        _ => "",                       // Regular file
     }
 }
 
@@ -142,9 +146,9 @@ mod tests {
     #[test]
     fn type_indicators() {
         assert_eq!(get_type_indicator(0o040755, "dir"), "/");
+        assert_eq!(get_type_indicator(0o040755, "dir/"), ""); // Already has slash
         assert_eq!(get_type_indicator(0o120777, "link"), "@");
         assert_eq!(get_type_indicator(0o100755, "script"), "*");
         assert_eq!(get_type_indicator(0o100644, "file.txt"), "");
-        assert_eq!(get_type_indicator(0o100644, "dir/"), "/");
     }
 }
