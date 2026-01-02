@@ -7,6 +7,12 @@ use crate::DosDateTime;
 ///
 /// These headers appear after all local file entries and before the EOCD.
 /// For bale archives, the filename is always `path_size` bytes (null-padded).
+///
+/// # Layout
+///
+/// Uses `#[repr(C)]` with `Unaligned` because all fields are zerocopy
+/// little-endian types (`U16`, `U32`), which are 1-byte aligned. ZIP headers
+/// can appear at any byte offset in an archive, so unaligned access is required.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct CentralDirectoryHeader {
@@ -54,6 +60,10 @@ impl CentralDirectoryHeader {
     pub const SIZE: usize = 46;
 
     /// Version made by: Unix (3) in high byte, ZIP 1.0 (10) in low byte.
+    ///
+    /// Bale archives always report Unix as the creation OS, regardless of the
+    /// host platform. This ensures consistent external attributes interpretation
+    /// (Unix permissions in upper 16 bits of `external_attrs`).
     const VERSION_MADE_BY_UNIX: u16 = (3 << 8) | 10;
 
     /// Version needed to extract for STORE method.
@@ -63,9 +73,11 @@ impl CentralDirectoryHeader {
     const COMPRESSION_STORE: u16 = 0;
 
     /// Returns the total stride (header + filename) for a given path size.
+    ///
+    /// Uses saturating addition to avoid overflow on pathological inputs.
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
-        Self::SIZE + path_size
+        Self::SIZE.saturating_add(path_size)
     }
 
     /// Creates a new `CentralDirectoryHeader` for an uncompressed file.
