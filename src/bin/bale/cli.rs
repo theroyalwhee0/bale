@@ -62,6 +62,9 @@ pub enum Command {
     Delete {
         /// The archive to modify.
         archive: PathBuf,
+        /// Don't error if entries are not found.
+        #[arg(long)]
+        ignore_missing: bool,
         /// Entries to delete.
         #[arg(required = true)]
         entries: Vec<String>,

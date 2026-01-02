@@ -64,7 +64,11 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
             prefix,
             files,
         } => commands::add::run(archive, &prefix, &files),
-        Command::Delete { archive, entries } => commands::delete::run(archive, &entries),
+        Command::Delete {
+            archive,
+            ignore_missing,
+            entries,
+        } => commands::delete::run(archive, &entries, ignore_missing),
 
         // Content access.
         Command::List { archive } => commands::list::run(archive),
