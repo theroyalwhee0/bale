@@ -555,6 +555,100 @@ mod tests {
         assert_eq!(paths[2].as_str(), Some("z/file"));
     }
 
+    /// len returns the byte length of the path.
+    #[test]
+    fn len_returns_byte_count() {
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        assert_eq!(path.len(), 7);
+        assert_eq!(path.as_bytes().len(), path.len());
+    }
+
+    /// is_empty returns true only for empty paths.
+    #[test]
+    fn is_empty_works() {
+        let empty = ArchivePath::from_bytes(b"");
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let nonempty = ArchivePath::try_from("foo").unwrap();
+        assert!(!nonempty.is_empty());
+    }
+
+    /// as_bytes returns the underlying bytes.
+    #[test]
+    fn as_bytes_returns_underlying() {
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        assert_eq!(path.as_bytes(), b"foo/bar");
+    }
+
+    /// AsRef<[u8]> trait implementation.
+    #[test]
+    fn asref_bytes() {
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        let bytes: &[u8] = path.as_ref();
+        assert_eq!(bytes, b"foo/bar");
+    }
+
+    /// Borrow<[u8]> trait implementation.
+    #[test]
+    fn borrow_bytes() {
+        use std::borrow::Borrow;
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        let bytes: &[u8] = path.borrow();
+        assert_eq!(bytes, b"foo/bar");
+    }
+
+    /// From<Vec<u8>> creates owned path.
+    #[test]
+    fn from_vec() {
+        let path = ArchivePath::from(b"foo/bar".to_vec());
+        assert_eq!(path.as_bytes(), b"foo/bar");
+    }
+
+    /// Vec<u8> can be created from ArchivePath.
+    #[test]
+    fn into_vec() {
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        let vec: Vec<u8> = path.into();
+        assert_eq!(vec, b"foo/bar");
+    }
+
+    /// Display trait shows lossy UTF-8.
+    #[test]
+    fn display_valid_utf8() {
+        let path = ArchivePath::try_from("foo/bar").unwrap();
+        assert_eq!(format!("{}", path), "foo/bar");
+    }
+
+    /// TryFrom<String> works.
+    #[test]
+    fn tryfrom_string() {
+        let path = ArchivePath::try_from(String::from("foo/bar")).unwrap();
+        assert_eq!(path.as_str(), Some("foo/bar"));
+    }
+
+    /// TryFrom<PathBuf> works.
+    #[test]
+    fn tryfrom_pathbuf() {
+        let path = ArchivePath::try_from(PathBuf::from("foo/bar")).unwrap();
+        assert_eq!(path.as_str(), Some("foo/bar"));
+    }
+
+    /// TryFrom<OsString> works.
+    #[test]
+    fn tryfrom_osstring() {
+        let path = ArchivePath::try_from(OsString::from("foo/bar")).unwrap();
+        assert_eq!(path.as_str(), Some("foo/bar"));
+    }
+
+    /// normalize method works on borrowed paths.
+    #[test]
+    fn normalize_method() {
+        let path = ArchivePath::from_bytes(b"foo\\bar");
+        let normalized = path.normalize().unwrap();
+        assert_eq!(normalized.as_str(), Some("foo/bar"));
+    }
+
     // ==================== Property Tests ====================
 
     /// Strategy for valid path component (excludes . and ..).
