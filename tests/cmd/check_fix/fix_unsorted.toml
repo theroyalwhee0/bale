@@ -1,5 +1,0 @@
-bin.name = "bale"
-args = ["check", "--fix", "unsorted_cd.bale"]
-fs.sandbox = true
-fs.base = "fix_unsorted"
-status.code = 1

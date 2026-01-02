@@ -1,5 +1,0 @@
-bin.name = "bale"
-args = ["check", "--fix", "duplicate_paths.bale"]
-fs.sandbox = true
-fs.base = "fix_duplicates"
-status.code = 1
