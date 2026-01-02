@@ -75,15 +75,15 @@ impl MappedArchive {
 /// preventing other readers and writers. The lock is automatically released
 /// when this struct is dropped.
 ///
-/// # Important: Call `sync()` before dropping
+/// # Automatic sync on drop
 ///
-/// The file may be pre-allocated beyond the logical content length. Callers
-/// **must** call [`sync()`](Self::sync) before dropping to truncate the file
-/// to its logical length. Failure to do so leaves the file at the pre-allocated
-/// size with undefined content beyond the logical data.
+/// The file may be pre-allocated beyond the logical content length. When this
+/// struct is dropped, [`sync()`](Self::sync) is called automatically to truncate
+/// the file to its logical length. However, any errors during sync are silently
+/// ignored since `Drop` cannot propagate errors.
 ///
-/// There is no `Drop` implementation that calls `sync()` because `Drop` cannot
-/// propagate errors. The caller is responsible for explicit synchronization.
+/// For proper error handling, call [`sync()`](Self::sync) explicitly before
+/// dropping and handle the `Result`.
 pub struct MappedArchiveMut {
     /// The underlying file handle (kept open to maintain the lock).
     file: File,
@@ -269,6 +269,16 @@ impl MappedArchiveMut {
         self.mmap.flush()?;
         self.file.set_len(self.len as u64)?;
         Ok(())
+    }
+}
+
+impl Drop for MappedArchiveMut {
+    /// Automatically syncs the archive on drop.
+    ///
+    /// Errors are silently ignored. For proper error handling, call
+    /// [`sync()`](Self::sync) explicitly before dropping.
+    fn drop(&mut self) {
+        let _ = self.sync();
     }
 }
 
