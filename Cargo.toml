@@ -11,8 +11,11 @@ path = "src/bin/bale/main.rs"
 required-features = ["bin"]
 
 [features]
-default = ["bin"]
-bin = ["dep:clap", "dep:env_logger"]
+default = ["reader", "writer", "compact", "bin"]
+reader = []
+writer = []
+compact = ["reader", "writer"]
+bin = ["compact", "dep:clap", "dep:env_logger"]
 
 [dependencies]
 # Core utilities

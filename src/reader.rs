@@ -347,7 +347,8 @@ impl ArchiveReader {
     }
 }
 
-#[cfg(test)]
+/// Tests require the `writer` feature to create test archives.
+#[cfg(all(test, feature = "writer"))]
 mod tests {
     use super::*;
 
