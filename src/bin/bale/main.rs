@@ -4,7 +4,7 @@
 //!
 //! - `touch` - Create an empty archive
 //! - `add` - Add files to an archive
-//! - `list` - List archive contents
+//! - `ls` (alias: `list`) - List archive contents
 //! - `extract` - Extract files from an archive
 //! - `delete` - Remove entries from an archive
 //! - `compact` - Remove orphaned data and duplicates
@@ -15,7 +15,7 @@
 //! ```text
 //! bale touch archive.bale
 //! bale add archive.bale file1.txt file2.txt
-//! bale list archive.bale
+//! bale ls archive.bale
 //! bale extract archive.bale -o output_dir
 //! ```
 
@@ -71,7 +71,7 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         } => commands::delete::run(archive, &entries, ignore_missing),
 
         // Content access.
-        Command::List { archive } => commands::list::run(archive),
+        Command::Ls { archive } => commands::list::run(archive),
         Command::Extract {
             archive,
             output,
