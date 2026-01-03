@@ -10,6 +10,9 @@
 //! - `compact` - Enables [`compact`] and [`rename_duplicates`] functions (requires `reader` + `writer`)
 //! - `bin` - Enables the CLI binary (requires `compact`)
 
+/// Unified archive access (reader and writer).
+#[cfg(any(feature = "reader", feature = "writer"))]
+mod archive;
 /// Validated, normalized paths within a bale archive.
 mod archive_path;
 /// Central Directory Header for ZIP entries.
@@ -25,15 +28,15 @@ mod error;
 mod local_file;
 /// Memory-mapped file access.
 mod mmap;
-/// Zero-copy archive reader.
-#[cfg(feature = "reader")]
-mod reader;
 /// Unified archive tail (trailer) structures.
 pub mod tail;
-/// Append-only archive writer.
-#[cfg(feature = "writer")]
-mod writer;
 
+#[cfg(feature = "reader")]
+pub use archive::ArchiveReader;
+#[cfg(any(feature = "reader", feature = "writer"))]
+pub use archive::{Archive, ArchiveRead};
+#[cfg(feature = "writer")]
+pub use archive::{ArchiveWrite, ArchiveWriter};
 pub use archive_path::ArchivePath;
 pub use central_dir::CentralDirectoryHeader;
 #[cfg(feature = "compact")]
@@ -42,8 +45,4 @@ pub use dos_time::DosDateTime;
 pub use error::BaleError;
 pub use local_file::LocalFileHeader;
 pub use mmap::{MappedArchive, MappedArchiveMut};
-#[cfg(feature = "reader")]
-pub use reader::ArchiveReader;
 pub use tail::{BaleEocd, Eocd, Trailer, Zip64Eocd, Zip64EocdLocator};
-#[cfg(feature = "writer")]
-pub use writer::ArchiveWriter;

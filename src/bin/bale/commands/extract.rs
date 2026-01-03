@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
-use bale::{ArchivePath, ArchiveReader, BaleError};
+use bale::{ArchivePath, ArchiveRead, ArchiveReader, BaleError};
 
 use crate::error::BaleCliError;
 

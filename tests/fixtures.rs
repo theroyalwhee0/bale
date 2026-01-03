@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use bale::{ArchiveWriter, BaleEocd, Eocd, Zip64Eocd, Zip64EocdLocator};
+use bale::{ArchiveWrite, ArchiveWriter, BaleEocd, Eocd, Zip64Eocd, Zip64EocdLocator};
 use zerocopy::IntoBytes;
 
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");

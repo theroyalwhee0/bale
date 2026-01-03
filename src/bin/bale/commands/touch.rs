@@ -4,7 +4,7 @@ use std::fs::{FileTimes, OpenOptions};
 use std::path::Path;
 use std::time::SystemTime;
 
-use bale::{ArchiveReader, ArchiveWriter};
+use bale::{ArchiveReader, ArchiveWrite, ArchiveWriter};
 
 use crate::error::BaleCliError;
 
