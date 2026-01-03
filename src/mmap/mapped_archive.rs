@@ -1,8 +1,7 @@
 //! Read-only memory-mapped archive.
 
 use crate::BaleError;
-#[allow(unused_imports)] // Required for lock_shared() extension method
-use fs4::fs_std::FileExt;
+
 use std::fs::File;
 use std::path::Path;
 
@@ -15,7 +14,6 @@ use std::path::Path;
 /// The lock is automatically released when this struct is dropped.
 pub struct MappedArchive {
     /// The underlying file handle (kept open to maintain the lock).
-    #[allow(dead_code)]
     file: File,
     /// The memory-mapped region.
     mmap: memmap2::Mmap,
@@ -66,6 +64,12 @@ impl MappedArchive {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.mmap
+    }
+
+    ///Returns the underlying file.
+    #[must_use]
+    pub fn file(&self) -> &File {
+        &self.file
     }
 }
 

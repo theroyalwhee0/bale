@@ -158,6 +158,12 @@ impl MappedArchiveMut {
         &mut self.mmap[..self.len]
     }
 
+    ///Returns the underlying file.
+    #[must_use]
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
     /// Ensures the archive has at least `min_capacity` bytes available.
     ///
     /// Extends the file and remaps if necessary.
