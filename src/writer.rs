@@ -434,7 +434,8 @@ impl ArchiveWriter {
     }
 }
 
-#[cfg(test)]
+/// Tests require the `reader` feature to verify written archives.
+#[cfg(all(test, feature = "reader"))]
 mod tests {
     use super::*;
     use tempfile::TempDir;
