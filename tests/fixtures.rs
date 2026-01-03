@@ -20,6 +20,7 @@ const INVALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/f
 fn generate_all_fixtures() {
     generate_empty_bale();
     generate_single_file_bale();
+    generate_multi_file_bale();
     generate_align_16k_bale();
     generate_path_2048_bale();
     generate_orphaned_data_bale();
@@ -84,6 +85,64 @@ fn generate_single_file_bale() {
 
     // Clean up source file.
     std::fs::remove_file(&content_path).expect("failed to remove hello.txt");
+}
+
+/// Generates a bale archive with multiple files and directories.
+///
+/// Contains various entry types for testing ls-style output:
+/// - Directories (mode 0o040755)
+/// - Regular files (mode 0o100644)
+/// - Executable files (mode 0o100755)
+/// - Read-only files (mode 0o100444)
+fn generate_multi_file_bale() {
+    let archive_path = Path::new(VALID_FIXTURES_DIR).join("multi_file.bale");
+
+    // Remove existing archive if present.
+    let _ = std::fs::remove_file(&archive_path);
+
+    // Create archive with various entry types.
+    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+
+    // Directories (note: directories have no content, just metadata).
+    writer
+        .add_entry("docs/", b"", 0o040755)
+        .expect("failed to add docs/");
+    writer
+        .add_entry("src/", b"", 0o040755)
+        .expect("failed to add src/");
+    writer
+        .add_entry("src/bin/", b"", 0o040700)
+        .expect("failed to add src/bin/");
+
+    // Regular files with different permissions.
+    writer
+        .add_entry("README.md", b"# Project\n\nA sample project.\n", 0o100644)
+        .expect("failed to add README.md");
+    writer
+        .add_entry("docs/guide.txt", b"User guide content here.\n", 0o100644)
+        .expect("failed to add docs/guide.txt");
+    writer
+        .add_entry(
+            "src/main.rs",
+            b"fn main() { println!(\"Hello\"); }\n",
+            0o100644,
+        )
+        .expect("failed to add src/main.rs");
+
+    // Executable files.
+    writer
+        .add_entry("build.sh", b"#!/bin/bash\ncargo build\n", 0o100755)
+        .expect("failed to add build.sh");
+    writer
+        .add_entry("src/bin/tool", b"ELF binary placeholder", 0o100755)
+        .expect("failed to add src/bin/tool");
+
+    // Read-only file.
+    writer
+        .add_entry("LICENSE", b"MIT License\n", 0o100444)
+        .expect("failed to add LICENSE");
+
+    writer.sync().expect("failed to sync archive");
 }
 
 /// Generates a bale archive with 16KB alignment.

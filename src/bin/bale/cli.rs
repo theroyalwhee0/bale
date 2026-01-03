@@ -44,7 +44,8 @@ pub enum Command {
         files: Vec<PathBuf>,
     },
     /// List entries in a bale archive.
-    List {
+    #[command(visible_alias = "list")]
+    Ls {
         /// The archive to list.
         archive: PathBuf,
     },
