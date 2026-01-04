@@ -22,6 +22,8 @@ mod central_dir;
 mod compact;
 /// MS-DOS date/time format for ZIP archives.
 mod dos_time;
+/// Entry type classification.
+mod entry_kind;
 /// Error types for bale operations.
 mod error;
 /// Local File Header for ZIP entries.
@@ -34,7 +36,7 @@ pub mod tail;
 #[cfg(feature = "reader")]
 pub use archive::ArchiveReader;
 #[cfg(any(feature = "reader", feature = "writer"))]
-pub use archive::{Archive, ArchiveRead};
+pub use archive::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
 #[cfg(feature = "writer")]
 pub use archive::{ArchiveWrite, ArchiveWriter};
 pub use archive_path::ArchivePath;
@@ -42,6 +44,7 @@ pub use central_dir::CentralDirectoryHeader;
 #[cfg(feature = "compact")]
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use dos_time::DosDateTime;
+pub use entry_kind::EntryKind;
 pub use error::BaleError;
 pub use local_file::LocalFileHeader;
 pub use mmap::{MappedArchive, MappedArchiveMut};

@@ -71,4 +71,48 @@ pub trait ArchiveWrite: ArchiveRead {
     ///
     /// Returns an error if writing or syncing fails.
     fn sync(&mut self) -> Result<(), BaleError>;
+
+    /// Creates an explicit directory entry.
+    ///
+    /// Directory entries have zero-length data and directory mode bits set.
+    /// The path should not have a trailing slash; it will be added internally
+    /// if needed for ZIP compatibility.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Archive path for the directory
+    /// * `mode` - Unix directory permissions (e.g., 0o755). The directory type
+    ///   bits (0o040000) will be added automatically if not present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path exceeds the archive's path_size
+    /// - Writing to the archive fails
+    fn add_folder(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError>;
+
+    /// Creates a symbolic link entry.
+    ///
+    /// Symlink entries store the target path as their data, with symlink mode
+    /// bits set in external attributes.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Archive path for the symlink
+    /// * `target` - The symlink target (what the link points to)
+    /// * `mode` - Unix permissions (e.g., 0o777). The symlink type bits
+    ///   (0o120000) will be added automatically if not present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path exceeds the archive's path_size
+    /// - The target length exceeds 4GB
+    /// - Writing to the archive fails
+    fn add_symlink(
+        &mut self,
+        path: impl AsRef<str>,
+        target: impl AsRef<str>,
+        mode: u32,
+    ) -> Result<(), BaleError>;
 }

@@ -54,6 +54,18 @@ pub enum BaleError {
     #[error("entry not found: {0}")]
     EntryNotFound(String),
 
+    /// Entry exists but is not a file.
+    #[error("not a file: {0}")]
+    NotAFile(String),
+
+    /// Entry exists but is not a directory.
+    #[error("not a directory: {0}")]
+    NotADirectory(String),
+
+    /// Entry exists but is not a symlink.
+    #[error("not a symlink: {0}")]
+    NotASymlink(String),
+
     /// Archive data is corrupted or invalid.
     #[error("corrupted archive: {0}")]
     Corrupted(String),

@@ -16,11 +16,23 @@ mod archive_write;
 /// Core archive struct.
 /// Named `core` instead of `archive` to avoid module inception (clippy::module_inception).
 mod core;
+/// Directory entry wrapper.
+mod dir_entry;
+/// Generic entry enum.
+mod entry;
+/// File entry wrapper.
+mod file_entry;
 /// Read-only archive implementation.
 mod reader;
+/// Symlink entry wrapper.
+mod symlink_entry;
 /// Read-write archive implementation.
 mod writer;
 
 pub use archive_read::ArchiveRead;
 pub use archive_write::ArchiveWrite;
 pub use core::{Archive, ArchiveReader, ArchiveWriter};
+pub use dir_entry::DirEntry;
+pub use entry::Entry;
+pub use file_entry::FileEntry;
+pub use symlink_entry::SymlinkEntry;

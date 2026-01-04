@@ -1,6 +1,8 @@
 //! Archive compaction to reclaim space from orphaned data.
 
-use crate::{ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter, BaleError};
+use crate::{
+    ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter, BaleError, EntryKind,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -102,6 +104,40 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
     }
     final_entries.reverse();
 
+    // Collect explicit directory paths (without trailing slashes).
+    let explicit_dirs: HashSet<Vec<u8>> = final_entries
+        .iter()
+        .filter(|(header, _)| header.kind() == EntryKind::Directory)
+        .map(|(_, path_bytes)| {
+            let trimmed: Vec<u8> = path_bytes.iter().copied().take_while(|&b| b != 0).collect();
+            // Remove trailing slash if present.
+            if trimmed.ends_with(b"/") {
+                trimmed[..trimmed.len() - 1].to_vec()
+            } else {
+                trimmed
+            }
+        })
+        .collect();
+
+    // Collect all implicit directories from file paths.
+    let mut missing_dirs: HashSet<Vec<u8>> = HashSet::new();
+    for (_, path_bytes) in &final_entries {
+        let trimmed: Vec<u8> = path_bytes.iter().copied().take_while(|&b| b != 0).collect();
+
+        // Extract all parent directories from this path.
+        let mut parent = trimmed.as_slice();
+        while let Some(pos) = parent.iter().rposition(|&b| b == b'/') {
+            parent = &parent[..pos];
+            if parent.is_empty() {
+                break;
+            }
+            let parent_vec = parent.to_vec();
+            if !explicit_dirs.contains(&parent_vec) {
+                missing_dirs.insert(parent_vec);
+            }
+        }
+    }
+
     // Sort by path for binary search.
     final_entries.sort_by(|a, b| a.1.cmp(&b.1));
 
@@ -121,6 +157,17 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
     // Write compacted archive.
     {
         let mut writer = ArchiveWriter::create_with_options(&temp_path, alignment, path_size)?;
+
+        // First, add any missing directory entries.
+        // Sort them to ensure parent directories come before children.
+        let mut missing_dirs_sorted: Vec<_> = missing_dirs.into_iter().collect();
+        missing_dirs_sorted.sort();
+
+        for dir_bytes in &missing_dirs_sorted {
+            let dir_str = std::str::from_utf8(dir_bytes)?;
+            // Use default directory mode (rwxr-xr-x).
+            writer.add_folder(dir_str, 0o755)?;
+        }
 
         for (header, path_bytes) in &final_entries {
             // Read the data from the original archive.

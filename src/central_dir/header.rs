@@ -3,7 +3,7 @@
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use crate::DosDateTime;
+use crate::{DosDateTime, EntryKind};
 
 /// Central Directory File Header (46 bytes fixed, followed by filename).
 ///
@@ -80,6 +80,16 @@ impl CentralDirectoryHeader {
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
         Self::SIZE.saturating_add(path_size)
+    }
+
+    /// Returns the entry kind based on Unix mode bits in external_attrs.
+    ///
+    /// Extracts the file type from the upper 16 bits of `external_attrs`
+    /// and returns the corresponding [`EntryKind`].
+    #[must_use]
+    pub fn kind(&self) -> EntryKind {
+        let mode = self.external_attrs.get() >> 16;
+        EntryKind::from_mode(mode)
     }
 
     /// Creates a new `CentralDirectoryHeader` for an uncompressed file.
@@ -191,6 +201,34 @@ mod tests {
             BaleEocd::DEFAULT_PATH_SIZE,
         );
         assert_eq!(header.external_attrs.get(), UNIX_MODE_EXEC << 16);
+    }
+
+    /// kind() returns File for regular file mode.
+    #[test]
+    fn kind_returns_file() {
+        let header = CentralDirectoryHeader::new(
+            100,
+            0,
+            DosDateTime::default(),
+            0,
+            0o100644, // Regular file with rw-r--r--
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
+        assert_eq!(header.kind(), crate::EntryKind::File);
+    }
+
+    /// kind() returns Directory for directory mode.
+    #[test]
+    fn kind_returns_directory() {
+        let header = CentralDirectoryHeader::new(
+            0,
+            0,
+            DosDateTime::default(),
+            0,
+            0o040755, // Directory with rwxr-xr-x
+            BaleEocd::DEFAULT_PATH_SIZE,
+        );
+        assert_eq!(header.kind(), crate::EntryKind::Directory);
     }
 
     /// Header can be serialized and deserialized without data loss.
