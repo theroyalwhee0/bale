@@ -1,5 +1,6 @@
 //! Read operations trait for archives.
 
+use crate::archive::{DirEntry, Entry, FileEntry, SymlinkEntry};
 use crate::{ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader};
 
 /// Read operations for archives.
@@ -40,6 +41,13 @@ pub trait ArchiveRead {
     ///
     /// The path comparison is byte-exact against the null-padded path.
     fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader>;
+
+    /// Finds an entry by path and returns both header and trimmed path bytes.
+    ///
+    /// Like [`find_entry`](Self::find_entry), but also returns the path bytes
+    /// from the archive (with null padding removed). This is useful when you
+    /// need to construct an entry wrapper with the path borrowed from the archive.
+    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8])>;
 
     /// Returns a zero-copy slice of the file data for the given entry.
     ///
@@ -82,4 +90,61 @@ pub trait ArchiveRead {
     /// the last entry and the Central Directory. This can occur after
     /// deletions or when entries are shadowed.
     fn has_orphaned_data(&self) -> bool;
+
+    /// Returns a file entry by path.
+    ///
+    /// This method provides type-safe access to file entries without manual
+    /// kind checking. The path is normalized before lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is not found ([`BaleError::EntryNotFound`])
+    /// - The entry exists but is not a file ([`BaleError::NotAFile`])
+    /// - The entry data cannot be read
+    fn file(&self, path: impl AsRef<str>) -> Result<FileEntry<'_>, BaleError>;
+
+    /// Returns a directory entry by path.
+    ///
+    /// This method provides type-safe access to directory entries without manual
+    /// kind checking. The path is normalized before lookup (trailing slashes
+    /// are handled automatically).
+    ///
+    /// Note: This only finds explicit directory entries. ZIP archives created
+    /// with standard tools include explicit directory entries. For implicit
+    /// directories (those that exist only because files have paths containing
+    /// them), this method returns `EntryNotFound`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is not found ([`BaleError::EntryNotFound`])
+    /// - The entry exists but is not a directory ([`BaleError::NotADirectory`])
+    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError>;
+
+    /// Returns a symlink entry by path.
+    ///
+    /// This method provides type-safe access to symlink entries without manual
+    /// kind checking. The path is normalized before lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is not found ([`BaleError::EntryNotFound`])
+    /// - The entry exists but is not a symlink ([`BaleError::NotASymlink`])
+    /// - The entry data cannot be read
+    fn symlink(&self, path: impl AsRef<str>) -> Result<SymlinkEntry<'_>, BaleError>;
+
+    /// Returns any entry by path.
+    ///
+    /// This method returns a generic [`Entry`] enum that can be matched on to
+    /// determine the entry type. Use this when you need to handle any type of
+    /// entry, or when you don't know the type ahead of time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is not found ([`BaleError::EntryNotFound`])
+    /// - The entry data cannot be read (for files and symlinks)
+    fn entry(&self, path: impl AsRef<str>) -> Result<Entry<'_>, BaleError>;
 }

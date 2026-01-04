@@ -1,10 +1,10 @@
 //! Read-write archive implementation.
 
-use super::{Archive, ArchiveRead, ArchiveWrite};
+use super::{Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry};
 use crate::central_dir::{CdEntry, parse_cd_entries};
 use crate::{
-    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
-    MappedArchiveMut, Trailer, Zip64Eocd,
+    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, EntryKind, Eocd,
+    LocalFileHeader, MappedArchiveMut, Trailer, Zip64Eocd,
 };
 use std::collections::HashSet;
 use std::fs::File;
@@ -158,6 +158,10 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
     }
 
     fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader> {
+        self.find_entry_with_path(path).map(|(h, _)| h)
+    }
+
+    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8])> {
         let path_bytes = path.as_bytes();
         let path_size = self.path_size();
 
@@ -170,7 +174,13 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             if entry.path.starts_with(path_bytes)
                 && entry.path[path_bytes.len()..].iter().all(|&b| b == 0)
             {
-                result = Some(&entry.header);
+                // Trim null padding from the stored path.
+                let end = entry
+                    .path
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(entry.path.len());
+                result = Some((&entry.header, &entry.path[..end]));
             }
         }
         result
@@ -288,6 +298,140 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         }
 
         expected_offset != self.write_offset
+    }
+
+    fn file(&self, path: impl AsRef<str>) -> Result<FileEntry<'_>, BaleError> {
+        let path_str = path.as_ref();
+        let (header, path_bytes) = self
+            .find_entry_with_path(path_str)
+            .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
+
+        if header.kind() != EntryKind::File {
+            return Err(BaleError::NotAFile(path_str.to_string()));
+        }
+
+        let data = self.read_data(header)?;
+        let archive_path = ArchivePath::from_bytes(path_bytes);
+
+        Ok(FileEntry {
+            header,
+            path: archive_path,
+            data,
+        })
+    }
+
+    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
+        let path_str = path.as_ref();
+
+        // Try with and without trailing slash.
+        let found = self.find_entry_with_path(path_str).or_else(|| {
+            if path_str.ends_with('/') {
+                self.find_entry_with_path(path_str.trim_end_matches('/'))
+            } else {
+                self.find_entry_with_path(&format!("{path_str}/"))
+            }
+        });
+
+        let (header, path_bytes) =
+            found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
+
+        if header.kind() != EntryKind::Directory {
+            return Err(BaleError::NotADirectory(path_str.to_string()));
+        }
+
+        // Trim trailing slash for the ArchivePath.
+        let trimmed = if path_bytes.ends_with(b"/") {
+            &path_bytes[..path_bytes.len() - 1]
+        } else {
+            path_bytes
+        };
+        let archive_path = ArchivePath::from_bytes(trimmed);
+
+        Ok(DirEntry {
+            header,
+            path: archive_path,
+        })
+    }
+
+    fn symlink(&self, path: impl AsRef<str>) -> Result<SymlinkEntry<'_>, BaleError> {
+        let path_str = path.as_ref();
+        let (header, path_bytes) = self
+            .find_entry_with_path(path_str)
+            .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
+
+        if header.kind() != EntryKind::Symlink {
+            return Err(BaleError::NotASymlink(path_str.to_string()));
+        }
+
+        let target = self.read_data(header)?;
+        let archive_path = ArchivePath::from_bytes(path_bytes);
+
+        Ok(SymlinkEntry {
+            header,
+            path: archive_path,
+            target,
+        })
+    }
+
+    fn entry(&self, path: impl AsRef<str>) -> Result<Entry<'_>, BaleError> {
+        let path_str = path.as_ref();
+
+        // Try direct lookup first.
+        let found = self.find_entry_with_path(path_str).or_else(|| {
+            // For directories, also try with/without trailing slash.
+            if path_str.ends_with('/') {
+                self.find_entry_with_path(path_str.trim_end_matches('/'))
+            } else {
+                self.find_entry_with_path(&format!("{path_str}/"))
+            }
+        });
+
+        let (header, path_bytes) =
+            found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
+
+        match header.kind() {
+            EntryKind::File => {
+                let data = self.read_data(header)?;
+                let archive_path = ArchivePath::from_bytes(path_bytes);
+                Ok(Entry::File(FileEntry {
+                    header,
+                    path: archive_path,
+                    data,
+                }))
+            }
+            EntryKind::Directory => {
+                // Trim trailing slash for the ArchivePath.
+                let trimmed = if path_bytes.ends_with(b"/") {
+                    &path_bytes[..path_bytes.len() - 1]
+                } else {
+                    path_bytes
+                };
+                let archive_path = ArchivePath::from_bytes(trimmed);
+                Ok(Entry::Directory(DirEntry {
+                    header,
+                    path: archive_path,
+                }))
+            }
+            EntryKind::Symlink => {
+                let target = self.read_data(header)?;
+                let archive_path = ArchivePath::from_bytes(path_bytes);
+                Ok(Entry::Symlink(SymlinkEntry {
+                    header,
+                    path: archive_path,
+                    target,
+                }))
+            }
+            EntryKind::Other(_) => {
+                // Treat unknown types as files for now.
+                let data = self.read_data(header)?;
+                let archive_path = ArchivePath::from_bytes(path_bytes);
+                Ok(Entry::File(FileEntry {
+                    header,
+                    path: archive_path,
+                    data,
+                }))
+            }
+        }
     }
 }
 
@@ -451,6 +595,50 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
         self.dirty = false;
         Ok(())
+    }
+
+    fn add_folder(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError> {
+        let path_str = path.as_ref();
+
+        // Ensure directory mode bits are set.
+        const S_IFDIR: u32 = 0o040000;
+        let mode = if mode & 0o170000 == 0 {
+            // No file type bits set, add directory bits.
+            mode | S_IFDIR
+        } else {
+            mode
+        };
+
+        // Directories have empty data and a trailing slash in their path.
+        let dir_path = if path_str.ends_with('/') {
+            path_str.to_string()
+        } else {
+            format!("{path_str}/")
+        };
+
+        self.add_entry(&dir_path, &[], mode)
+    }
+
+    fn add_symlink(
+        &mut self,
+        path: impl AsRef<str>,
+        target: impl AsRef<str>,
+        mode: u32,
+    ) -> Result<(), BaleError> {
+        let path_str = path.as_ref();
+        let target_str = target.as_ref();
+
+        // Ensure symlink mode bits are set.
+        const S_IFLNK: u32 = 0o120000;
+        let mode = if mode & 0o170000 == 0 {
+            // No file type bits set, add symlink bits.
+            mode | S_IFLNK
+        } else {
+            mode
+        };
+
+        // Symlink target is stored as file data.
+        self.add_entry(path_str, target_str.as_bytes(), mode)
     }
 }
 
