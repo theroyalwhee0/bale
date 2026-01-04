@@ -324,6 +324,10 @@ impl<'a> ArchivePath<'a> {
 }
 
 /// Displays the path, using lossy UTF-8 conversion for invalid bytes.
+///
+/// Lossy conversion is acceptable here because Display is for human-readable
+/// output only. Code that needs exact byte content should use `as_bytes()`.
+#[allow(clippy::disallowed_methods)]
 impl fmt::Display for ArchivePath<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", String::from_utf8_lossy(&self.0))

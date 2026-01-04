@@ -3,4 +3,7 @@ disallowed-methods = [
     # Prefer using `to_str` or `to_string` with proper error handling.
     "std::ffi::OsStr::to_string_lossy",
     "std::path::Path::to_string_lossy",
+    # No `from_utf8_lossy` methods. Use `from_utf8()` and handle errors explicitly.
+    # Exception: Display impls may use lossy conversion for user-facing output.
+    { path = "std::string::String::from_utf8_lossy", reason = "use from_utf8() and handle errors explicitly" },
 ]

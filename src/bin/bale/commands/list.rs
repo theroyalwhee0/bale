@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use bale::{ArchivePath, ArchiveReader, DosDateTime};
+use bale::{ArchivePath, ArchiveRead, ArchiveReader, DosDateTime};
 
 use crate::error::BaleCliError;
 

@@ -1,6 +1,6 @@
 //! Archive compaction to reclaim space from orphaned data.
 
-use crate::{ArchivePath, ArchiveReader, ArchiveWriter, BaleError};
+use crate::{ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter, BaleError};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};

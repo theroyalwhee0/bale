@@ -1,3 +1,5 @@
+//! Central Directory File Header.
+
 use zerocopy::byteorder::little_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 

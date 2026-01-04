@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bale::{ArchivePath, ArchiveWriter};
+use bale::{ArchivePath, ArchiveWrite, ArchiveWriter};
 
 use crate::error::BaleCliError;
 
