@@ -1,6 +1,6 @@
 //! Core archive struct with generic memory-map backing.
 
-use super::CdEntry;
+use crate::central_dir::CdEntry;
 use crate::{BaleEocd, MappedArchive, MappedArchiveMut};
 
 /// A bale archive with generic memory-map backing.

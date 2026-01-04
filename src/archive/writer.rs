@@ -1,6 +1,7 @@
 //! Read-write archive implementation.
 
-use super::{Archive, ArchiveRead, ArchiveWrite, CdEntry, parse_cd_entries, path_to_string};
+use super::{Archive, ArchiveRead, ArchiveWrite};
+use crate::central_dir::{CdEntry, parse_cd_entries};
 use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, Eocd, LocalFileHeader,
     MappedArchiveMut, Trailer, Zip64Eocd,
@@ -230,7 +231,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         true
     }
 
-    fn find_duplicates(&self) -> Vec<String> {
+    fn find_duplicates(&self) -> Vec<ArchivePath<'static>> {
         let mut seen: HashSet<&[u8]> = HashSet::new();
         let mut duplicate_set: HashSet<&[u8]> = HashSet::new();
 
@@ -240,7 +241,18 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             }
         }
 
-        duplicate_set.into_iter().map(path_to_string).collect()
+        duplicate_set
+            .into_iter()
+            .map(|path_bytes| {
+                // Trim null padding.
+                let end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                // Create owned ArchivePath from trimmed bytes.
+                ArchivePath::from(path_bytes[..end].to_vec())
+            })
+            .collect()
     }
 
     fn has_orphaned_data(&self) -> bool {

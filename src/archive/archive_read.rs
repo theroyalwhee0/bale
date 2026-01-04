@@ -74,7 +74,7 @@ pub trait ArchiveRead {
     /// Duplicate paths occur when the same path appears multiple times in the
     /// Central Directory (shadowing). Returns the paths that have duplicates,
     /// not the total count of duplicates.
-    fn find_duplicates(&self) -> Vec<String>;
+    fn find_duplicates(&self) -> Vec<ArchivePath<'static>>;
 
     /// Checks if the archive contains orphaned data.
     ///
