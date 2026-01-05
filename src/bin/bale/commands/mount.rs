@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use bale::fuse::BaleFs;
+
 use crate::error::BaleCliError;
 
 /// Runs the mount command.
@@ -13,20 +15,27 @@ use crate::error::BaleCliError;
 /// - The mount point is invalid
 /// - FUSE mounting fails
 pub fn run(
-    _archive: PathBuf,
-    _mount_point: PathBuf,
-    _background: bool,
-    _allow_root: bool,
-    _allow_other: bool,
+    archive: PathBuf,
+    mount_point: PathBuf,
+    background: bool,
+    allow_root: bool,
+    allow_other: bool,
     _shell: Option<Option<String>>,
 ) -> Result<(), BaleCliError> {
-    // TODO: Implement FUSE filesystem mounting
-    // 1. Open archive with ArchiveReader
-    // 2. Create BaleFs instance
-    // 3. If shell is Some, spawn shell after mount
-    // 4. Mount filesystem (foreground or background)
-    Err(BaleCliError::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "FUSE mount not yet implemented",
-    )))
+    // TODO: Implement --background (daemonize)
+    // TODO: Implement --shell (spawn shell at mount point)
+    if background {
+        return Err(BaleCliError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "--background not yet implemented",
+        )));
+    }
+
+    // For now, always mount read-only.
+    let read_only = true;
+
+    let fs = BaleFs::new(&archive, read_only)?;
+    fs.mount(&mount_point, allow_root, allow_other)?;
+
+    Ok(())
 }

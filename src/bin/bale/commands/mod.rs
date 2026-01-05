@@ -5,6 +5,7 @@ pub mod add;
 /// Check archive integrity.
 pub mod check;
 /// Compact an archive.
+#[cfg(feature = "compact")]
 pub mod compact;
 /// Delete entries from an archive.
 pub mod delete;

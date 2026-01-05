@@ -71,6 +71,7 @@ pub enum Command {
         entries: Vec<String>,
     },
     /// Compact a bale archive, removing orphaned data.
+    #[cfg(feature = "compact")]
     Compact {
         /// The archive to compact.
         archive: PathBuf,
