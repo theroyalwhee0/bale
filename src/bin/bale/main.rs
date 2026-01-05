@@ -9,6 +9,7 @@
 //! - `delete` - Remove entries from an archive
 //! - `compact` - Remove orphaned data and duplicates
 //! - `check` - Validate archive integrity
+//! - `mount` - Mount archive as FUSE filesystem (requires `fuse` feature)
 //!
 //! # Usage
 //!
@@ -17,6 +18,7 @@
 //! bale add archive.bale file1.txt file2.txt
 //! bale ls archive.bale
 //! bale extract archive.bale -o output_dir
+//! bale mount archive.bale /mnt/archive
 //! ```
 
 mod cli;
@@ -81,5 +83,23 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         // Maintenance.
         Command::Compact { archive } => commands::compact::run(archive),
         Command::Check { archive, quiet } => commands::check::run(archive, quiet),
+
+        // Filesystem.
+        #[cfg(feature = "fuse")]
+        Command::Mount {
+            archive,
+            mount_point,
+            background,
+            allow_root,
+            allow_other,
+            shell,
+        } => commands::mount::run(
+            archive,
+            mount_point,
+            background,
+            allow_root,
+            allow_other,
+            shell,
+        ),
     }
 }

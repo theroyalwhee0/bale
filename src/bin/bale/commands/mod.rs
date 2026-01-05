@@ -12,5 +12,8 @@ pub mod delete;
 pub mod extract;
 /// List entries in an archive.
 pub mod list;
+/// Mount archive as filesystem.
+#[cfg(feature = "fuse")]
+pub mod mount;
 /// Create or update file modification time.
 pub mod touch;
