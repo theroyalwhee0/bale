@@ -11,7 +11,9 @@ use fuser::{FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEn
 use nix::libc;
 
 use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO, TTL};
-use crate::{ArchiveRead, ArchiveWriter, BaleError, CentralDirectoryHeader, EntryKind};
+use crate::{
+    ArchiveRead, ArchiveWriter, BaleError, CentralDirectoryHeader, DosDateTime, EntryKind,
+};
 
 /// FUSE filesystem backed by a bale archive.
 ///
@@ -372,15 +374,17 @@ impl BaleFsState {
         let mode = header.external_attrs.get() >> 16;
         let perm = (mode & 0o777) as u16;
         let size = header.uncompressed_size.get() as u64;
+        let mtime = DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
+            .to_system_time_or_epoch();
 
         fuser::FileAttr {
             ino,
             size,
             blocks: size.div_ceil(512),
-            atime: self.mount_time,
-            mtime: self.mount_time, // TODO: Use entry mtime from DOS timestamp
-            ctime: self.mount_time,
-            crtime: self.mount_time,
+            atime: mtime,
+            mtime,
+            ctime: mtime,
+            crtime: mtime,
             kind,
             perm: if perm == 0 { 0o644 } else { perm },
             nlink: 1,
