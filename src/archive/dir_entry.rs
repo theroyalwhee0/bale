@@ -18,6 +18,8 @@ pub struct DirEntry<'a> {
     pub(crate) header: &'a CentralDirectoryHeader,
     /// The directory path (without null padding or trailing slash).
     pub(crate) path: ArchivePath<'a>,
+    /// Stable entry ID.
+    pub(crate) id: u32,
 }
 
 impl<'a> DirEntry<'a> {
@@ -45,5 +47,11 @@ impl<'a> DirEntry<'a> {
     #[must_use]
     pub fn header(&self) -> &'a CentralDirectoryHeader {
         self.header
+    }
+
+    /// Returns the stable entry ID.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
     }
 }

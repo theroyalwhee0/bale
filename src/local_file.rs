@@ -46,18 +46,23 @@ impl LocalFileHeader {
     /// Size of the fixed header portion in bytes.
     pub const SIZE: usize = 30;
 
+    /// Size of the extra field containing the Bale entry ID.
+    pub const EXTRA_SIZE: u16 = 8;
+
     /// Version needed to extract for STORE method.
     const VERSION_STORE: u16 = 10;
 
     /// Compression method: STORE (no compression).
     const COMPRESSION_STORE: u16 = 0;
 
-    /// Returns the total stride (header + filename) for a given path size.
+    /// Returns the total stride (header + filename + extra) for a given path size.
     ///
     /// Uses saturating addition to avoid overflow on pathological inputs.
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
-        Self::SIZE.saturating_add(path_size)
+        Self::SIZE
+            .saturating_add(path_size)
+            .saturating_add(Self::EXTRA_SIZE as usize)
     }
 
     /// Creates a new `LocalFileHeader` for an uncompressed file.
@@ -81,7 +86,7 @@ impl LocalFileHeader {
             compressed_size: U32::new(size),
             uncompressed_size: U32::new(size),
             filename_length: U16::new(path_size),
-            extra_length: U16::new(0),
+            extra_length: U16::new(Self::EXTRA_SIZE),
         }
     }
 }
@@ -103,18 +108,19 @@ mod tests {
         );
     }
 
-    /// Stride includes header plus filename field.
+    /// Stride includes header plus filename field plus extra field.
     #[test]
-    fn stride_is_header_plus_path() {
+    fn stride_is_header_plus_path_plus_extra() {
         let default_path = BaleEocd::DEFAULT_PATH_SIZE as usize;
+        let extra = LocalFileHeader::EXTRA_SIZE as usize;
         let test_path = TEST_PATH_SIZE as usize;
         assert_eq!(
             LocalFileHeader::stride(default_path),
-            LocalFileHeader::SIZE + default_path
+            LocalFileHeader::SIZE + default_path + extra
         );
         assert_eq!(
             LocalFileHeader::stride(test_path),
-            LocalFileHeader::SIZE + test_path
+            LocalFileHeader::SIZE + test_path + extra
         );
     }
 

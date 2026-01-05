@@ -42,12 +42,13 @@ pub trait ArchiveRead {
     /// The path comparison is byte-exact against the null-padded path.
     fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader>;
 
-    /// Finds an entry by path and returns both header and trimmed path bytes.
+    /// Finds an entry by path and returns header, trimmed path bytes, and ID.
     ///
     /// Like [`find_entry`](Self::find_entry), but also returns the path bytes
-    /// from the archive (with null padding removed). This is useful when you
-    /// need to construct an entry wrapper with the path borrowed from the archive.
-    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8])>;
+    /// from the archive (with null padding removed) and the stable entry ID.
+    /// This is useful when you need to construct an entry wrapper with the
+    /// path borrowed from the archive.
+    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8], u32)>;
 
     /// Returns a zero-copy slice of the file data for the given entry.
     ///
@@ -147,4 +148,9 @@ pub trait ArchiveRead {
     /// - The path is not found ([`BaleError::EntryNotFound`])
     /// - The entry data cannot be read (for files and symlinks)
     fn entry(&self, path: impl AsRef<str>) -> Result<Entry<'_>, BaleError>;
+
+    /// Finds an entry by its stable ID.
+    ///
+    /// Returns `None` if no entry with the given ID exists.
+    fn find_by_id(&self, id: u32) -> Option<Entry<'_>>;
 }

@@ -1,7 +1,7 @@
 //! Read-write archive implementation.
 
 use super::{Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::central_dir::{CdEntry, parse_cd_entries};
+use crate::central_dir::{BaleExtra, CdEntry, parse_cd_entries};
 use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, EntryKind, Eocd,
     LocalFileHeader, MappedArchiveMut, Trailer, Zip64Eocd,
@@ -158,10 +158,10 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
     }
 
     fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader> {
-        self.find_entry_with_path(path).map(|(h, _)| h)
+        self.find_entry_with_path(path).map(|(h, _, _)| h)
     }
 
-    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8])> {
+    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8], u32)> {
         let path_bytes = path.as_bytes();
         let path_size = self.path_size();
 
@@ -180,7 +180,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
                     .iter()
                     .position(|&b| b == 0)
                     .unwrap_or(entry.path.len());
-                result = Some((&entry.header, &entry.path[..end]));
+                result = Some((&entry.header, &entry.path[..end], entry.id));
             }
         }
         result
@@ -302,7 +302,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
 
     fn file(&self, path: impl AsRef<str>) -> Result<FileEntry<'_>, BaleError> {
         let path_str = path.as_ref();
-        let (header, path_bytes) = self
+        let (header, path_bytes, id) = self
             .find_entry_with_path(path_str)
             .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
 
@@ -317,6 +317,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             header,
             path: archive_path,
             data,
+            id,
         })
     }
 
@@ -332,7 +333,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             }
         });
 
-        let (header, path_bytes) =
+        let (header, path_bytes, id) =
             found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
 
         if header.kind() != EntryKind::Directory {
@@ -350,12 +351,13 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         Ok(DirEntry {
             header,
             path: archive_path,
+            id,
         })
     }
 
     fn symlink(&self, path: impl AsRef<str>) -> Result<SymlinkEntry<'_>, BaleError> {
         let path_str = path.as_ref();
-        let (header, path_bytes) = self
+        let (header, path_bytes, id) = self
             .find_entry_with_path(path_str)
             .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
 
@@ -370,6 +372,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             header,
             path: archive_path,
             target,
+            id,
         })
     }
 
@@ -386,7 +389,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             }
         });
 
-        let (header, path_bytes) =
+        let (header, path_bytes, id) =
             found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
 
         match header.kind() {
@@ -397,6 +400,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
                     header,
                     path: archive_path,
                     data,
+                    id,
                 }))
             }
             EntryKind::Directory => {
@@ -410,6 +414,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
                 Ok(Entry::Directory(DirEntry {
                     header,
                     path: archive_path,
+                    id,
                 }))
             }
             EntryKind::Symlink => {
@@ -419,6 +424,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
                     header,
                     path: archive_path,
                     target,
+                    id,
                 }))
             }
             EntryKind::Other(_) => {
@@ -429,9 +435,61 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
                     header,
                     path: archive_path,
                     data,
+                    id,
                 }))
             }
         }
+    }
+
+    fn find_by_id(&self, id: u32) -> Option<Entry<'_>> {
+        // Linear scan to find entry with matching ID.
+        for entry in &self.entries {
+            if entry.id == id {
+                // Trim null padding from the stored path.
+                let end = entry
+                    .path
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(entry.path.len());
+                let path_bytes = &entry.path[..end];
+                let archive_path = ArchivePath::from_bytes(path_bytes);
+
+                return match entry.header.kind() {
+                    EntryKind::File | EntryKind::Other(_) => {
+                        let data = self.read_data(&entry.header).ok()?;
+                        Some(Entry::File(FileEntry {
+                            header: &entry.header,
+                            path: archive_path,
+                            data,
+                            id,
+                        }))
+                    }
+                    EntryKind::Directory => {
+                        // Trim trailing slash for the ArchivePath.
+                        let trimmed = if path_bytes.ends_with(b"/") {
+                            ArchivePath::from_bytes(&path_bytes[..path_bytes.len() - 1])
+                        } else {
+                            archive_path
+                        };
+                        Some(Entry::Directory(DirEntry {
+                            header: &entry.header,
+                            path: trimmed,
+                            id,
+                        }))
+                    }
+                    EntryKind::Symlink => {
+                        let target = self.read_data(&entry.header).ok()?;
+                        Some(Entry::Symlink(SymlinkEntry {
+                            header: &entry.header,
+                            path: archive_path,
+                            target,
+                            id,
+                        }))
+                    }
+                };
+            }
+        }
+        None
     }
 }
 
@@ -478,8 +536,14 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let mtime = DosDateTime::from(std::time::SystemTime::now());
         let local_header = LocalFileHeader::new(data_size_u32, crc, mtime, path_size as u16);
 
+        // Assign next available ID and increment counter.
+        let id = self.bale_eocd.next_id();
+        self.bale_eocd.set_next_id(id.saturating_add(1));
+        let extra = BaleExtra::new(id);
+
         self.mmap.extend(local_header.as_bytes())?;
         self.mmap.extend(&padded_path)?;
+        self.mmap.extend(extra.as_bytes())?;
         self.mmap.extend(data)?;
 
         let mut remaining = padding;
@@ -503,6 +567,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         self.entries.push(CdEntry {
             header: cd_header,
             path: padded_path,
+            id,
         });
 
         self.dirty = true;
@@ -570,13 +635,19 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         self.mmap.set_len(total_size)?;
 
         let bytes = self.mmap.as_bytes_mut();
+        let extra_size = CentralDirectoryHeader::EXTRA_SIZE as usize;
 
         let mut offset = cd_offset;
         for entry in &self.entries {
+            // Write header.
             bytes[offset..offset + CentralDirectoryHeader::SIZE]
                 .copy_from_slice(entry.header.as_bytes());
-            bytes[offset + CentralDirectoryHeader::SIZE..offset + cd_stride]
-                .copy_from_slice(&entry.path);
+            // Write path.
+            let path_end = offset + CentralDirectoryHeader::SIZE + path_size;
+            bytes[offset + CentralDirectoryHeader::SIZE..path_end].copy_from_slice(&entry.path);
+            // Write extra field with ID.
+            let extra = BaleExtra::new(entry.id);
+            bytes[path_end..path_end + extra_size].copy_from_slice(extra.as_bytes());
             offset += cd_stride;
         }
 
