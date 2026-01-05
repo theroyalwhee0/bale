@@ -83,4 +83,25 @@ pub enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Mount a bale archive as a filesystem.
+    #[cfg(feature = "fuse")]
+    #[command(visible_alias = "mnt")]
+    Mount {
+        /// The archive to mount.
+        archive: PathBuf,
+        /// The mount point directory.
+        mount_point: PathBuf,
+        /// Run in background (daemonize).
+        #[arg(short, long)]
+        background: bool,
+        /// Allow root to access the mount.
+        #[arg(long)]
+        allow_root: bool,
+        /// Allow other users to access the mount.
+        #[arg(long)]
+        allow_other: bool,
+        /// Spawn a shell at the mount point (optionally with a command).
+        #[arg(long)]
+        shell: Option<Option<String>>,
+    },
 }
