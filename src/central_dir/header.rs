@@ -61,6 +61,9 @@ impl CentralDirectoryHeader {
     /// Size of the fixed header portion in bytes.
     pub const SIZE: usize = 46;
 
+    /// Size of the extra field containing the Bale entry ID.
+    pub const EXTRA_SIZE: u16 = 8;
+
     /// Version made by: Unix (3) in high byte, ZIP 1.0 (10) in low byte.
     ///
     /// Bale archives always report Unix as the creation OS, regardless of the
@@ -74,12 +77,14 @@ impl CentralDirectoryHeader {
     /// Compression method: STORE (no compression).
     const COMPRESSION_STORE: u16 = 0;
 
-    /// Returns the total stride (header + filename) for a given path size.
+    /// Returns the total stride (header + filename + extra) for a given path size.
     ///
     /// Uses saturating addition to avoid overflow on pathological inputs.
     #[must_use]
     pub const fn stride(path_size: usize) -> usize {
-        Self::SIZE.saturating_add(path_size)
+        Self::SIZE
+            .saturating_add(path_size)
+            .saturating_add(Self::EXTRA_SIZE as usize)
     }
 
     /// Returns the entry kind based on Unix mode bits in external_attrs.
@@ -127,7 +132,7 @@ impl CentralDirectoryHeader {
             compressed_size: U32::new(size),
             uncompressed_size: U32::new(size),
             filename_length: U16::new(path_size),
-            extra_length: U16::new(0),
+            extra_length: U16::new(Self::EXTRA_SIZE),
             comment_length: U16::new(0),
             disk_start: U16::new(0),
             internal_attrs: U16::new(0),
@@ -160,18 +165,19 @@ mod tests {
         );
     }
 
-    /// Stride includes header plus filename field.
+    /// Stride includes header plus filename field plus extra field.
     #[test]
-    fn stride_is_header_plus_path() {
+    fn stride_is_header_plus_path_plus_extra() {
         let default_path = BaleEocd::DEFAULT_PATH_SIZE as usize;
+        let extra = CentralDirectoryHeader::EXTRA_SIZE as usize;
         let test_path = TEST_PATH_SIZE as usize;
         assert_eq!(
             CentralDirectoryHeader::stride(default_path),
-            CentralDirectoryHeader::SIZE + default_path
+            CentralDirectoryHeader::SIZE + default_path + extra
         );
         assert_eq!(
             CentralDirectoryHeader::stride(test_path),
-            CentralDirectoryHeader::SIZE + test_path
+            CentralDirectoryHeader::SIZE + test_path + extra
         );
     }
 

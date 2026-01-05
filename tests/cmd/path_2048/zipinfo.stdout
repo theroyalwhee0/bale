@@ -1,4 +1,4 @@
 Archive:  tests/fixtures/valid/path_2048.bale
-Zip file size: 6446 bytes, number of entries: 1
--rw-rw-r--  1.0 unx       24 b- stor 26-Jan-02 23:58 path_test.txt
+Zip file size: 6454 bytes, number of entries: 1
+-rw-rw-r--  1.0 unx       24 bx stor 26-Jan-05 14:27 path_test.txt
 1 file, 24 bytes uncompressed, 24 bytes compressed:  0.0%

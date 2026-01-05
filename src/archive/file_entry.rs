@@ -19,6 +19,8 @@ pub struct FileEntry<'a> {
     pub(crate) path: ArchivePath<'a>,
     /// The file data.
     pub(crate) data: &'a [u8],
+    /// Stable entry ID.
+    pub(crate) id: u32,
 }
 
 impl<'a> FileEntry<'a> {
@@ -64,5 +66,11 @@ impl<'a> FileEntry<'a> {
     #[must_use]
     pub fn header(&self) -> &'a CentralDirectoryHeader {
         self.header
+    }
+
+    /// Returns the stable entry ID.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
     }
 }

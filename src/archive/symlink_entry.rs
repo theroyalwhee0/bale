@@ -19,6 +19,8 @@ pub struct SymlinkEntry<'a> {
     pub(crate) path: ArchivePath<'a>,
     /// The symlink target (stored as file data).
     pub(crate) target: &'a [u8],
+    /// Stable entry ID.
+    pub(crate) id: u32,
 }
 
 impl<'a> SymlinkEntry<'a> {
@@ -62,5 +64,11 @@ impl<'a> SymlinkEntry<'a> {
     #[must_use]
     pub fn header(&self) -> &'a CentralDirectoryHeader {
         self.header
+    }
+
+    /// Returns the stable entry ID.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.id
     }
 }

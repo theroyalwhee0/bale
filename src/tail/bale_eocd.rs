@@ -13,6 +13,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 /// - Version information for format compatibility
 /// - Alignment power (2^N) for file data placement
 /// - Path size limit for fixed-stride entries
+/// - Next entry ID counter for stable entry identifiers
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct BaleEocd {
@@ -28,6 +29,8 @@ pub struct BaleEocd {
     pub alignment_pow2: u8,
     /// Maximum path size in bytes (1-2048).
     pub path_size: U16,
+    /// Next entry ID to assign (starts at 1, 0 reserved for root).
+    pub next_id: U32,
     /// Reserved for future use.
     ///
     /// Writers must set this to all zeros. Readers should ignore non-zero bytes
@@ -49,7 +52,7 @@ impl BaleEocd {
         Zip64Eocd::SIZE + Zip64EocdLocator::SIZE + Eocd::SIZE + Self::SIZE; // 256
 
     /// Size of the reserved field.
-    const RESERVED_SIZE: usize = Self::SIZE - 10; // 148 bytes
+    const RESERVED_SIZE: usize = Self::SIZE - 14; // 144 bytes
 
     /// Minimum allowed path size.
     pub const MIN_PATH_SIZE: u16 = 1;
@@ -77,12 +80,13 @@ impl BaleEocd {
     /// - **Patch**: Implementation-only changes with no format impact.
     ///
     /// Currently, version checking is not enforced; all versions are accepted.
-    pub const CURRENT_VERSION: (u8, u8, u8) = (0, 1, 0);
+    pub const CURRENT_VERSION: (u8, u8, u8) = (0, 2, 0);
 
     /// Creates a new `BaleEocd` with default settings.
     ///
     /// Uses [`DEFAULT_ALIGNMENT`](Self::DEFAULT_ALIGNMENT) (4096) and
-    /// [`DEFAULT_PATH_SIZE`](Self::DEFAULT_PATH_SIZE) (256).
+    /// [`DEFAULT_PATH_SIZE`](Self::DEFAULT_PATH_SIZE) (256). The next entry ID
+    /// starts at 1 (0 is reserved for root).
     #[must_use]
     pub fn new() -> Self {
         let (major, minor, patch) = Self::CURRENT_VERSION;
@@ -93,6 +97,7 @@ impl BaleEocd {
             version_patch: patch,
             alignment_pow2: Self::DEFAULT_ALIGNMENT_POW2,
             path_size: U16::new(Self::DEFAULT_PATH_SIZE),
+            next_id: U32::new(1),
             reserved: [0u8; Self::RESERVED_SIZE],
         }
     }
@@ -136,6 +141,7 @@ impl BaleEocd {
             version_patch: patch,
             alignment_pow2,
             path_size: U16::new(path_size),
+            next_id: U32::new(1),
             reserved: [0u8; Self::RESERVED_SIZE],
         })
     }
@@ -166,6 +172,17 @@ impl BaleEocd {
     #[must_use]
     pub const fn path_size(&self) -> u16 {
         self.path_size.get()
+    }
+
+    /// Returns the next entry ID to assign.
+    #[must_use]
+    pub const fn next_id(&self) -> u32 {
+        self.next_id.get()
+    }
+
+    /// Sets the next entry ID to assign.
+    pub fn set_next_id(&mut self, id: u32) {
+        self.next_id = U32::new(id);
     }
 
     /// Returns the version as a tuple (major, minor, patch).
@@ -300,6 +317,16 @@ mod tests {
     fn version() {
         let bale = BaleEocd::new();
         assert_eq!(bale.version(), BaleEocd::CURRENT_VERSION);
+    }
+
+    /// Next ID starts at 1 and can be modified.
+    #[test]
+    fn next_id() {
+        let mut bale = BaleEocd::new();
+        assert_eq!(bale.next_id(), 1);
+
+        bale.set_next_id(42);
+        assert_eq!(bale.next_id(), 42);
     }
 
     /// Can be serialized and deserialized.
