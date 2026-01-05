@@ -170,13 +170,15 @@ Expected output goes in matching `.stdout` files.
 
 ## Format Specification
 
-| Property   | Value                             |
-| ---------- | --------------------------------- |
-| EOCD       | Standard 22-byte zip format       |
-| Stride     | `header_size + path_size` (fixed) |
-| Byte order | Little-endian                     |
-| Alignment  | 4096 bytes (configurable, 2^N)    |
-| Max path   | 256 bytes (configurable, 1-2048)  |
+| Property   | Value                                        |
+| ---------- | -------------------------------------------- |
+| Version    | 0.2.0                                        |
+| EOCD       | Standard 22-byte zip format                  |
+| CD Stride  | `46 + path_size + 8` (header + path + extra) |
+| LFH Stride | `30 + path_size + 8` (header + path + extra) |
+| Byte order | Little-endian                                |
+| Alignment  | 4096 bytes (configurable, 2^N)               |
+| Max path   | 256 bytes (configurable, 1-2048)             |
 
 ### Archive Layout
 
@@ -201,12 +203,28 @@ Expected output goes in matching `.stdout` files.
 | Offset | Size | Field                                   |
 | ------ | ---- | --------------------------------------- |
 | 0      | 4    | Magic signature "BALE" (0x454C4142 LE)  |
-| 4      | 1    | Major version                           |
-| 5      | 1    | Minor version                           |
-| 6      | 1    | Patch version                           |
+| 4      | 1    | Major version (0)                       |
+| 5      | 1    | Minor version (2)                       |
+| 6      | 1    | Patch version (0)                       |
 | 7      | 1    | Alignment power (2^N, e.g., 12 = 4096)  |
 | 8      | 2    | Path size (1-2048, little-endian)       |
-| 10     | 148  | Reserved (zeros)                        |
+| 10     | 4    | Next ID (u32, for stable entry IDs)     |
+| 14     | 144  | Reserved (zeros)                        |
+
+### Entry IDs and Extra Fields
+
+Each entry has a stable u32 ID stored in a ZIP-compatible extra field:
+
+| Offset | Size | Field                                   |
+| ------ | ---- | --------------------------------------- |
+| 0      | 2    | Tag (0xBA1D = "BAID" with 1 as I)       |
+| 2      | 2    | Size (always 4)                         |
+| 4      | 4    | Entry ID (u32, little-endian)           |
+
+- IDs start at 1 (0 reserved for root/no-ID)
+- IDs are assigned sequentially and never reused within an archive session
+- Compact operation renumbers entries 1..N
+- Extra field adds 8 bytes to CD and local file header stride
 
 ### ZIP64 Compatibility
 
