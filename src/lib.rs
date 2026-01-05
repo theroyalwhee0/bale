@@ -26,6 +26,9 @@ mod dos_time;
 mod entry_kind;
 /// Error types for bale operations.
 mod error;
+/// FUSE filesystem support.
+#[cfg(feature = "fuse")]
+pub mod fuse;
 /// Local File Header for ZIP entries.
 mod local_file;
 /// Memory-mapped file access.
