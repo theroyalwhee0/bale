@@ -7,9 +7,16 @@
 //! - `ls` (alias: `list`) - List archive contents
 //! - `extract` - Extract files from an archive
 //! - `delete` - Remove entries from an archive
-//! - `compact` - Remove orphaned data and duplicates
+//! - `compact` - Remove orphaned data and duplicates (requires `compact` feature)
 //! - `check` - Validate archive integrity
 //! - `mount` - Mount archive as FUSE filesystem (requires `fuse` feature)
+//!
+//! # Features
+//!
+//! - `cli` - Base CLI (no compact, no fuse)
+//! - `compact` - Adds compact command
+//! - `fuse` - Adds mount command (includes cli)
+//! - `bin` - Full binary (includes compact + fuse)
 //!
 //! # Usage
 //!
@@ -18,6 +25,7 @@
 //! bale add archive.bale file1.txt file2.txt
 //! bale ls archive.bale
 //! bale extract archive.bale -o output_dir
+//! bale compact archive.bale
 //! bale mount archive.bale /mnt/archive
 //! ```
 
@@ -81,6 +89,7 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         } => commands::extract::run(archive, output, &entries),
 
         // Maintenance.
+        #[cfg(feature = "compact")]
         Command::Compact { archive } => commands::compact::run(archive),
         Command::Check { archive, quiet } => commands::check::run(archive, quiet),
 
