@@ -12,12 +12,6 @@ use std::io::Read;
 use std::path::Path;
 use zerocopy::IntoBytes;
 
-/// Pre-allocated zero buffer for padding (avoids allocation for common cases).
-///
-/// Sized to match the default alignment (4096 bytes). For larger alignments,
-/// padding is written in chunks from this buffer.
-static ZERO_PAD: [u8; 4096] = [0u8; 4096];
-
 impl Archive<MappedArchiveMut> {
     /// Creates a new empty archive at the given path.
     ///
@@ -546,11 +540,8 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         self.mmap.extend(extra.as_bytes())?;
         self.mmap.extend(data)?;
 
-        let mut remaining = padding;
-        while remaining > 0 {
-            let chunk = remaining.min(ZERO_PAD.len());
-            self.mmap.extend(&ZERO_PAD[..chunk])?;
-            remaining -= chunk;
+        if padding > 0 {
+            self.mmap.set_len(self.mmap.len() + padding)?;
         }
 
         self.write_offset += aligned_size;
