@@ -76,6 +76,22 @@ Compact an archive to reclaim space from deleted entries:
 bale compact archive.bale
 ```
 
+Mount an archive as a FUSE filesystem:
+
+```bash
+# Mount at a specific directory
+bale mount archive.bale /mnt/archive
+
+# Interactive shell at mount point
+bale mount archive.bale --shell
+
+# Run a command against mounted archive
+bale mount archive.bale --shell 'ls -la'
+
+# Use python3 via shell
+bale mount archive.bale --shell "python3 -c 'import os; print(os.listdir(\".\"))'"
+```
+
 ### Library
 
 ```rust

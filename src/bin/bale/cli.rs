@@ -90,8 +90,8 @@ pub enum Command {
     Mount {
         /// The archive to mount.
         archive: PathBuf,
-        /// The mount point directory.
-        mount_point: PathBuf,
+        /// The mount point directory (optional with --shell).
+        mount_point: Option<PathBuf>,
         /// Run in background (daemonize).
         #[arg(short, long)]
         background: bool,
