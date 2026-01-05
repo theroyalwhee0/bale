@@ -1,6 +1,7 @@
 //! Mount a bale archive as a FUSE filesystem.
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use bale::fuse::BaleFs;
 
@@ -14,16 +15,16 @@ use crate::error::BaleCliError;
 /// - The archive cannot be opened
 /// - The mount point is invalid
 /// - FUSE mounting fails
+/// - Shell mode fails to spawn or execute
 pub fn run(
     archive: PathBuf,
-    mount_point: PathBuf,
+    mount_point: Option<PathBuf>,
     background: bool,
     allow_root: bool,
     allow_other: bool,
-    _shell: Option<Option<String>>,
+    shell: Option<Option<String>>,
 ) -> Result<(), BaleCliError> {
     // TODO: Implement --background (daemonize)
-    // TODO: Implement --shell (spawn shell at mount point)
     if background {
         return Err(BaleCliError::Io(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -31,11 +32,77 @@ pub fn run(
         )));
     }
 
-    // For now, always mount read-only.
-    let read_only = true;
+    if let Some(script) = shell {
+        run_shell_mode(archive, allow_root, allow_other, script)
+    } else {
+        let mount_point = mount_point.ok_or_else(|| {
+            BaleCliError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "mount point required (or use --shell)",
+            ))
+        })?;
+        run_standard_mode(archive, mount_point, allow_root, allow_other)
+    }
+}
 
+/// Standard foreground mount mode.
+fn run_standard_mode(
+    archive: PathBuf,
+    mount_point: PathBuf,
+    allow_root: bool,
+    allow_other: bool,
+) -> Result<(), BaleCliError> {
+    let read_only = true;
     let fs = BaleFs::new(&archive, read_only)?;
     fs.mount(&mount_point, allow_root, allow_other)?;
+    Ok(())
+}
+
+/// Shell mode: mount to temp dir, spawn shell, cleanup on exit.
+fn run_shell_mode(
+    archive: PathBuf,
+    allow_root: bool,
+    allow_other: bool,
+    script: Option<String>,
+) -> Result<(), BaleCliError> {
+    let read_only = true;
+
+    // Create temp directory (auto-cleaned on drop).
+    let temp_dir = tempfile::Builder::new().prefix("bale-").tempdir()?;
+
+    // Mount in background.
+    let fs = BaleFs::new(&archive, read_only)?;
+    let session = fs.mount_background(temp_dir.path(), allow_root, allow_other)?;
+
+    // Get shell from $SHELL or fallback to /bin/sh.
+    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+    // Build and run shell command.
+    let mut cmd = Command::new(&shell_path);
+    cmd.current_dir(temp_dir.path());
+    cmd.env("BALE_MOUNT", temp_dir.path());
+
+    if let Some(script) = script {
+        cmd.args(["-c", &script]);
+    }
+
+    // CLI tools legitimately print status to stderr.
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("Starting shell at {}", temp_dir.path().display());
+    }
+
+    let status = cmd.status()?;
+
+    // Cleanup: drop session first (unmounts), then temp_dir cleans up.
+    drop(session);
+    drop(temp_dir);
+
+    if !status.success()
+        && let Some(code) = status.code()
+    {
+        std::process::exit(code);
+    }
 
     Ok(())
 }

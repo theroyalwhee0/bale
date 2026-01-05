@@ -157,6 +157,52 @@ impl BaleFs {
         fuser::mount2(self, mount_point, &options)?;
         Ok(())
     }
+
+    /// Mounts the filesystem in the background and returns a session handle.
+    ///
+    /// Unlike `mount()`, this method returns immediately with a `BackgroundSession`
+    /// that keeps the filesystem mounted. The filesystem is unmounted when the
+    /// session is dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `mount_point` - Directory to mount the filesystem at
+    /// * `allow_root` - Allow root to access the mount
+    /// * `allow_other` - Allow other users to access the mount
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if mounting fails.
+    pub fn mount_background(
+        self,
+        mount_point: impl AsRef<Path>,
+        allow_root: bool,
+        allow_other: bool,
+    ) -> Result<fuser::BackgroundSession, BaleError> {
+        let read_only = self.state.lock().map_or(true, |s| s.read_only);
+
+        let mut options = vec![
+            MountOption::FSName("bale".to_string()),
+            MountOption::DefaultPermissions,
+        ];
+
+        if read_only {
+            options.push(MountOption::RO);
+        } else {
+            options.push(MountOption::RW);
+        }
+
+        if allow_root {
+            options.push(MountOption::AllowRoot);
+        }
+
+        if allow_other {
+            options.push(MountOption::AllowOther);
+        }
+
+        let session = fuser::spawn_mount2(self, mount_point, &options)?;
+        Ok(session)
+    }
 }
 
 impl BaleFsState {
