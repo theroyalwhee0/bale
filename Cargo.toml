@@ -24,6 +24,7 @@ bin = ["compact", "fuse"]
 thiserror = "2.0.17"
 chrono = "0.4.42"
 tempfile = "3.24.0"
+safename = { version = "0.1.0", features = ["medium"] }
 
 # Logging
 log = "0.4.29"

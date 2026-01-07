@@ -234,6 +234,7 @@ impl<'a> ArchivePath<'a> {
     /// - Removes leading/trailing slashes
     /// - Collapses multiple slashes
     /// - Rejects whitespace-only components (e.g., `"foo/ /bar"`)
+    /// - Validates each component against safename rules
     ///
     /// Whitespace within path components is preserved (spaces in filenames are valid).
     /// For example, `"foo/ bar /baz"` normalizes to `"foo/ bar /baz"`.
@@ -246,11 +247,15 @@ impl<'a> ArchivePath<'a> {
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
     /// - The path contains whitespace-only components
+    ///
+    /// Returns `BaleError::UnsafeFilename` if any component violates safename rules.
     fn normalize_bytes(path: &str) -> Result<Cow<'_, [u8]>, BaleError> {
         let trimmed = path.trim();
 
         // Fast path: check if already normalized.
         if Self::is_normalized(trimmed) {
+            // Still need to validate safename rules.
+            Self::validate_safename(trimmed)?;
             return Ok(Cow::Borrowed(trimmed.as_bytes()));
         }
 
@@ -280,7 +285,24 @@ impl<'a> ArchivePath<'a> {
             return Err(BaleError::InvalidPath);
         }
 
+        // Validate each component against safename rules.
+        for component in &components {
+            safename::validate_file(component)?;
+        }
+
         Ok(Cow::Owned(components.join("/").into_bytes()))
+    }
+
+    /// Validates a normalized path against safename rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::UnsafeFilename` if any component violates safename rules.
+    fn validate_safename(path: &str) -> Result<(), BaleError> {
+        for component in path.split('/') {
+            safename::validate_file(component)?;
+        }
+        Ok(())
     }
 
     /// Checks if a path string is already in normalized form.
@@ -597,8 +619,19 @@ mod tests {
         assert!(ArchivePath::try_from("foo/ /bar").is_err());
         assert!(ArchivePath::try_from("foo/\t/bar").is_err());
         assert!(ArchivePath::try_from("foo/   /bar").is_err());
-        // But whitespace around content is allowed
-        assert!(ArchivePath::try_from("foo/ bar /baz").is_ok());
+    }
+
+    /// Leading/trailing whitespace in components is rejected by safename.
+    #[test]
+    fn leading_trailing_whitespace_rejected() {
+        // Safename blocks leading/trailing spaces in individual components
+        assert!(ArchivePath::try_from("foo/ bar").is_err()); // leading space in " bar"
+        assert!(ArchivePath::try_from("foo/bar /baz").is_err()); // trailing space in "bar "
+        // Note: Path-level leading/trailing whitespace is trimmed before processing
+        assert!(ArchivePath::try_from(" foo/bar").is_ok()); // trimmed to "foo/bar"
+        assert!(ArchivePath::try_from("foo/bar ").is_ok()); // trimmed to "foo/bar"
+        // Interior spaces in a component are fine
+        assert!(ArchivePath::try_from("foo/bar baz/qux").is_ok());
     }
 
     /// into_normalized rejects invalid UTF-8.
@@ -749,6 +782,75 @@ mod tests {
         assert_eq!(normalized.as_str(), Some("foo/bar"));
     }
 
+    // ==================== Safename Tests ====================
+
+    /// Leading dash is rejected (command-line option injection).
+    #[test]
+    fn safename_leading_dash_rejected() {
+        assert!(ArchivePath::try_from("-rf").is_err());
+        assert!(ArchivePath::try_from("foo/-bar").is_err());
+        assert!(ArchivePath::try_from("--help").is_err());
+    }
+
+    /// Leading tilde is rejected (shell home expansion).
+    #[test]
+    fn safename_leading_tilde_rejected() {
+        assert!(ArchivePath::try_from("~root").is_err());
+        assert!(ArchivePath::try_from("foo/~evil").is_err());
+    }
+
+    /// Control characters are rejected.
+    #[test]
+    fn safename_control_chars_rejected() {
+        assert!(ArchivePath::try_from("foo\x00bar").is_err());
+        assert!(ArchivePath::try_from("foo\x1Fbar").is_err());
+        assert!(ArchivePath::try_from("foo\x7Fbar").is_err());
+    }
+
+    /// 0xFF byte is rejected (invalid UTF-8 leading byte).
+    #[test]
+    fn safename_xff_rejected() {
+        // 0xFF is invalid UTF-8, so this test uses from_bytes + normalize
+        let path = ArchivePath::from(vec![0x66, 0x6F, 0x6F, 0xFF]); // "foo" + 0xFF
+        assert!(path.normalize().is_err());
+    }
+
+    /// Colon is rejected (PATH injection - blocked by "low" feature).
+    #[test]
+    fn safename_colon_rejected() {
+        assert!(ArchivePath::try_from("foo:bar").is_err());
+    }
+
+    /// Shell metacharacters are rejected (blocked by "medium" feature).
+    #[test]
+    fn safename_shell_metacharacters_rejected() {
+        // Quotes
+        assert!(ArchivePath::try_from("foo'bar").is_err());
+        assert!(ArchivePath::try_from("foo\"bar").is_err());
+        // Command chaining
+        assert!(ArchivePath::try_from("foo;bar").is_err());
+        assert!(ArchivePath::try_from("foo|bar").is_err());
+        assert!(ArchivePath::try_from("foo&bar").is_err());
+        // Redirection
+        assert!(ArchivePath::try_from("foo>bar").is_err());
+        assert!(ArchivePath::try_from("foo<bar").is_err());
+        // Backticks
+        assert!(ArchivePath::try_from("foo`bar").is_err());
+        // Dollar expansion
+        assert!(ArchivePath::try_from("foo$bar").is_err());
+    }
+
+    /// Valid filenames are accepted.
+    #[test]
+    fn safename_valid_accepted() {
+        assert!(ArchivePath::try_from("normal_file.txt").is_ok());
+        assert!(ArchivePath::try_from("foo/bar/baz.rs").is_ok());
+        assert!(ArchivePath::try_from("file-with-dashes.txt").is_ok()); // dash not at start
+        assert!(ArchivePath::try_from("file_with_underscores").is_ok());
+        assert!(ArchivePath::try_from("CamelCase.TXT").is_ok());
+        assert!(ArchivePath::try_from("123numeric").is_ok());
+    }
+
     // ==================== Property Tests ====================
 
     /// Strategy for valid path component (excludes . and ..).
@@ -763,9 +865,13 @@ mod tests {
     }
 
     /// Strategy for valid path component that may contain interior spaces.
+    ///
+    /// Note: Safename rules block leading/trailing spaces, so we filter those out.
     fn component_with_spaces() -> impl Strategy<Value = String> {
-        "[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,19}"
-            .prop_filter("must not be whitespace-only", |s| !s.trim().is_empty())
+        "[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,18}[a-zA-Z0-9_.-]"
+            .prop_filter("must not have leading/trailing spaces", |s| {
+                !s.starts_with(' ') && !s.ends_with(' ')
+            })
     }
 
     /// Strategy for paths with components that may contain interior spaces.
