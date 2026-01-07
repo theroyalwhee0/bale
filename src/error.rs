@@ -37,6 +37,10 @@ pub enum BaleError {
     #[error("invalid path")]
     InvalidPath,
 
+    /// Filename contains unsafe characters or patterns.
+    #[error("unsafe filename: {0}")]
+    UnsafeFilename(#[from] safename::SafeNameError),
+
     /// Path contains invalid UTF-8.
     #[error("invalid UTF-8 in path: {0}")]
     InvalidUtf8(#[from] std::str::Utf8Error),
