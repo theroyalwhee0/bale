@@ -4,6 +4,7 @@
 //! as FUSE filesystems.
 
 mod bale_fs;
+mod bale_fs_state;
 mod dir_entry;
 mod inode;
 
