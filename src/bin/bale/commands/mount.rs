@@ -52,9 +52,10 @@ fn run_standard_mode(
     allow_root: bool,
     allow_other: bool,
 ) -> Result<(), BaleCliError> {
-    let read_only = true;
+    let read_only = false;
     let fs = BaleFs::new(&archive, read_only)?;
-    fs.mount(&mount_point, allow_root, allow_other)?;
+    let session = fs.mount(&mount_point, allow_root, allow_other)?;
+    session.join();
     Ok(())
 }
 
@@ -65,14 +66,14 @@ fn run_shell_mode(
     allow_other: bool,
     script: Option<String>,
 ) -> Result<(), BaleCliError> {
-    let read_only = true;
+    let read_only = false;
 
     // Create temp directory (auto-cleaned on drop).
     let temp_dir = tempfile::Builder::new().prefix("bale-").tempdir()?;
 
-    // Mount in background.
+    // Mount filesystem.
     let fs = BaleFs::new(&archive, read_only)?;
-    let session = fs.mount_background(temp_dir.path(), allow_root, allow_other)?;
+    let session = fs.mount(temp_dir.path(), allow_root, allow_other)?;
 
     // Get shell from $SHELL or fallback to /bin/sh.
     let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());

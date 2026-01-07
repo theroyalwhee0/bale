@@ -1,19 +1,20 @@
 //! BaleFs FUSE filesystem implementation.
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use fuser::{FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, Request};
+use fuser::{
+    FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyWrite, Request, TimeOrNow,
+};
 
 use nix::libc;
 
-use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO, TTL};
-use crate::{
-    ArchiveRead, ArchiveWriter, BaleError, CentralDirectoryHeader, DosDateTime, EntryKind,
-};
+use crate::fuse::bale_fs_state::BaleFsState;
+use crate::fuse::{ROOT_INO, TTL};
+use crate::{ArchiveRead, ArchiveWriter, BaleError, DosDateTime, EntryKind};
 
 /// FUSE filesystem backed by a bale archive.
 ///
@@ -22,39 +23,6 @@ use crate::{
 pub struct BaleFs {
     /// Mutable filesystem state protected by a mutex.
     state: Mutex<BaleFsState>,
-}
-
-/// Internal state for the BaleFs filesystem.
-struct BaleFsState {
-    /// The underlying archive.
-    archive: ArchiveWriter,
-    /// Whether the filesystem is mounted read-only.
-    read_only: bool,
-    /// User ID for all files/directories.
-    uid: u32,
-    /// Group ID for all files/directories.
-    gid: u32,
-    /// Time when the filesystem was mounted.
-    mount_time: SystemTime,
-
-    /// Map from directory path to its inode.
-    dir_inodes: HashMap<String, u64>,
-    /// Map from directory inode to its contents.
-    dir_contents: HashMap<u64, Vec<FuseDirEntry>>,
-
-    /// Map from file/symlink inode to archive path.
-    inode_to_path: HashMap<u64, String>,
-    /// Map from archive path to file/symlink inode.
-    path_to_inode: HashMap<String, u64>,
-
-    /// Modified data for files (path -> new content).
-    /// Used for write support when not read-only.
-    modified_data: HashMap<String, Vec<u8>>,
-
-    /// Next available inode for files.
-    next_file_ino: u64,
-    /// Next available inode for directories.
-    next_dir_ino: u64,
 }
 
 impl BaleFs {
@@ -93,22 +61,7 @@ impl BaleFs {
             }
         };
 
-        let mut state = BaleFsState {
-            archive,
-            read_only,
-            uid,
-            gid,
-            mount_time: SystemTime::now(),
-            dir_inodes: HashMap::new(),
-            dir_contents: HashMap::new(),
-            inode_to_path: HashMap::new(),
-            path_to_inode: HashMap::new(),
-            modified_data: HashMap::new(),
-            next_file_ino: FILE_INO_START,
-            next_dir_ino: DIR_INO_START,
-        };
-
-        state.build_directory_tree();
+        let state = BaleFsState::new(archive, read_only, uid, gid);
 
         Ok(Self {
             state: Mutex::new(state),
@@ -117,8 +70,10 @@ impl BaleFs {
 
     /// Mounts the filesystem at the given mount point.
     ///
-    /// This method blocks until the filesystem is unmounted (via `fusermount -u`
-    /// or Ctrl+C if running in foreground).
+    /// Returns a `BackgroundSession` that keeps the filesystem mounted.
+    /// The filesystem is unmounted when the session is dropped.
+    ///
+    /// For a blocking mount, call `.join()` on the returned session.
     ///
     /// # Arguments
     ///
@@ -130,52 +85,6 @@ impl BaleFs {
     ///
     /// Returns an error if mounting fails.
     pub fn mount(
-        self,
-        mount_point: impl AsRef<Path>,
-        allow_root: bool,
-        allow_other: bool,
-    ) -> Result<(), BaleError> {
-        let read_only = self.state.lock().map_or(true, |s| s.read_only);
-
-        let mut options = vec![
-            MountOption::FSName("bale".to_string()),
-            MountOption::DefaultPermissions,
-        ];
-
-        if read_only {
-            options.push(MountOption::RO);
-        } else {
-            options.push(MountOption::RW);
-        }
-
-        if allow_root {
-            options.push(MountOption::AllowRoot);
-        }
-
-        if allow_other {
-            options.push(MountOption::AllowOther);
-        }
-
-        fuser::mount2(self, mount_point, &options)?;
-        Ok(())
-    }
-
-    /// Mounts the filesystem in the background and returns a session handle.
-    ///
-    /// Unlike `mount()`, this method returns immediately with a `BackgroundSession`
-    /// that keeps the filesystem mounted. The filesystem is unmounted when the
-    /// session is dropped.
-    ///
-    /// # Arguments
-    ///
-    /// * `mount_point` - Directory to mount the filesystem at
-    /// * `allow_root` - Allow root to access the mount
-    /// * `allow_other` - Allow other users to access the mount
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if mounting fails.
-    pub fn mount_background(
         self,
         mount_point: impl AsRef<Path>,
         allow_root: bool,
@@ -204,196 +113,6 @@ impl BaleFs {
 
         let session = fuser::spawn_mount2(self, mount_point, &options)?;
         Ok(session)
-    }
-}
-
-impl BaleFsState {
-    /// Builds the directory tree from archive entries.
-    ///
-    /// Iterates through all archive entries and creates:
-    /// - Directory inodes for all directories (explicit and implicit)
-    /// - File/symlink inodes for all files and symlinks
-    /// - Directory content listings
-    fn build_directory_tree(&mut self) {
-        // Root directory always exists.
-        self.dir_inodes.insert(String::new(), ROOT_INO);
-        self.dir_contents.insert(ROOT_INO, Vec::new());
-
-        // Collect all paths first to avoid borrow issues.
-        // Skip entries with invalid UTF-8 paths.
-        let entries: Vec<(String, EntryKind)> = self
-            .archive
-            .iter_entries()
-            .filter_map(|(header, path_bytes)| {
-                let trimmed = &path_bytes[..path_bytes
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(path_bytes.len())];
-                let path = std::str::from_utf8(trimmed).ok()?.to_owned();
-                let kind = EntryKind::from_mode(header.external_attrs.get() >> 16);
-                Some((path, kind))
-            })
-            .collect();
-
-        for (path, kind) in entries {
-            // Ensure all parent directories exist.
-            self.ensure_parent_dirs(&path);
-
-            match kind {
-                EntryKind::Directory => {
-                    // Explicit directory entry.
-                    let dir_path = path.trim_end_matches('/').to_string();
-                    if !self.dir_inodes.contains_key(&dir_path) {
-                        let ino = self.next_dir_ino;
-                        self.next_dir_ino += 1;
-                        self.dir_inodes.insert(dir_path.clone(), ino);
-                        self.dir_contents.insert(ino, Vec::new());
-
-                        // Add to parent directory.
-                        if let Some((parent, name)) = Self::split_path(&dir_path)
-                            && let Some(&parent_ino) = self.dir_inodes.get(parent)
-                            && let Some(contents) = self.dir_contents.get_mut(&parent_ino)
-                        {
-                            contents.push(FuseDirEntry::directory(name, ino));
-                        }
-                    }
-                }
-                EntryKind::File | EntryKind::Symlink => {
-                    let ino = self.next_file_ino;
-                    self.next_file_ino += 1;
-
-                    self.inode_to_path.insert(ino, path.clone());
-                    self.path_to_inode.insert(path.clone(), ino);
-
-                    // Add to parent directory.
-                    if let Some((parent, name)) = Self::split_path(&path)
-                        && let Some(&parent_ino) = self.dir_inodes.get(parent)
-                        && let Some(contents) = self.dir_contents.get_mut(&parent_ino)
-                    {
-                        let entry = if kind == EntryKind::Symlink {
-                            FuseDirEntry::symlink(name, ino)
-                        } else {
-                            FuseDirEntry::file(name, ino)
-                        };
-                        contents.push(entry);
-                    }
-                }
-                EntryKind::Other(_) => {
-                    // Skip unknown entry types.
-                }
-            }
-        }
-    }
-
-    /// Ensures all parent directories exist for a given path.
-    fn ensure_parent_dirs(&mut self, path: &str) {
-        let mut current = String::new();
-
-        for component in path.trim_end_matches('/').split('/') {
-            if component.is_empty() {
-                continue;
-            }
-
-            let parent = current.clone();
-            if current.is_empty() {
-                current = component.to_string();
-            } else {
-                current = format!("{current}/{component}");
-            }
-
-            // Check if this is the final component (the file/entry itself).
-            // Only create directory entries for intermediate components.
-            if current == path.trim_end_matches('/') {
-                break;
-            }
-
-            if !self.dir_inodes.contains_key(&current) {
-                let ino = self.next_dir_ino;
-                self.next_dir_ino += 1;
-                self.dir_inodes.insert(current.clone(), ino);
-                self.dir_contents.insert(ino, Vec::new());
-
-                // Add to parent directory.
-                let parent_ino = if parent.is_empty() {
-                    ROOT_INO
-                } else {
-                    *self.dir_inodes.get(&parent).unwrap_or(&ROOT_INO)
-                };
-
-                if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
-                    contents.push(FuseDirEntry::directory(component, ino));
-                }
-            }
-        }
-    }
-
-    /// Splits a path into parent directory and filename.
-    fn split_path(path: &str) -> Option<(&str, &str)> {
-        let path = path.trim_end_matches('/');
-        if let Some(pos) = path.rfind('/') {
-            Some((&path[..pos], &path[pos + 1..]))
-        } else if !path.is_empty() {
-            Some(("", path))
-        } else {
-            None
-        }
-    }
-
-    /// Creates file attributes for a directory or generic entry.
-    fn get_attr(&self, ino: u64, kind: FileType) -> fuser::FileAttr {
-        fuser::FileAttr {
-            ino,
-            size: 0,
-            blocks: 0,
-            atime: self.mount_time,
-            mtime: self.mount_time,
-            ctime: self.mount_time,
-            crtime: self.mount_time,
-            kind,
-            perm: if kind == FileType::Directory {
-                0o755
-            } else {
-                0o644
-            },
-            nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        }
-    }
-
-    /// Creates file attributes from archive entry header.
-    fn get_attr_for_file(
-        &self,
-        ino: u64,
-        kind: FileType,
-        header: &CentralDirectoryHeader,
-    ) -> fuser::FileAttr {
-        let mode = header.external_attrs.get() >> 16;
-        let perm = (mode & 0o777) as u16;
-        let size = header.uncompressed_size.get() as u64;
-        let mtime = DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
-            .to_system_time_or_epoch();
-
-        fuser::FileAttr {
-            ino,
-            size,
-            blocks: size.div_ceil(512),
-            atime: mtime,
-            mtime,
-            ctime: mtime,
-            crtime: mtime,
-            kind,
-            perm: if perm == 0 { 0o644 } else { perm },
-            nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        }
     }
 }
 
@@ -470,7 +189,14 @@ impl fuser::Filesystem for BaleFs {
                     EntryKind::Symlink => FileType::Symlink,
                     _ => FileType::RegularFile,
                 };
-                let attr = state.get_attr_for_file(ino, file_type, header);
+                let mut attr = state.get_attr_for_file(ino, file_type, header);
+
+                // Override size if file has been modified.
+                if let Some(data) = state.modified_data.get(path) {
+                    attr.size = data.len() as u64;
+                    attr.blocks = attr.size.div_ceil(512);
+                }
+
                 reply.attr(&TTL, &attr);
                 return;
             }
@@ -603,6 +329,209 @@ impl fuser::Filesystem for BaleFs {
         match state.archive.symlink(path) {
             Ok(s) => reply.data(s.target_bytes()),
             Err(_) => reply.error(libc::EIO),
+        }
+    }
+
+    /// Writes data to a file.
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        // Check read-only flag.
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        // Get path from inode.
+        let path = match state.inode_to_path.get(&ino) {
+            Some(p) => p.clone(),
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // Load file into modified_data if not already there.
+        let buffer = match state.load_into_modified(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                reply.error(e);
+                return;
+            }
+        };
+
+        // Extend buffer if needed.
+        let start = offset as usize;
+        let end = start + data.len();
+        if end > buffer.len() {
+            buffer.resize(end, 0);
+        }
+
+        // Copy data into buffer.
+        buffer[start..end].copy_from_slice(data);
+
+        reply.written(data.len() as u32);
+    }
+
+    /// Sets file attributes.
+    #[allow(clippy::too_many_arguments)]
+    fn setattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<TimeOrNow>,
+        _mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        // Check read-only for size changes.
+        if size.is_some() && state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        // Get path from inode.
+        let path = match state.inode_to_path.get(&ino) {
+            Some(p) => p.clone(),
+            None => {
+                // Might be a directory - just return current attrs.
+                if state.dir_contents.contains_key(&ino) {
+                    let attr = state.get_attr(ino, FileType::Directory);
+                    reply.attr(&TTL, &attr);
+                    return;
+                }
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // Handle truncation.
+        if let Some(new_size) = size {
+            let buffer = match state.load_into_modified(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    reply.error(e);
+                    return;
+                }
+            };
+            buffer.resize(new_size as usize, 0);
+        }
+
+        // Return updated attributes.
+        let size = state
+            .modified_data
+            .get(&path)
+            .map(|d| d.len() as u64)
+            .or_else(|| {
+                state
+                    .archive
+                    .find_entry_with_path(&path)
+                    .map(|(h, _, _)| h.uncompressed_size.get() as u64)
+            })
+            .unwrap_or(0);
+
+        let mtime = state
+            .archive
+            .find_entry_with_path(&path)
+            .map(|(h, _, _)| {
+                DosDateTime::from_date_time_parts(h.mod_date.get(), h.mod_time.get())
+                    .to_system_time_or_epoch()
+            })
+            .unwrap_or(state.mount_time);
+
+        let mode = state.get_file_mode(&path);
+        let perm = (mode & 0o777) as u16;
+
+        let attr = fuser::FileAttr {
+            ino,
+            size,
+            blocks: size.div_ceil(512),
+            atime: mtime,
+            mtime,
+            ctime: mtime,
+            crtime: mtime,
+            kind: FileType::RegularFile,
+            perm: if perm == 0 { 0o644 } else { perm },
+            nlink: 1,
+            uid: state.uid,
+            gid: state.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        };
+
+        reply.attr(&TTL, &attr);
+    }
+
+    /// Syncs file data to the archive.
+    fn fsync(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _datasync: bool,
+        reply: ReplyEmpty,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.ok();
+            return;
+        }
+
+        match state.sync_modified_to_archive() {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Called when the filesystem is unmounted.
+    fn destroy(&mut self) {
+        // Sync any remaining modified data.
+        if let Ok(mut state) = self.state.lock()
+            && !state.read_only
+        {
+            let _ = state.sync_modified_to_archive();
         }
     }
 }
