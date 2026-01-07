@@ -296,4 +296,121 @@ impl BaleFsState {
         self.archive.sync().map_err(|_| libc::EIO)?;
         Ok(())
     }
+
+    /// Creates a new directory.
+    ///
+    /// Returns the inode of the new directory and its attributes.
+    pub(super) fn create_directory(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+    ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path.
+        let parent_path = self.get_dir_path(parent_ino);
+        let full_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+
+        // Check directory doesn't already exist.
+        if self.dir_inodes.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Check no file with that name exists.
+        if self.path_to_inode.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Allocate inode.
+        let ino = self.next_dir_ino;
+        self.next_dir_ino += 1;
+
+        // Create directory entry.
+        self.dir_inodes.insert(full_path.clone(), ino);
+        self.dir_contents.insert(ino, Vec::new());
+
+        // Add to parent's contents.
+        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+            contents.push(FuseDirEntry::directory(name, ino));
+        }
+
+        // Add directory entry to archive (path ending with /).
+        let dir_path = format!("{}/", full_path);
+        let mode = 0o40755u32; // directory with rwxr-xr-x
+        self.archive
+            .add_entry(&dir_path, &[], mode)
+            .map_err(|_| libc::EIO)?;
+
+        let attr = self.get_attr(ino, FileType::Directory);
+        Ok((ino, attr))
+    }
+
+    /// Removes an empty directory.
+    pub(super) fn remove_directory(&mut self, parent_ino: u64, name: &str) -> Result<(), i32> {
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path.
+        let parent_path = self.get_dir_path(parent_ino);
+        let full_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+
+        // Check directory exists.
+        let dir_ino = match self.dir_inodes.get(&full_path) {
+            Some(&ino) => ino,
+            None => return Err(libc::ENOENT),
+        };
+
+        // Check it's not a file.
+        if self.path_to_inode.contains_key(&full_path) {
+            return Err(libc::ENOTDIR);
+        }
+
+        // Check directory is empty.
+        if let Some(contents) = self.dir_contents.get(&dir_ino)
+            && !contents.is_empty()
+        {
+            return Err(libc::ENOTEMPTY);
+        }
+
+        // Remove from dir_inodes and dir_contents.
+        self.dir_inodes.remove(&full_path);
+        self.dir_contents.remove(&dir_ino);
+
+        // Remove from parent's contents.
+        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+            contents.retain(|e| e.name != name);
+        }
+
+        // Remove from archive.
+        let dir_path = format!("{}/", full_path);
+        let _ = self.archive.delete(&dir_path);
+
+        Ok(())
+    }
+
+    /// Gets the path for a directory inode.
+    fn get_dir_path(&self, ino: u64) -> String {
+        if ino == ROOT_INO {
+            return String::new();
+        }
+        for (path, &dir_ino) in &self.dir_inodes {
+            if dir_ino == ino {
+                return path.clone();
+            }
+        }
+        String::new()
+    }
 }
