@@ -497,6 +497,72 @@ impl fuser::Filesystem for BaleFs {
         reply.attr(&TTL, &attr);
     }
 
+    /// Creates a new directory.
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        match state.create_directory(parent, name) {
+            Ok((ino, attr)) => reply.entry(&TTL, &attr, ino),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Removes an empty directory.
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        match state.remove_directory(parent, name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
     /// Syncs file data to the archive.
     fn fsync(
         &mut self,
