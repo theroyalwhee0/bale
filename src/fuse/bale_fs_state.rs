@@ -413,4 +413,124 @@ impl BaleFsState {
         }
         String::new()
     }
+
+    /// Creates a new file.
+    ///
+    /// Returns the inode of the new file and its attributes.
+    pub(super) fn create_file(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+        mode: u32,
+    ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path.
+        let parent_path = self.get_dir_path(parent_ino);
+        let full_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+
+        // Check file doesn't already exist.
+        if self.path_to_inode.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Check no directory with that name exists.
+        if self.dir_inodes.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Allocate inode.
+        let ino = self.next_file_ino;
+        self.next_file_ino += 1;
+
+        // Add to path mappings.
+        self.inode_to_path.insert(ino, full_path.clone());
+        self.path_to_inode.insert(full_path.clone(), ino);
+
+        // Add to parent's contents.
+        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+            contents.push(FuseDirEntry::file(name, ino));
+        }
+
+        // Initialize empty file in modified_data.
+        self.modified_data.insert(full_path.clone(), Vec::new());
+
+        // Add empty file to archive.
+        let file_mode = 0o100000 | (mode & 0o777); // regular file + permissions
+        self.archive
+            .add_entry(&full_path, &[], file_mode)
+            .map_err(|_| libc::EIO)?;
+
+        let perm = (mode & 0o777) as u16;
+        let attr = fuser::FileAttr {
+            ino,
+            size: 0,
+            blocks: 0,
+            atime: self.mount_time,
+            mtime: self.mount_time,
+            ctime: self.mount_time,
+            crtime: self.mount_time,
+            kind: FileType::RegularFile,
+            perm: if perm == 0 { 0o644 } else { perm },
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        };
+
+        Ok((ino, attr))
+    }
+
+    /// Removes a file.
+    pub(super) fn remove_file(&mut self, parent_ino: u64, name: &str) -> Result<(), i32> {
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path.
+        let parent_path = self.get_dir_path(parent_ino);
+        let full_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+
+        // Check file exists.
+        let file_ino = match self.path_to_inode.get(&full_path) {
+            Some(&ino) => ino,
+            None => return Err(libc::ENOENT),
+        };
+
+        // Check it's not a directory.
+        if self.dir_inodes.contains_key(&full_path) {
+            return Err(libc::EISDIR);
+        }
+
+        // Remove from path mappings.
+        self.inode_to_path.remove(&file_ino);
+        self.path_to_inode.remove(&full_path);
+
+        // Remove from parent's contents.
+        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+            contents.retain(|e| e.name != name);
+        }
+
+        // Remove from modified_data if present.
+        self.modified_data.remove(&full_path);
+
+        // Delete from archive.
+        let _ = self.archive.delete(&full_path);
+
+        Ok(())
+    }
 }

@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use fuser::{
-    FileType, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyWrite, Request, TimeOrNow,
+    FileType, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
+    ReplyEntry, ReplyWrite, Request, TimeOrNow,
 };
 
 use nix::libc;
@@ -558,6 +558,76 @@ impl fuser::Filesystem for BaleFs {
         };
 
         match state.remove_directory(parent, name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Creates a new file.
+    fn create(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        match state.create_file(parent, name, mode) {
+            Ok((ino, attr)) => {
+                // Use inode as file handle for simplicity.
+                reply.created(&TTL, &attr, ino, ino, 0);
+            }
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Removes a file.
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        match state.remove_file(parent, name) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
