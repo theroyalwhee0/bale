@@ -533,4 +533,163 @@ impl BaleFsState {
 
         Ok(())
     }
+
+    /// Renames/moves a file or directory.
+    pub(super) fn rename_entry(
+        &mut self,
+        old_parent_ino: u64,
+        old_name: &str,
+        new_parent_ino: u64,
+        new_name: &str,
+    ) -> Result<(), i32> {
+        // Check both parents exist.
+        if !self.dir_contents.contains_key(&old_parent_ino) {
+            return Err(libc::ENOENT);
+        }
+        if !self.dir_contents.contains_key(&new_parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build paths.
+        let old_parent_path = self.get_dir_path(old_parent_ino);
+        let new_parent_path = self.get_dir_path(new_parent_ino);
+
+        let old_path = if old_parent_path.is_empty() {
+            old_name.to_string()
+        } else {
+            format!("{}/{}", old_parent_path, old_name)
+        };
+
+        let new_path = if new_parent_path.is_empty() {
+            new_name.to_string()
+        } else {
+            format!("{}/{}", new_parent_path, new_name)
+        };
+
+        // Check if source is a file or directory.
+        let is_file = self.path_to_inode.contains_key(&old_path);
+        let is_dir = self.dir_inodes.contains_key(&old_path);
+
+        if !is_file && !is_dir {
+            return Err(libc::ENOENT);
+        }
+
+        // Check destination doesn't exist (or handle overwrite for files).
+        if self.dir_inodes.contains_key(&new_path) {
+            return Err(libc::EEXIST);
+        }
+        if self.path_to_inode.contains_key(&new_path) {
+            // Destination file exists - remove it first.
+            if is_dir {
+                // Can't overwrite file with directory.
+                return Err(libc::ENOTDIR);
+            }
+            // Remove destination file.
+            let dest_ino = *self.path_to_inode.get(&new_path).unwrap();
+            self.inode_to_path.remove(&dest_ino);
+            self.path_to_inode.remove(&new_path);
+            self.modified_data.remove(&new_path);
+            let _ = self.archive.delete(&new_path);
+            if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
+                contents.retain(|e| e.name != new_name);
+            }
+        }
+
+        if is_file {
+            // Rename file.
+            let ino = *self.path_to_inode.get(&old_path).unwrap();
+
+            // Update path mappings.
+            self.path_to_inode.remove(&old_path);
+            self.path_to_inode.insert(new_path.clone(), ino);
+            self.inode_to_path.insert(ino, new_path.clone());
+
+            // Move modified data if present.
+            if let Some(data) = self.modified_data.remove(&old_path) {
+                self.modified_data.insert(new_path.clone(), data);
+            }
+
+            // Update parent directory contents.
+            if let Some(contents) = self.dir_contents.get_mut(&old_parent_ino) {
+                contents.retain(|e| e.name != old_name);
+            }
+            if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
+                contents.push(FuseDirEntry::file(new_name, ino));
+            }
+
+            // Update archive: copy data from old path to new, delete old.
+            if let Ok(file) = self.archive.file(&old_path) {
+                let data = file.data().to_vec();
+                let mode = self.get_file_mode(&old_path);
+                let _ = self.archive.add_entry(&new_path, &data, mode);
+            } else if let Some(data) = self.modified_data.get(&new_path) {
+                let mode = 0o100644;
+                let _ = self.archive.add_entry(&new_path, data, mode);
+            }
+            let _ = self.archive.delete(&old_path);
+        } else {
+            // Rename directory.
+            let ino = *self.dir_inodes.get(&old_path).unwrap();
+
+            // Update directory mappings.
+            self.dir_inodes.remove(&old_path);
+            self.dir_inodes.insert(new_path.clone(), ino);
+
+            // Update parent directory contents.
+            if let Some(contents) = self.dir_contents.get_mut(&old_parent_ino) {
+                contents.retain(|e| e.name != old_name);
+            }
+            if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
+                contents.push(FuseDirEntry::directory(new_name, ino));
+            }
+
+            // Update all child paths (files and subdirectories).
+            let old_prefix = format!("{}/", old_path);
+            let new_prefix = format!("{}/", new_path);
+
+            // Update file paths.
+            let file_updates: Vec<(u64, String, String)> = self
+                .inode_to_path
+                .iter()
+                .filter(|(_, p)| p.starts_with(&old_prefix))
+                .map(|(&ino, p)| {
+                    let new_p = format!("{}{}", new_prefix, &p[old_prefix.len()..]);
+                    (ino, p.clone(), new_p)
+                })
+                .collect();
+
+            for (ino, old_p, new_p) in file_updates {
+                self.path_to_inode.remove(&old_p);
+                self.path_to_inode.insert(new_p.clone(), ino);
+                self.inode_to_path.insert(ino, new_p.clone());
+                if let Some(data) = self.modified_data.remove(&old_p) {
+                    self.modified_data.insert(new_p, data);
+                }
+            }
+
+            // Update subdirectory paths.
+            let dir_updates: Vec<(u64, String, String)> = self
+                .dir_inodes
+                .iter()
+                .filter(|(p, _)| p.starts_with(&old_prefix))
+                .map(|(p, &ino)| {
+                    let new_p = format!("{}{}", new_prefix, &p[old_prefix.len()..]);
+                    (ino, p.clone(), new_p)
+                })
+                .collect();
+
+            for (ino, old_p, new_p) in dir_updates {
+                self.dir_inodes.remove(&old_p);
+                self.dir_inodes.insert(new_p, ino);
+            }
+
+            // Update archive: add new dir entry, remove old.
+            let old_dir_path = format!("{}/", old_path);
+            let new_dir_path = format!("{}/", new_path);
+            let _ = self.archive.add_entry(&new_dir_path, &[], 0o40755);
+            let _ = self.archive.delete(&old_dir_path);
+        }
+
+        Ok(())
+    }
 }

@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use fuser::{
     FileType, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyWrite, Request, TimeOrNow,
+    ReplyEntry, ReplyStatfs, ReplyWrite, Request, TimeOrNow,
 };
 
 use nix::libc;
@@ -631,6 +631,106 @@ impl fuser::Filesystem for BaleFs {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
+    }
+
+    /// Renames/moves a file or directory.
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.error(libc::EROFS);
+            return;
+        }
+
+        let old_name = match name.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        let new_name = match newname.to_str() {
+            Some(n) => n,
+            None => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+
+        match state.rename_entry(parent, old_name, newparent, new_name) {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Syncs file data on close.
+    fn flush(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _lock_owner: u64,
+        reply: ReplyEmpty,
+    ) {
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        if state.read_only {
+            reply.ok();
+            return;
+        }
+
+        match state.sync_modified_to_archive() {
+            Ok(()) => reply.ok(),
+            Err(e) => reply.error(e),
+        }
+    }
+
+    /// Returns filesystem statistics.
+    fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
+        let state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                reply.error(libc::EIO);
+                return;
+            }
+        };
+
+        let file_count = state.path_to_inode.len() as u64;
+        let dir_count = state.dir_inodes.len() as u64;
+
+        // Return basic stats. Block size matches our alignment.
+        reply.statfs(
+            0,                      // blocks (unknown for archive)
+            0,                      // bfree
+            0,                      // bavail
+            file_count + dir_count, // files (inodes)
+            0,                      // ffree
+            4096,                   // bsize (block size)
+            256,                    // namelen (our max path component)
+            0,                      // frsize (fragment size)
+        );
     }
 
     /// Syncs file data to the archive.
