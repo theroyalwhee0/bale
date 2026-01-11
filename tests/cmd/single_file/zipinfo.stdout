@@ -1,4 +1,4 @@
 Archive:  tests/fixtures/valid/single_file.bale
 Zip file size: 4662 bytes, number of entries: 1
--rw-rw-r--  1.0 unx       13 bx stor 26-Jan-05 14:27 hello.txt
+-rw-rw-r--  1.0 unx       13 bx stor 26-Jan-11 21:41 hello.txt
 1 file, 13 bytes uncompressed, 13 bytes compressed:  0.0%
