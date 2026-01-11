@@ -26,14 +26,6 @@ pub fn run(
     shell: Option<Option<String>>,
     read_only: bool,
 ) -> Result<(), BaleCliError> {
-    // Background mode is incompatible with shell mode.
-    if background && shell.is_some() {
-        return Err(BaleCliError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "--background cannot be used with --shell",
-        )));
-    }
-
     if background {
         let mount_point = mount_point.ok_or_else(|| {
             BaleCliError::Io(std::io::Error::new(
