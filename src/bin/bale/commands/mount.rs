@@ -76,18 +76,18 @@ fn run_background_mode(
     // Validate archive before daemonizing so errors are reported to user.
     let fs = BaleFs::new(&archive, read_only)?;
 
-    // Print PID before daemonizing (child will have different PID).
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("Daemonizing with PID {}", std::process::id());
-    }
-
-    // Daemonize: fork to background, create new session, close std fds.
-    // nochdir=false: change to /
-    // noclose=false: redirect stdin/stdout/stderr to /dev/null
-    daemon(false, false).map_err(|e| {
+    // Daemonize: fork to background, create new session.
+    // nochdir=false: change working directory to /
+    // noclose=true: keep stdin/stdout/stderr open so we can print the PID
+    daemon(false, true).map_err(|e| {
         BaleCliError::Io(std::io::Error::other(format!("failed to daemonize: {e}")))
     })?;
+
+    // Now in child process - print actual daemon PID.
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("Daemon PID: {}", std::process::id());
+    }
 
     // Now running in background - mount and wait.
     let session = fs.mount(&mount_point, allow_root, allow_other)?;
