@@ -105,6 +105,34 @@ After completing work:
 2. Push and create a PR via `gh pr create`
 3. After merge, switch back to main: `git checkout main && git pull`
 
+### Creating Issues
+
+When creating new issues with `gh issue create`, always include appropriate
+labels and milestone:
+
+```bash
+gh issue create --title "Title" --body "..." \
+  --label "🐛 bug" --label "🔴 P1" \
+  --milestone "v0.1.0"
+```
+
+**Available Labels:**
+
+| Label              | Use For                                    |
+| ------------------ | ------------------------------------------ |
+| `🐛 bug`           | Something isn't working                    |
+| `✨ enhancement`   | New feature or request                     |
+| `📚 documentation` | Documentation improvements                 |
+| `♻️ refactor`      | Code refactoring                           |
+| `🔒 security`      | Security vulnerabilities or fixes          |
+| `📌 task`          | Actionable task or TODO item               |
+| `🔧 tooling`       | Build tools, CI/CD, dev workflow           |
+| `🔴 P1`            | High priority - critical or blocking       |
+| `🟡 P2`            | Medium priority - important but not urgent |
+| `🟢 P3`            | Low priority - nice to have                |
+
+**Milestones:** Use `v0.1.0` for current release work.
+
 ## Git Configuration
 
 **No `-C` Flag**: Do not use `git -C <path>`. Run git commands from the
