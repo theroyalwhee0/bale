@@ -74,7 +74,7 @@ impl Archive<MappedArchiveMut> {
     /// - The archive format is invalid
     /// - Memory mapping fails
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
-        let mmap = MappedArchiveMut::open(path)?;
+        let mut mmap = MappedArchiveMut::open(path)?;
         let bytes = mmap.as_bytes();
 
         // Parse and validate trailer.
@@ -86,6 +86,11 @@ impl Archive<MappedArchiveMut> {
 
         // Parse Central Directory entries.
         let entries = parse_cd_entries(bytes, cd_offset, entry_count, path_size)?;
+
+        // Set mmap length to CD offset so new entries are written where the old
+        // CD was. This ensures add_entry()'s local_offset matches where data is
+        // actually written via mmap.extend().
+        mmap.set_len(cd_offset)?;
 
         Ok(Self {
             mmap,
@@ -914,7 +919,7 @@ mod tests {
         assert!(reader.find_entry("b.txt").is_some());
     }
 
-    /// Opening an existing archive preserves entries.
+    /// Opening an existing archive preserves entries and data offsets.
     #[test]
     fn open_existing_archive() {
         let dir = TempDir::new().unwrap();
@@ -935,8 +940,47 @@ mod tests {
 
         let reader = ArchiveReader::open(&path).unwrap();
         assert_eq!(reader.entry_count(), 2);
-        assert!(reader.find_entry("first.txt").is_some());
-        assert!(reader.find_entry("second.txt").is_some());
+
+        // Verify data is readable at correct offsets (not just that entries exist).
+        let first = reader.find_entry("first.txt").unwrap();
+        assert_eq!(reader.read_data(first).unwrap(), b"first");
+
+        let second = reader.find_entry("second.txt").unwrap();
+        assert_eq!(reader.read_data(second).unwrap(), b"second");
+    }
+
+    /// Adding to an empty archive writes data at correct offset.
+    ///
+    /// Regression test for bug where open() didn't reset mmap.len to cd_offset,
+    /// causing data to be written at the wrong location.
+    #[test]
+    fn add_to_empty_archive() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create empty archive (like `bale touch`).
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Add file to empty archive (like `bale add`).
+        {
+            let mut writer = ArchiveWriter::open(&path).unwrap();
+            assert_eq!(writer.entry_count(), 0);
+            writer
+                .add_entry("hello.txt", b"Hello, World!", 0o644)
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Verify data is readable and CRC is correct.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 1);
+
+        let entry = reader.find_entry("hello.txt").unwrap();
+        assert_eq!(reader.read_data(entry).unwrap(), b"Hello, World!");
+        reader.verify_crc(entry).unwrap();
     }
 
     /// Shadow duplicates: new entry shadows old.
