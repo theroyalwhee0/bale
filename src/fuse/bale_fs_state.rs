@@ -414,6 +414,32 @@ impl BaleFsState {
         String::new()
     }
 
+    /// Gets the parent directory's inode for a given directory inode.
+    ///
+    /// Returns `ROOT_INO` if the directory is at the root level or not found.
+    pub(super) fn get_parent_inode(&self, ino: u64) -> u64 {
+        if ino == ROOT_INO {
+            return ROOT_INO;
+        }
+
+        let path = self.get_dir_path(ino);
+        if path.is_empty() {
+            return ROOT_INO;
+        }
+
+        // Get parent path by removing the last component.
+        let parent_path = match path.rfind('/') {
+            Some(pos) => &path[..pos],
+            None => "", // No slash means parent is root.
+        };
+
+        // Look up parent inode.
+        self.dir_inodes
+            .get(parent_path)
+            .copied()
+            .unwrap_or(ROOT_INO)
+    }
+
     /// Creates a new file.
     ///
     /// Returns the inode of the new file and its attributes.
@@ -691,5 +717,74 @@ impl BaleFsState {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Creates a test archive with the given entries.
+    fn create_test_archive(entries: &[(&str, &[u8], u32)]) -> ArchiveWriter {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        for (name, data, mode) in entries {
+            writer.add_entry(name, data, *mode).unwrap();
+        }
+        writer.sync().unwrap();
+        drop(writer);
+
+        // Re-open to get a fresh state.
+        let writer = ArchiveWriter::open(&path).unwrap();
+
+        // Keep temp directory alive by leaking it.
+        std::mem::forget(dir);
+
+        writer
+    }
+
+    /// Tests that `get_parent_inode` returns the correct parent for nested directories.
+    #[test]
+    fn parent_inode_lookup() {
+        // Create archive with nested directories.
+        let archive = create_test_archive(&[
+            ("a/", &[], 0o40755),
+            ("a/b/", &[], 0o40755),
+            ("a/b/c/", &[], 0o40755),
+            ("a/b/file.txt", b"test", 0o100644),
+        ]);
+
+        let state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Get directory inodes.
+        let root_ino = ROOT_INO;
+        let a_ino = *state.dir_inodes.get("a").unwrap();
+        let ab_ino = *state.dir_inodes.get("a/b").unwrap();
+        let abc_ino = *state.dir_inodes.get("a/b/c").unwrap();
+
+        // Verify parent lookups.
+        assert_eq!(
+            state.get_parent_inode(root_ino),
+            ROOT_INO,
+            "root's parent should be root"
+        );
+        assert_eq!(
+            state.get_parent_inode(a_ino),
+            ROOT_INO,
+            "a's parent should be root"
+        );
+        assert_eq!(
+            state.get_parent_inode(ab_ino),
+            a_ino,
+            "a/b's parent should be a"
+        );
+        assert_eq!(
+            state.get_parent_inode(abc_ino),
+            ab_ino,
+            "a/b/c's parent should be a/b"
+        );
     }
 }
