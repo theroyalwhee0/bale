@@ -3,9 +3,13 @@
 use crate::{
     ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter, BaleError, EntryKind,
 };
+use nix::sys::stat::SFlag;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Default permission bits for directories (rwxr-xr-x).
+const DEFAULT_DIR_PERM: u32 = 0o755;
 
 /// Guard that deletes a temp file on drop unless marked to persist.
 struct TempFileGuard {
@@ -166,7 +170,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
         for dir_bytes in &missing_dirs_sorted {
             let dir_str = std::str::from_utf8(dir_bytes)?;
             // Use default directory mode (rwxr-xr-x).
-            writer.add_folder(dir_str, 0o755)?;
+            writer.add_folder(dir_str, SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM)?;
         }
 
         for (header, path_bytes) in &final_entries {

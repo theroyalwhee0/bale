@@ -6,11 +6,17 @@ use crate::{
     ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, DosDateTime, EntryKind, Eocd,
     LocalFileHeader, MappedArchiveMut, Trailer, Zip64Eocd,
 };
+use nix::sys::stat::SFlag;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use zerocopy::IntoBytes;
+
+/// Default permission bits for regular files (rw-r--r--).
+/// Used on non-Unix platforms where file permissions aren't available.
+#[cfg_attr(unix, allow(dead_code))]
+const DEFAULT_FILE_PERM: u32 = 0o644;
 
 impl Archive<MappedArchiveMut> {
     /// Creates a new empty archive at the given path.
@@ -581,7 +587,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
             }
             #[cfg(not(unix))]
             {
-                0o644
+                SFlag::S_IFREG.bits() | DEFAULT_FILE_PERM
             }
         };
 
@@ -663,10 +669,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let path_str = path.as_ref();
 
         // Ensure directory mode bits are set.
-        const S_IFDIR: u32 = 0o040000;
-        let mode = if mode & 0o170000 == 0 {
+        let mode = if mode & SFlag::S_IFMT.bits() == 0 {
             // No file type bits set, add directory bits.
-            mode | S_IFDIR
+            mode | SFlag::S_IFDIR.bits()
         } else {
             mode
         };
@@ -691,10 +696,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let target_str = target.as_ref();
 
         // Ensure symlink mode bits are set.
-        const S_IFLNK: u32 = 0o120000;
-        let mode = if mode & 0o170000 == 0 {
+        let mode = if mode & SFlag::S_IFMT.bits() == 0 {
             // No file type bits set, add symlink bits.
-            mode | S_IFLNK
+            mode | SFlag::S_IFLNK.bits()
         } else {
             mode
         };

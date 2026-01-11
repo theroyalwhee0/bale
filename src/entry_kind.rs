@@ -1,5 +1,7 @@
 //! Entry type classification based on Unix mode bits.
 
+use nix::sys::stat::SFlag;
+
 /// Entry type based on Unix mode bits in external_attrs.
 ///
 /// ZIP archives store Unix file type and permissions in the upper 16 bits
@@ -19,28 +21,16 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
-    /// Unix file type mask (S_IFMT).
-    const S_IFMT: u32 = 0o170000;
-
-    /// Regular file (S_IFREG).
-    const S_IFREG: u32 = 0o100000;
-
-    /// Directory (S_IFDIR).
-    const S_IFDIR: u32 = 0o040000;
-
-    /// Symbolic link (S_IFLNK).
-    const S_IFLNK: u32 = 0o120000;
-
     /// Determines entry kind from Unix mode bits.
     ///
     /// Extracts the file type from the mode and returns the corresponding
     /// `EntryKind`. Unrecognized types are returned as `Other`.
     #[must_use]
     pub fn from_mode(mode: u32) -> Self {
-        match mode & Self::S_IFMT {
-            Self::S_IFREG => Self::File,
-            Self::S_IFDIR => Self::Directory,
-            Self::S_IFLNK => Self::Symlink,
+        match mode & SFlag::S_IFMT.bits() {
+            x if x == SFlag::S_IFREG.bits() => Self::File,
+            x if x == SFlag::S_IFDIR.bits() => Self::Directory,
+            x if x == SFlag::S_IFLNK.bits() => Self::Symlink,
             // Mode 0 (no type bits) defaults to File for compatibility.
             // Many ZIP tools don't set type bits for regular files.
             0 => Self::File,

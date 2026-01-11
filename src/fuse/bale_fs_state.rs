@@ -5,11 +5,27 @@ use std::time::SystemTime;
 
 use fuser::FileType;
 use nix::libc;
+use nix::sys::stat::{Mode, SFlag};
 
 use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO};
 use crate::{
     ArchiveRead, ArchiveWrite, ArchiveWriter, CentralDirectoryHeader, DosDateTime, EntryKind,
 };
+
+/// Default permission bits for regular files (rw-r--r--).
+pub(super) const DEFAULT_FILE_PERM: u32 = 0o644;
+
+/// Default permission bits for directories (rwxr-xr-x).
+pub(super) const DEFAULT_DIR_PERM: u32 = 0o755;
+
+/// Bitmask to extract permission bits from a mode value.
+pub(super) const PERM_MASK: u32 = 0o777;
+
+/// Default file mode: regular file with default permissions.
+const DEFAULT_FILE_MODE: u32 = SFlag::S_IFREG.bits() | DEFAULT_FILE_PERM;
+
+/// Default directory mode: directory with default permissions.
+const DEFAULT_DIR_MODE: u32 = SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM;
 
 /// Internal state for the BaleFs filesystem.
 pub(super) struct BaleFsState {
@@ -208,9 +224,9 @@ impl BaleFsState {
             crtime: self.mount_time,
             kind,
             perm: if kind == FileType::Directory {
-                0o755
+                DEFAULT_DIR_PERM as u16
             } else {
-                0o644
+                DEFAULT_FILE_PERM as u16
             },
             nlink: 1,
             uid: self.uid,
@@ -229,7 +245,7 @@ impl BaleFsState {
         header: &CentralDirectoryHeader,
     ) -> fuser::FileAttr {
         let mode = header.external_attrs.get() >> 16;
-        let perm = (mode & 0o777) as u16;
+        let perm = (mode & PERM_MASK) as u16;
         let size = header.uncompressed_size.get() as u64;
         let mtime = DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
             .to_system_time_or_epoch();
@@ -243,7 +259,11 @@ impl BaleFsState {
             ctime: mtime,
             crtime: mtime,
             kind,
-            perm: if perm == 0 { 0o644 } else { perm },
+            perm: if perm == 0 {
+                DEFAULT_FILE_PERM as u16
+            } else {
+                perm
+            },
             nlink: 1,
             uid: self.uid,
             gid: self.gid,
@@ -275,9 +295,9 @@ impl BaleFsState {
             .find_entry_with_path(path)
             .map(|(header, _, _)| {
                 let mode = header.external_attrs.get() >> 16;
-                if mode == 0 { 0o644 } else { mode }
+                if mode == 0 { DEFAULT_FILE_MODE } else { mode }
             })
-            .unwrap_or(0o644)
+            .unwrap_or(DEFAULT_FILE_MODE)
     }
 
     /// Syncs all modified files to the archive.
@@ -305,7 +325,7 @@ impl BaleFsState {
         &mut self,
         parent_ino: u64,
         name: &str,
-        mode: u32,
+        mode: Mode,
     ) -> Result<(u64, fuser::FileAttr), i32> {
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
@@ -345,9 +365,9 @@ impl BaleFsState {
 
         // Add directory entry to archive (path ending with /).
         let dir_path = format!("{}/", full_path);
-        let mode = 0o40000 | (mode & 0o7777); // directory bit + permission bits
+        let archive_mode = SFlag::S_IFDIR.bits() | mode.bits();
         self.archive
-            .add_entry(&dir_path, &[], mode)
+            .add_entry(&dir_path, &[], archive_mode)
             .map_err(|_| libc::EIO)?;
 
         let attr = self.get_attr(ino, FileType::Directory);
@@ -449,7 +469,7 @@ impl BaleFsState {
         &mut self,
         parent_ino: u64,
         name: &str,
-        mode: u32,
+        mode: Mode,
     ) -> Result<(u64, fuser::FileAttr), i32> {
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
@@ -491,12 +511,12 @@ impl BaleFsState {
         self.modified_data.insert(full_path.clone(), Vec::new());
 
         // Add empty file to archive.
-        let file_mode = 0o100000 | (mode & 0o777); // regular file + permissions
+        let archive_mode = SFlag::S_IFREG.bits() | mode.bits();
         self.archive
-            .add_entry(&full_path, &[], file_mode)
+            .add_entry(&full_path, &[], archive_mode)
             .map_err(|_| libc::EIO)?;
 
-        let perm = (mode & 0o777) as u16;
+        let perm = mode.bits() as u16;
         let attr = fuser::FileAttr {
             ino,
             size: 0,
@@ -506,7 +526,11 @@ impl BaleFsState {
             ctime: self.mount_time,
             crtime: self.mount_time,
             kind: FileType::RegularFile,
-            perm: if perm == 0 { 0o644 } else { perm },
+            perm: if perm == 0 {
+                DEFAULT_FILE_PERM as u16
+            } else {
+                perm
+            },
             nlink: 1,
             uid: self.uid,
             gid: self.gid,
@@ -651,8 +675,7 @@ impl BaleFsState {
                 let mode = self.get_file_mode(&old_path);
                 let _ = self.archive.add_entry(&new_path, &data, mode);
             } else if let Some(data) = self.modified_data.get(&new_path) {
-                let mode = 0o100644;
-                let _ = self.archive.add_entry(&new_path, data, mode);
+                let _ = self.archive.add_entry(&new_path, data, DEFAULT_FILE_MODE);
             }
             let _ = self.archive.delete(&old_path);
         } else {
@@ -714,7 +737,7 @@ impl BaleFsState {
             // Update archive: add new dir entry, remove old.
             let old_dir_path = format!("{}/", old_path);
             let new_dir_path = format!("{}/", new_path);
-            let _ = self.archive.add_entry(&new_dir_path, &[], 0o40755);
+            let _ = self.archive.add_entry(&new_dir_path, &[], DEFAULT_DIR_MODE);
             let _ = self.archive.delete(&old_dir_path);
         }
 
@@ -797,7 +820,7 @@ mod tests {
         let mut state = BaleFsState::new(archive, false, 1000, 1000);
 
         // Create directory with mode 0o700 (rwx------).
-        let result = state.create_directory(ROOT_INO, "private", 0o700);
+        let result = state.create_directory(ROOT_INO, "private", Mode::S_IRWXU);
         assert!(result.is_ok());
 
         // Sync to persist the entry.
