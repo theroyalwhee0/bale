@@ -128,9 +128,7 @@ fn delete_files_from_archive() {
 }
 
 /// Extract extracts files from archive.
-/// FIXME: Skipped due to bug #93 - extract writes wrong content.
 #[test]
-#[ignore]
 fn extract_files_from_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -159,9 +157,7 @@ fn extract_files_from_archive() {
 }
 
 /// Check reports valid archive.
-/// FIXME: Skipped due to bug #93 - CRC mismatch after add.
 #[test]
-#[ignore]
 fn check_valid_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -178,9 +174,7 @@ fn check_valid_archive() {
 }
 
 /// Compact removes orphaned data.
-/// FIXME: Skipped due to bug #93 - incorrect data handling.
 #[test]
-#[ignore]
 fn compact_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");

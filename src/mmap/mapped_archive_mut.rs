@@ -250,6 +250,27 @@ impl MappedArchiveMut {
         self.mmap = new_mmap;
         Ok(())
     }
+
+    /// Flushes changes and truncates file to exactly the logical length.
+    ///
+    /// Unlike [`sync()`](Self::sync), this always truncates to `len`, even if
+    /// that's smaller than `committed_len`. Use this when the archive has
+    /// shrunk (e.g., after deleting entries).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if flushing, truncating, or remapping fails.
+    pub fn sync_and_truncate(&mut self) -> Result<(), BaleError> {
+        self.mmap.flush()?;
+        self.file.set_len(self.len as u64)?;
+        self.committed_len = self.len;
+        // Remap to match new file size so capacity() is accurate.
+        // SAFETY: We hold an exclusive lock on the file.
+        #[allow(unsafe_code)]
+        let new_mmap = unsafe { memmap2::MmapMut::map_mut(&self.file)? };
+        self.mmap = new_mmap;
+        Ok(())
+    }
 }
 
 impl Drop for MappedArchiveMut {

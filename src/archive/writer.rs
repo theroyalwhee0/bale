@@ -663,7 +663,10 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         );
         bytes[offset..offset + Trailer::SIZE].copy_from_slice(&trailer.to_bytes());
 
-        self.mmap.sync()?;
+        // Use sync_and_truncate to ensure file is truncated to exact size.
+        // This is important when entries are deleted - the file must shrink
+        // so the new trailer is at the end.
+        self.mmap.sync_and_truncate()?;
         self.mmap.set_len(self.write_offset)?;
 
         self.dirty = false;
@@ -917,6 +920,52 @@ mod tests {
         assert_eq!(reader.entry_count(), 1);
         assert!(reader.find_entry("a.txt").is_none());
         assert!(reader.find_entry("b.txt").is_some());
+    }
+
+    /// Delete from reopened archive truncates file correctly.
+    ///
+    /// Regression test: after delete + sync, the file must be truncated so
+    /// the new trailer is at the end. Otherwise the old trailer is read.
+    #[test]
+    fn delete_from_reopened_archive_truncates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with 2 entries.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("a.txt", b"aaa", 0o644).unwrap();
+            writer.add_entry("b.txt", b"bbb", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let size_before = std::fs::metadata(&path).unwrap().len();
+
+        // Reopen and delete one entry.
+        {
+            let mut writer = ArchiveWriter::open(&path).unwrap();
+            assert_eq!(writer.entry_count(), 2);
+            assert!(writer.delete("a.txt"));
+            writer.sync().unwrap();
+        }
+
+        let size_after = std::fs::metadata(&path).unwrap().len();
+
+        // File should be smaller (one fewer CD entry).
+        assert!(
+            size_after < size_before,
+            "file should shrink after delete: before={size_before}, after={size_after}"
+        );
+
+        // Reopen and verify only 1 entry.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 1);
+        assert!(reader.find_entry("a.txt").is_none());
+        assert!(reader.find_entry("b.txt").is_some());
+
+        // Verify data is still readable.
+        let entry = reader.find_entry("b.txt").unwrap();
+        assert_eq!(reader.read_data(entry).unwrap(), b"bbb");
     }
 
     /// Opening an existing archive preserves entries and data offsets.
