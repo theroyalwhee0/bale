@@ -231,9 +231,10 @@ impl fuser::Filesystem for BaleFs {
         };
 
         // Standard . and .. entries.
+        let parent_ino = state.get_parent_inode(ino);
         let mut entries: Vec<(u64, FileType, &str)> = vec![
             (ino, FileType::Directory, "."),
-            (ROOT_INO, FileType::Directory, ".."),
+            (parent_ino, FileType::Directory, ".."),
         ];
 
         for entry in contents {
