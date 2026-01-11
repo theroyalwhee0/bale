@@ -130,7 +130,7 @@ impl fuser::Filesystem for BaleFs {
         let name_str = match name.to_str() {
             Some(s) => s,
             None => {
-                reply.error(libc::ENOENT);
+                reply.error(libc::EINVAL);
                 return;
             }
         };
