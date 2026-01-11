@@ -304,6 +304,7 @@ impl BaleFsState {
         &mut self,
         parent_ino: u64,
         name: &str,
+        mode: u32,
     ) -> Result<(u64, fuser::FileAttr), i32> {
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
@@ -343,7 +344,7 @@ impl BaleFsState {
 
         // Add directory entry to archive (path ending with /).
         let dir_path = format!("{}/", full_path);
-        let mode = 0o40755u32; // directory with rwxr-xr-x
+        let mode = 0o40000 | (mode & 0o7777); // directory bit + permission bits
         self.archive
             .add_entry(&dir_path, &[], mode)
             .map_err(|_| libc::EIO)?;
@@ -691,5 +692,59 @@ impl BaleFsState {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Creates a test archive with the given entries.
+    fn create_test_archive(entries: &[(&str, &[u8], u32)]) -> ArchiveWriter {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        for (name, data, mode) in entries {
+            writer.add_entry(name, data, *mode).unwrap();
+        }
+        writer.sync().unwrap();
+        drop(writer);
+
+        // Re-open to get a fresh state.
+        let writer = ArchiveWriter::open(&path).unwrap();
+
+        // Keep temp directory alive by leaking it.
+        std::mem::forget(dir);
+
+        writer
+    }
+
+    /// Tests that `mkdir` respects the mode parameter.
+    #[test]
+    fn mkdir_respects_mode() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Create directory with mode 0o700 (rwx------).
+        let result = state.create_directory(ROOT_INO, "private", 0o700);
+        assert!(result.is_ok());
+
+        // Sync to persist the entry.
+        state.archive.sync().unwrap();
+
+        // Find the entry in the archive and verify mode.
+        let entries: Vec<_> = state.archive.iter_entries().collect();
+        let (header, _path) = entries
+            .iter()
+            .find(|(_, p)| p.starts_with(b"private/"))
+            .unwrap();
+
+        // Mode is stored in upper 16 bits of external_attrs.
+        let mode = header.external_attrs.get() >> 16;
+
+        // Mode should be 0o40700 (directory bit + rwx------).
+        assert_eq!(mode, 0o40700, "directory mode should be 0o40700");
     }
 }

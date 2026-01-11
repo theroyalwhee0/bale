@@ -503,7 +503,7 @@ impl fuser::Filesystem for BaleFs {
         _req: &Request<'_>,
         parent: u64,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
@@ -528,7 +528,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        match state.create_directory(parent, name) {
+        match state.create_directory(parent, name, mode) {
             Ok((ino, attr)) => reply.entry(&TTL, &attr, ino),
             Err(e) => reply.error(e),
         }
