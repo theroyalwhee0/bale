@@ -11,8 +11,9 @@ use fuser::{
 };
 
 use nix::libc;
+use nix::sys::stat::Mode;
 
-use crate::fuse::bale_fs_state::BaleFsState;
+use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM, PERM_MASK};
 use crate::fuse::{ROOT_INO, TTL};
 use crate::{ArchiveRead, ArchiveWriter, BaleError, DosDateTime, EntryKind};
 
@@ -484,7 +485,7 @@ impl fuser::Filesystem for BaleFs {
             .unwrap_or(state.mount_time);
 
         let mode = state.get_file_mode(&path);
-        let perm = (mode & 0o777) as u16;
+        let perm = (mode & PERM_MASK) as u16;
 
         let attr = fuser::FileAttr {
             ino,
@@ -495,7 +496,11 @@ impl fuser::Filesystem for BaleFs {
             ctime: mtime,
             crtime: mtime,
             kind: FileType::RegularFile,
-            perm: if perm == 0 { 0o644 } else { perm },
+            perm: if perm == 0 {
+                DEFAULT_FILE_PERM as u16
+            } else {
+                perm
+            },
             nlink: 1,
             uid: state.uid,
             gid: state.gid,
@@ -538,6 +543,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        let mode = Mode::from_bits_truncate(mode);
         match state.create_directory(parent, name, mode) {
             Ok((ino, attr)) => reply.entry(&TTL, &attr, ino),
             Err(e) => reply.error(e),
@@ -605,6 +611,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        let mode = Mode::from_bits_truncate(mode);
         match state.create_file(parent, name, mode) {
             Ok((ino, attr)) => {
                 // Use inode as file handle for simplicity.

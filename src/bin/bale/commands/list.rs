@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use bale::{ArchivePath, ArchiveRead, ArchiveReader, DosDateTime};
+use nix::sys::stat::{Mode, SFlag};
 
 use crate::error::BaleCliError;
 
@@ -10,6 +11,9 @@ use crate::error::BaleCliError;
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
+
+/// Executable permission mask (any of user/group/other execute).
+const EXEC_MASK: u32 = Mode::S_IXUSR.bits() | Mode::S_IXGRP.bits() | Mode::S_IXOTH.bits();
 
 /// Lists entries in an archive with ls -alF style output.
 ///
@@ -40,23 +44,59 @@ pub fn run(archive_path: impl AsRef<Path>) -> Result<(), BaleCliError> {
 
 /// Formats Unix mode bits as a permission string (e.g., `-rw-r--r--`).
 fn format_permissions(mode: u32) -> String {
-    let file_type = match mode & 0o170000 {
-        0o040000 => 'd', // Directory
-        0o120000 => 'l', // Symlink
-        0o100000 => '-', // Regular file
-        _ => '-',        // Default to regular file
+    let file_type = match mode & SFlag::S_IFMT.bits() {
+        x if x == SFlag::S_IFDIR.bits() => 'd',
+        x if x == SFlag::S_IFLNK.bits() => 'l',
+        x if x == SFlag::S_IFREG.bits() => '-',
+        _ => '-', // Default to regular file
     };
 
     let perms = [
-        if mode & 0o400 != 0 { 'r' } else { '-' },
-        if mode & 0o200 != 0 { 'w' } else { '-' },
-        if mode & 0o100 != 0 { 'x' } else { '-' },
-        if mode & 0o040 != 0 { 'r' } else { '-' },
-        if mode & 0o020 != 0 { 'w' } else { '-' },
-        if mode & 0o010 != 0 { 'x' } else { '-' },
-        if mode & 0o004 != 0 { 'r' } else { '-' },
-        if mode & 0o002 != 0 { 'w' } else { '-' },
-        if mode & 0o001 != 0 { 'x' } else { '-' },
+        if mode & Mode::S_IRUSR.bits() != 0 {
+            'r'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IWUSR.bits() != 0 {
+            'w'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IXUSR.bits() != 0 {
+            'x'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IRGRP.bits() != 0 {
+            'r'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IWGRP.bits() != 0 {
+            'w'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IXGRP.bits() != 0 {
+            'x'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IROTH.bits() != 0 {
+            'r'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IWOTH.bits() != 0 {
+            'w'
+        } else {
+            '-'
+        },
+        if mode & Mode::S_IXOTH.bits() != 0 {
+            'x'
+        } else {
+            '-'
+        },
     ];
 
     format!(
@@ -92,7 +132,7 @@ fn format_date_time(mtime: &DosDateTime) -> String {
 /// - `@` for symlinks
 /// - empty for regular files
 fn get_type_indicator(mode: u32, path: &str) -> &'static str {
-    let file_type = mode & 0o170000;
+    let file_type = mode & SFlag::S_IFMT.bits();
 
     // Don't add indicator if path already has a trailing slash.
     if path.ends_with('/') {
@@ -100,10 +140,10 @@ fn get_type_indicator(mode: u32, path: &str) -> &'static str {
     }
 
     match file_type {
-        0o040000 => "/",               // Directory
-        0o120000 => "@",               // Symlink
-        _ if mode & 0o111 != 0 => "*", // Executable
-        _ => "",                       // Regular file
+        x if x == SFlag::S_IFDIR.bits() => "/",
+        x if x == SFlag::S_IFLNK.bits() => "@",
+        _ if mode & EXEC_MASK != 0 => "*", // Executable
+        _ => "",                           // Regular file
     }
 }
 
