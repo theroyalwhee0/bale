@@ -23,6 +23,8 @@ use crate::{ArchiveRead, ArchiveWriter, BaleError, DosDateTime, EntryKind};
 pub struct BaleFs {
     /// Mutable filesystem state protected by a mutex.
     state: Mutex<BaleFsState>,
+    /// Archive filename for FSName mount option.
+    archive_name: String,
 }
 
 impl BaleFs {
@@ -39,6 +41,12 @@ impl BaleFs {
     ///
     /// Returns an error if the archive cannot be opened.
     pub fn new(path: impl AsRef<Path>, read_only: bool) -> Result<Self, BaleError> {
+        let archive_name = path
+            .as_ref()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("archive")
+            .to_string();
         let archive = ArchiveWriter::open(path)?;
         let uid = {
             #[cfg(unix)]
@@ -65,6 +73,7 @@ impl BaleFs {
 
         Ok(Self {
             state: Mutex::new(state),
+            archive_name,
         })
     }
 
@@ -93,7 +102,7 @@ impl BaleFs {
         let read_only = self.state.lock().map_or(true, |s| s.read_only);
 
         let mut options = vec![
-            MountOption::FSName("bale".to_string()),
+            MountOption::FSName(format!("bale:{}", self.archive_name)),
             MountOption::DefaultPermissions,
         ];
 
@@ -130,7 +139,7 @@ impl fuser::Filesystem for BaleFs {
         let name_str = match name.to_str() {
             Some(s) => s,
             None => {
-                reply.error(libc::ENOENT);
+                reply.error(libc::EINVAL);
                 return;
             }
         };
@@ -504,7 +513,7 @@ impl fuser::Filesystem for BaleFs {
         _req: &Request<'_>,
         parent: u64,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
@@ -529,7 +538,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        match state.create_directory(parent, name) {
+        match state.create_directory(parent, name, mode) {
             Ok((ino, attr)) => reply.entry(&TTL, &attr, ino),
             Err(e) => reply.error(e),
         }

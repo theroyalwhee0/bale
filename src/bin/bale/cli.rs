@@ -104,5 +104,8 @@ pub enum Command {
         /// Spawn a shell at the mount point (optionally with a command).
         #[arg(long)]
         shell: Option<Option<String>>,
+        /// Mount as read-only (disables write operations).
+        #[arg(long)]
+        read_only: bool,
     },
 }

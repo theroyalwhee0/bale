@@ -102,6 +102,7 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
             allow_root,
             allow_other,
             shell,
+            read_only,
         } => commands::mount::run(
             archive,
             mount_point,
@@ -109,6 +110,7 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
             allow_root,
             allow_other,
             shell,
+            read_only,
         ),
     }
 }

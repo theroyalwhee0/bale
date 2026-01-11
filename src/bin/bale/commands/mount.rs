@@ -23,6 +23,7 @@ pub fn run(
     allow_root: bool,
     allow_other: bool,
     shell: Option<Option<String>>,
+    read_only: bool,
 ) -> Result<(), BaleCliError> {
     // TODO: Implement --background (daemonize)
     if background {
@@ -33,7 +34,7 @@ pub fn run(
     }
 
     if let Some(script) = shell {
-        run_shell_mode(archive, allow_root, allow_other, script)
+        run_shell_mode(archive, allow_root, allow_other, script, read_only)
     } else {
         let mount_point = mount_point.ok_or_else(|| {
             BaleCliError::Io(std::io::Error::new(
@@ -41,7 +42,7 @@ pub fn run(
                 "mount point required (or use --shell)",
             ))
         })?;
-        run_standard_mode(archive, mount_point, allow_root, allow_other)
+        run_standard_mode(archive, mount_point, allow_root, allow_other, read_only)
     }
 }
 
@@ -51,8 +52,8 @@ fn run_standard_mode(
     mount_point: PathBuf,
     allow_root: bool,
     allow_other: bool,
+    read_only: bool,
 ) -> Result<(), BaleCliError> {
-    let read_only = false;
     let fs = BaleFs::new(&archive, read_only)?;
     let session = fs.mount(&mount_point, allow_root, allow_other)?;
     session.join();
@@ -65,9 +66,8 @@ fn run_shell_mode(
     allow_root: bool,
     allow_other: bool,
     script: Option<String>,
+    read_only: bool,
 ) -> Result<(), BaleCliError> {
-    let read_only = false;
-
     // Create temp directory (auto-cleaned on drop).
     let temp_dir = tempfile::Builder::new().prefix("bale-").tempdir()?;
 
