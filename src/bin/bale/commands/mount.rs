@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use bale::fuse::BaleFs;
+use nix::unistd::daemon;
 
 use crate::error::BaleCliError;
 
@@ -25,12 +26,22 @@ pub fn run(
     shell: Option<Option<String>>,
     read_only: bool,
 ) -> Result<(), BaleCliError> {
-    // TODO: Implement --background (daemonize)
-    if background {
+    // Background mode is incompatible with shell mode.
+    if background && shell.is_some() {
         return Err(BaleCliError::Io(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "--background not yet implemented",
+            std::io::ErrorKind::InvalidInput,
+            "--background cannot be used with --shell",
         )));
+    }
+
+    if background {
+        let mount_point = mount_point.ok_or_else(|| {
+            BaleCliError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "mount point required with --background",
+            ))
+        })?;
+        return run_background_mode(archive, mount_point, allow_root, allow_other, read_only);
     }
 
     if let Some(script) = shell {
@@ -55,6 +66,38 @@ fn run_standard_mode(
     read_only: bool,
 ) -> Result<(), BaleCliError> {
     let fs = BaleFs::new(&archive, read_only)?;
+    let session = fs.mount(&mount_point, allow_root, allow_other)?;
+    session.join();
+    Ok(())
+}
+
+/// Background (daemon) mount mode.
+///
+/// Validates the archive, prints the PID, daemonizes, then mounts.
+fn run_background_mode(
+    archive: PathBuf,
+    mount_point: PathBuf,
+    allow_root: bool,
+    allow_other: bool,
+    read_only: bool,
+) -> Result<(), BaleCliError> {
+    // Validate archive before daemonizing so errors are reported to user.
+    let fs = BaleFs::new(&archive, read_only)?;
+
+    // Print PID before daemonizing (child will have different PID).
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("Daemonizing with PID {}", std::process::id());
+    }
+
+    // Daemonize: fork to background, create new session, close std fds.
+    // nochdir=false: change to /
+    // noclose=false: redirect stdin/stdout/stderr to /dev/null
+    daemon(false, false).map_err(|e| {
+        BaleCliError::Io(std::io::Error::other(format!("failed to daemonize: {e}")))
+    })?;
+
+    // Now running in background - mount and wait.
     let session = fs.mount(&mount_point, allow_root, allow_other)?;
     session.join();
     Ok(())
