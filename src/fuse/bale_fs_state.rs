@@ -294,6 +294,7 @@ impl BaleFsState {
         }
 
         self.archive.sync().map_err(|_| libc::EIO)?;
+        self.modified_data.clear();
         Ok(())
     }
 
@@ -814,5 +815,27 @@ mod tests {
 
         // Mode should be 0o40700 (directory bit + rwx------).
         assert_eq!(mode, 0o40700, "directory mode should be 0o40700");
+    }
+
+    /// Tests that `modified_data` is cleared after sync.
+    #[test]
+    fn modified_data_cleared_after_sync() {
+        let archive = create_test_archive(&[("test.txt", b"original", 0o100644)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Modify the file.
+        state
+            .modified_data
+            .insert("test.txt".to_string(), b"modified".to_vec());
+        assert!(!state.modified_data.is_empty());
+
+        // Sync to archive.
+        state.sync_modified_to_archive().unwrap();
+
+        // modified_data should be cleared.
+        assert!(
+            state.modified_data.is_empty(),
+            "modified_data should be cleared after sync"
+        );
     }
 }
