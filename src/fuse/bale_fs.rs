@@ -157,7 +157,26 @@ impl fuser::Filesystem for BaleFs {
         // Find the entry.
         for entry in contents {
             if entry.name == name_str {
-                let attr = state.get_attr(entry.ino, entry.kind);
+                let attr = match entry.kind {
+                    FileType::Directory => state.get_attr(entry.ino, entry.kind),
+                    FileType::RegularFile | FileType::Symlink => {
+                        // Look up file attributes from archive.
+                        if let Some(path) = state.inode_to_path.get(&entry.ino)
+                            && let Some((header, _, _)) = state.archive.find_entry_with_path(path)
+                        {
+                            let mut attr = state.get_attr_for_file(entry.ino, entry.kind, header);
+                            // Override size if file has been modified.
+                            if let Some(data) = state.modified_data.get(path) {
+                                attr.size = data.len() as u64;
+                                attr.blocks = attr.size.div_ceil(512);
+                            }
+                            attr
+                        } else {
+                            state.get_attr(entry.ino, entry.kind)
+                        }
+                    }
+                    _ => state.get_attr(entry.ino, entry.kind),
+                };
                 reply.entry(&TTL, &attr, 0);
                 return;
             }
