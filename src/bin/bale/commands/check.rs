@@ -20,6 +20,7 @@ enum ArchiveStatus {
 /// Verifies:
 /// - Format validity (via `ArchiveReader::open`)
 /// - CRC-32 checksums
+/// - Path validity (UTF-8, safename rules, reserved prefixes)
 /// - Central Directory ordering (sorted by path)
 /// - Duplicate path detection
 /// - Orphaned data detection
@@ -35,10 +36,17 @@ pub fn run(archive_path: impl AsRef<Path>, quiet: bool) -> Result<(), BaleCliErr
     let reader = ArchiveReader::open(&archive_path)?;
     let mut errors: Vec<String> = Vec::new();
 
-    // Check CRCs.
+    // Check CRCs and path validity.
     for (header, path_bytes) in reader.iter_entries() {
+        let path = ArchivePath::from_null_padded_bytes(path_bytes);
+
+        // Verify CRC.
         if let Err(e) = reader.verify_crc(header) {
-            let path = ArchivePath::from_null_padded_bytes(path_bytes);
+            errors.push(format!("'{}': {}", path, e));
+        }
+
+        // Validate path (UTF-8, safename rules, reserved prefixes).
+        if let Err(e) = path.normalize() {
             errors.push(format!("'{}': {}", path, e));
         }
     }
