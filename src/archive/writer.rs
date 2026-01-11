@@ -719,7 +719,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ArchiveReader, ArchiveWriter};
+    use crate::{ArchiveReader, ArchiveWriter, Entry};
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -1120,5 +1120,190 @@ mod tests {
         let entry = writer.find_entry("test.txt").unwrap();
         let data = writer.read_data(entry).unwrap();
         assert_eq!(data, b"test data");
+    }
+
+    // ------------------------------------------------------------------------
+    // Entry type tests (FileEntry, DirEntry, SymlinkEntry, Entry)
+    // ------------------------------------------------------------------------
+
+    /// FileEntry provides access to file metadata and data.
+    #[test]
+    fn file_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("test.txt", b"hello", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let file = reader.file("test.txt").unwrap();
+
+        assert_eq!(file.path().as_str(), Some("test.txt"));
+        assert_eq!(file.data(), b"hello");
+        assert_eq!(file.size(), 5);
+        assert_eq!(file.mode(), 0o755);
+        assert_eq!(file.crc32(), crc32fast::hash(b"hello"));
+        assert!(file.id() > 0);
+        assert!(file.header().signature.get() != 0);
+        // mtime() returns a DosDateTime.
+        let _ = file.mtime();
+    }
+
+    /// DirEntry provides access to directory metadata.
+    #[test]
+    fn dir_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_folder("mydir", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let folder = reader.folder("mydir").unwrap();
+
+        assert_eq!(folder.path().as_str(), Some("mydir"));
+        assert_eq!(folder.mode() & 0o777, 0o755);
+        assert!(folder.id() > 0);
+        assert!(folder.header().signature.get() != 0);
+        let _ = folder.mtime();
+    }
+
+    /// SymlinkEntry provides access to symlink metadata and target.
+    #[test]
+    fn symlink_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_symlink("link", "target.txt", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let symlink = reader.symlink("link").unwrap();
+
+        assert_eq!(symlink.path().as_str(), Some("link"));
+        assert_eq!(symlink.target(), Some("target.txt"));
+        assert_eq!(symlink.target_bytes(), b"target.txt");
+        assert_eq!(symlink.mode() & 0o777, 0o777);
+        assert!(symlink.id() > 0);
+        assert!(symlink.header().signature.get() != 0);
+        let _ = symlink.mtime();
+    }
+
+    /// Entry enum provides type checking and conversion.
+    #[test]
+    fn entry_enum_type_checks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "file.txt", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // Test file entry.
+        let file_entry = reader.entry("file.txt").unwrap();
+        assert!(file_entry.is_file());
+        assert!(!file_entry.is_directory());
+        assert!(!file_entry.is_symlink());
+        assert!(file_entry.as_file().is_some());
+        assert!(file_entry.as_directory().is_none());
+        assert!(file_entry.as_symlink().is_none());
+
+        // Test directory entry.
+        let dir_entry = reader.entry("dir").unwrap();
+        assert!(!dir_entry.is_file());
+        assert!(dir_entry.is_directory());
+        assert!(!dir_entry.is_symlink());
+        assert!(dir_entry.as_file().is_none());
+        assert!(dir_entry.as_directory().is_some());
+        assert!(dir_entry.as_symlink().is_none());
+
+        // Test symlink entry.
+        let link_entry = reader.entry("link").unwrap();
+        assert!(!link_entry.is_file());
+        assert!(!link_entry.is_directory());
+        assert!(link_entry.is_symlink());
+        assert!(link_entry.as_file().is_none());
+        assert!(link_entry.as_directory().is_none());
+        assert!(link_entry.as_symlink().is_some());
+    }
+
+    /// Entry enum into_* conversions consume the entry.
+    #[test]
+    fn entry_enum_into_conversions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "target", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // into_file on file succeeds.
+        let entry = reader.entry("file.txt").unwrap();
+        assert!(entry.into_file().is_some());
+
+        // into_directory on dir succeeds.
+        let entry = reader.entry("dir").unwrap();
+        assert!(entry.into_directory().is_some());
+
+        // into_symlink on link succeeds.
+        let entry = reader.entry("link").unwrap();
+        assert!(entry.into_symlink().is_some());
+
+        // into_file on non-file returns None.
+        let entry = reader.entry("dir").unwrap();
+        assert!(entry.into_file().is_none());
+    }
+
+    /// Entry From implementations work.
+    #[test]
+    fn entry_from_conversions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "target", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // From<FileEntry>.
+        let file = reader.file("file.txt").unwrap();
+        let entry: Entry = file.into();
+        assert!(entry.is_file());
+
+        // From<DirEntry>.
+        let folder = reader.folder("dir").unwrap();
+        let entry: Entry = folder.into();
+        assert!(entry.is_directory());
+
+        // From<SymlinkEntry>.
+        let symlink = reader.symlink("link").unwrap();
+        let entry: Entry = symlink.into();
+        assert!(entry.is_symlink());
     }
 }
