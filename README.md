@@ -6,7 +6,7 @@ access.
 
 ## Features
 
-- **Zip-compatible**: Archives can be read by standard zip tools (unzip, 7z, etc.)
+- **Zip-compatible**: Archives can be read by standard zip tools (unzip, zipinfo, etc.)
 - **Memory-mapped**: Designed for efficient mmap-based access
 - **Zero-copy**: Fixed-stride entries enable direct access without parsing
 - **4K aligned**: File data aligned to 4096 bytes for optimal I/O
