@@ -93,7 +93,7 @@ pub enum Command {
         /// The mount point directory (optional with --shell).
         mount_point: Option<PathBuf>,
         /// Run in background (daemonize).
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "shell")]
         background: bool,
         /// Allow root to access the mount.
         #[arg(long)]
