@@ -81,4 +81,8 @@ pub enum BaleError {
     /// Size exceeds ZIP format limits.
     #[error("size overflow: {0}")]
     SizeOverflow(String),
+
+    /// Path uses reserved prefix (`.bale`).
+    #[error("reserved path: {0}")]
+    ReservedPath(String),
 }

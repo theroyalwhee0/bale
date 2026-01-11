@@ -7,6 +7,13 @@ use std::path::{Path, PathBuf};
 
 use crate::BaleError;
 
+/// Reserved path prefix for bale internal use.
+///
+/// Paths with components starting with this prefix are rejected to reserve
+/// space for future format extensions (e.g., virtual `.bale/` metadata folder
+/// in FUSE mounts).
+const RESERVED_PREFIX: &str = ".bale";
+
 /// A path within a bale archive, either borrowed or owned.
 ///
 /// Archive paths use forward slashes as separators and are typically UTF-8,
@@ -285,22 +292,37 @@ impl<'a> ArchivePath<'a> {
             return Err(BaleError::InvalidPath);
         }
 
-        // Validate each component against safename rules.
+        // Validate each component against safename rules and reserved prefixes.
         for component in &components {
             safename::validate_file(component)?;
+            Self::check_reserved(component)?;
         }
 
         Ok(Cow::Owned(components.join("/").into_bytes()))
     }
 
-    /// Validates a normalized path against safename rules.
+    /// Validates a normalized path against safename rules and reserved prefixes.
     ///
     /// # Errors
     ///
     /// Returns `BaleError::UnsafeFilename` if any component violates safename rules.
+    /// Returns `BaleError::ReservedPath` if any component starts with `.bale`.
     fn validate_safename(path: &str) -> Result<(), BaleError> {
         for component in path.split('/') {
             safename::validate_file(component)?;
+            Self::check_reserved(component)?;
+        }
+        Ok(())
+    }
+
+    /// Checks if a path component uses the reserved `.bale` prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::ReservedPath` if the component starts with `.bale`.
+    fn check_reserved(component: &str) -> Result<(), BaleError> {
+        if component.starts_with(RESERVED_PREFIX) {
+            return Err(BaleError::ReservedPath(component.to_string()));
         }
         Ok(())
     }
@@ -849,6 +871,48 @@ mod tests {
         assert!(ArchivePath::try_from("file_with_underscores").is_ok());
         assert!(ArchivePath::try_from("CamelCase.TXT").is_ok());
         assert!(ArchivePath::try_from("123numeric").is_ok());
+    }
+
+    // ==================== Reserved Path Tests ====================
+
+    /// Paths starting with .bale are rejected.
+    #[test]
+    fn reserved_bale_prefix_rejected() {
+        // Exact match
+        assert!(ArchivePath::try_from(".bale").is_err());
+        // With extension
+        assert!(ArchivePath::try_from(".bale.txt").is_err());
+        // As directory
+        assert!(ArchivePath::try_from(".bale/file.txt").is_err());
+        // Nested
+        assert!(ArchivePath::try_from("foo/.bale").is_err());
+        assert!(ArchivePath::try_from("foo/.bale/bar").is_err());
+        // With suffix
+        assert!(ArchivePath::try_from(".balesomething").is_err());
+        assert!(ArchivePath::try_from("dir/.baledata").is_err());
+    }
+
+    /// Similar but non-reserved paths are accepted.
+    #[test]
+    fn similar_to_reserved_accepted() {
+        // .bal (not .bale)
+        assert!(ArchivePath::try_from(".bal").is_ok());
+        // bale without dot
+        assert!(ArchivePath::try_from("bale").is_ok());
+        assert!(ArchivePath::try_from("bale.txt").is_ok());
+        // Contains .bale but doesn't start with it
+        assert!(ArchivePath::try_from("foo.bale").is_ok());
+        assert!(ArchivePath::try_from("mybale").is_ok());
+    }
+
+    /// Reserved path check returns correct error type.
+    #[test]
+    fn reserved_path_error_type() {
+        let result = ArchivePath::try_from(".bale");
+        assert!(matches!(result, Err(BaleError::ReservedPath(_))));
+        if let Err(BaleError::ReservedPath(path)) = result {
+            assert_eq!(path, ".bale");
+        }
     }
 
     // ==================== Property Tests ====================
