@@ -500,6 +500,16 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
 
 impl ArchiveWrite for Archive<MappedArchiveMut> {
     fn add_entry(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError> {
+        self.add_entry_with_mtime(path, data, mode, None)
+    }
+
+    fn add_entry_with_mtime(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        mode: u32,
+        mtime: Option<std::time::SystemTime>,
+    ) -> Result<(), BaleError> {
         let path_bytes = path.as_bytes();
         let path_size = self.path_size();
 
@@ -538,8 +548,8 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         padded_path[..path_bytes.len()].copy_from_slice(path_bytes);
 
         let crc = crc32fast::hash(data);
-        let mtime = DosDateTime::from(std::time::SystemTime::now());
-        let local_header = LocalFileHeader::new(data_size_u32, crc, mtime, path_size as u16);
+        let dos_mtime = DosDateTime::from(mtime.unwrap_or_else(std::time::SystemTime::now));
+        let local_header = LocalFileHeader::new(data_size_u32, crc, dos_mtime, path_size as u16);
 
         // Assign next available ID and increment counter.
         let id = self.bale_eocd.next_id();
@@ -560,7 +570,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let cd_header = CentralDirectoryHeader::new(
             data_size_u32,
             crc,
-            mtime,
+            dos_mtime,
             local_offset_u32,
             mode,
             path_size as u16,
