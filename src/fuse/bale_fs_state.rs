@@ -58,6 +58,15 @@ pub(super) struct BaleFsState {
     /// Tracks chmod operations until synced to archive.
     pub(super) modified_modes: HashMap<String, u32>,
 
+    /// Modified timestamps for files (path -> new mtime).
+    /// Tracks utimensat operations until synced to archive.
+    pub(super) modified_times: HashMap<String, SystemTime>,
+
+    /// Directory mtimes by inode.
+    /// For explicit directories, this is from the archive.
+    /// For derived directories, this is the max mtime of contained files.
+    dir_mtimes: HashMap<u64, SystemTime>,
+
     /// Next available inode for files.
     next_file_ino: u64,
     /// Next available inode for directories.
@@ -79,6 +88,8 @@ impl BaleFsState {
             path_to_inode: HashMap::new(),
             modified_data: HashMap::new(),
             modified_modes: HashMap::new(),
+            modified_times: HashMap::new(),
+            dir_mtimes: HashMap::new(),
             next_file_ino: FILE_INO_START,
             next_dir_ino: DIR_INO_START,
         };
@@ -92,14 +103,16 @@ impl BaleFsState {
     /// - Directory inodes for all directories (explicit and implicit)
     /// - File/symlink inodes for all files and symlinks
     /// - Directory content listings
+    /// - Directory mtimes (from archive for explicit, max child mtime for derived)
     fn build_directory_tree(&mut self) {
         // Root directory always exists.
         self.dir_inodes.insert(String::new(), ROOT_INO);
         self.dir_contents.insert(ROOT_INO, Vec::new());
+        self.dir_mtimes.insert(ROOT_INO, self.mount_time);
 
         // Collect all paths first to avoid borrow issues.
         // Skip entries with invalid UTF-8 paths.
-        let entries: Vec<(String, EntryKind)> = self
+        let entries: Vec<(String, EntryKind, SystemTime)> = self
             .archive
             .iter_entries()
             .filter_map(|(header, path_bytes)| {
@@ -109,11 +122,14 @@ impl BaleFsState {
                     .unwrap_or(path_bytes.len())];
                 let path = std::str::from_utf8(trimmed).ok()?.to_owned();
                 let kind = EntryKind::from_mode(header.external_attrs.get() >> 16);
-                Some((path, kind))
+                let mtime =
+                    DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
+                        .to_system_time_or_epoch();
+                Some((path, kind, mtime))
             })
             .collect();
 
-        for (path, kind) in entries {
+        for (path, kind, mtime) in entries {
             // Ensure all parent directories exist.
             self.ensure_parent_dirs(&path);
 
@@ -126,6 +142,7 @@ impl BaleFsState {
                         self.next_dir_ino += 1;
                         self.dir_inodes.insert(dir_path.clone(), ino);
                         self.dir_contents.insert(ino, Vec::new());
+                        self.dir_mtimes.insert(ino, mtime);
 
                         // Add to parent directory.
                         if let Some((parent, name)) = Self::split_path(&dir_path)
@@ -133,6 +150,11 @@ impl BaleFsState {
                             && let Some(contents) = self.dir_contents.get_mut(&parent_ino)
                         {
                             contents.push(FuseDirEntry::directory(name, ino));
+                        }
+                    } else {
+                        // Directory already exists (was derived), update mtime from explicit entry.
+                        if let Some(&ino) = self.dir_inodes.get(&dir_path) {
+                            self.dir_mtimes.insert(ino, mtime);
                         }
                     }
                 }
@@ -143,17 +165,28 @@ impl BaleFsState {
                     self.inode_to_path.insert(ino, path.clone());
                     self.path_to_inode.insert(path.clone(), ino);
 
-                    // Add to parent directory.
+                    // Add to parent directory and update parent's mtime if needed.
                     if let Some((parent, name)) = Self::split_path(&path)
                         && let Some(&parent_ino) = self.dir_inodes.get(parent)
-                        && let Some(contents) = self.dir_contents.get_mut(&parent_ino)
                     {
-                        let entry = if kind == EntryKind::Symlink {
-                            FuseDirEntry::symlink(name, ino)
-                        } else {
-                            FuseDirEntry::file(name, ino)
-                        };
-                        contents.push(entry);
+                        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+                            let entry = if kind == EntryKind::Symlink {
+                                FuseDirEntry::symlink(name, ino)
+                            } else {
+                                FuseDirEntry::file(name, ino)
+                            };
+                            contents.push(entry);
+                        }
+
+                        // Update derived directory mtime to max of children.
+                        self.dir_mtimes
+                            .entry(parent_ino)
+                            .and_modify(|t| {
+                                if mtime > *t {
+                                    *t = mtime;
+                                }
+                            })
+                            .or_insert(mtime);
                     }
                 }
                 EntryKind::Other(_) => {
@@ -190,6 +223,8 @@ impl BaleFsState {
                 self.next_dir_ino += 1;
                 self.dir_inodes.insert(current.clone(), ino);
                 self.dir_contents.insert(ino, Vec::new());
+                // Derived directory gets mount_time initially; updated to max child mtime later.
+                self.dir_mtimes.insert(ino, self.mount_time);
 
                 // Add to parent directory.
                 let parent_ino = if parent.is_empty() {
@@ -219,20 +254,23 @@ impl BaleFsState {
 
     /// Creates file attributes for a directory or generic entry.
     pub(super) fn get_attr(&self, ino: u64, kind: FileType) -> fuser::FileAttr {
-        let perm = if kind == FileType::Directory {
-            (self.get_dir_mode(ino) & PERM_MASK) as u16
+        let (perm, mtime) = if kind == FileType::Directory {
+            (
+                (self.get_dir_mode(ino) & PERM_MASK) as u16,
+                self.get_dir_mtime(ino),
+            )
         } else {
-            DEFAULT_FILE_PERM as u16
+            (DEFAULT_FILE_PERM as u16, self.mount_time)
         };
 
         fuser::FileAttr {
             ino,
             size: 0,
             blocks: 0,
-            atime: self.mount_time,
-            mtime: self.mount_time,
-            ctime: self.mount_time,
-            crtime: self.mount_time,
+            atime: mtime,
+            mtime,
+            ctime: mtime,
+            crtime: mtime,
             kind,
             perm,
             nlink: 1,
@@ -250,12 +288,17 @@ impl BaleFsState {
         ino: u64,
         kind: FileType,
         header: &CentralDirectoryHeader,
+        path: &str,
     ) -> fuser::FileAttr {
         let mode = header.external_attrs.get() >> 16;
         let perm = (mode & PERM_MASK) as u16;
         let size = header.uncompressed_size.get() as u64;
-        let mtime = DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
-            .to_system_time_or_epoch();
+
+        // Check modified_times first, fall back to archive mtime.
+        let mtime = self.modified_times.get(path).copied().unwrap_or_else(|| {
+            DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
+                .to_system_time_or_epoch()
+        });
 
         fuser::FileAttr {
             ino,
@@ -350,40 +393,94 @@ impl BaleFsState {
         self.modified_modes.insert(path, mode);
     }
 
+    /// Gets the mtime for a directory by inode.
+    ///
+    /// Checks modified_times first, then falls back to cached dir_mtimes.
+    pub(super) fn get_dir_mtime(&self, ino: u64) -> SystemTime {
+        let path = self.get_dir_path(ino);
+
+        // Check if mtime was modified via utimensat.
+        if let Some(&mtime) = self.modified_times.get(&path) {
+            return mtime;
+        }
+
+        // Fall back to cached directory mtime.
+        self.dir_mtimes
+            .get(&ino)
+            .copied()
+            .unwrap_or(self.mount_time)
+    }
+
+    /// Sets the mtime for a directory by inode.
+    pub(super) fn set_dir_mtime(&mut self, ino: u64, mtime: SystemTime) {
+        let path = self.get_dir_path(ino);
+        self.modified_times.insert(path, mtime);
+    }
+
+    /// Gets the mtime for a file by path.
+    ///
+    /// Checks modified_times first, then falls back to archive.
+    pub(super) fn get_file_mtime(&self, path: &str) -> SystemTime {
+        // Check if mtime was modified via utimensat.
+        if let Some(&mtime) = self.modified_times.get(path) {
+            return mtime;
+        }
+
+        // Fall back to archive mtime.
+        self.archive
+            .find_entry_with_path(path)
+            .map(|(header, _, _)| {
+                DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get())
+                    .to_system_time_or_epoch()
+            })
+            .unwrap_or(self.mount_time)
+    }
+
+    /// Sets the mtime for a file by path.
+    pub(super) fn set_file_mtime(&mut self, path: &str, mtime: SystemTime) {
+        self.modified_times.insert(path.to_string(), mtime);
+    }
+
     /// Syncs all modified files to the archive.
     pub(super) fn sync_modified_to_archive(&mut self) -> Result<(), i32> {
         // Collect paths to avoid borrow issues.
         let data_paths: Vec<String> = self.modified_data.keys().cloned().collect();
 
         log::trace!(
-            "sync_modified_to_archive: {} modified files, {} modified modes",
+            "sync_modified_to_archive: {} modified files, {} modified modes, {} modified times",
             data_paths.len(),
-            self.modified_modes.len()
+            self.modified_modes.len(),
+            self.modified_times.len()
         );
 
         // Sync files with modified data.
         for path in &data_paths {
             let mode = self.get_file_mode(path);
+            let mtime = self.modified_times.get(path).copied();
             let data = self.modified_data.get(path).unwrap().clone();
             // Delete existing entry first to avoid duplicates (create() adds
             // an initial entry, so we must remove it before re-adding with
             // the final content).
             self.archive.delete(path);
             self.archive
-                .add_entry(path, &data, mode)
+                .add_entry_with_mtime(path, &data, mode, mtime)
                 .map_err(|_| libc::EIO)?;
         }
 
-        // Sync files with only mode changes (not data changes).
-        let mode_only_paths: Vec<String> = self
+        // Sync files with only mode or mtime changes (not data changes).
+        let metadata_only_paths: Vec<String> = self
             .modified_modes
             .keys()
+            .chain(self.modified_times.keys())
             .filter(|p| !self.modified_data.contains_key(*p))
             .cloned()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect();
 
-        for path in &mode_only_paths {
+        for path in &metadata_only_paths {
             let mode = self.get_file_mode(path);
+            let mtime = self.modified_times.get(path).copied();
             // Read current data from archive.
             let data = self
                 .archive
@@ -393,7 +490,7 @@ impl BaleFsState {
                 .to_vec();
             self.archive.delete(path);
             self.archive
-                .add_entry(path, &data, mode)
+                .add_entry_with_mtime(path, &data, mode, mtime)
                 .map_err(|_| libc::EIO)?;
         }
 
@@ -401,6 +498,7 @@ impl BaleFsState {
         self.archive.sync().map_err(|_| libc::EIO)?;
         self.modified_data.clear();
         self.modified_modes.clear();
+        self.modified_times.clear();
         Ok(())
     }
 

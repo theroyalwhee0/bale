@@ -3,6 +3,7 @@
 use super::ArchiveRead;
 use crate::BaleError;
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Write operations for archives.
 ///
@@ -27,6 +28,33 @@ pub trait ArchiveWrite: ArchiveRead {
     /// - The archive offset would exceed 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     fn add_entry(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError>;
+
+    /// Adds an entry from raw data with a specific modification time.
+    ///
+    /// If an entry with the same path already exists, the new entry shadows it.
+    /// The old data remains in the archive (orphaned) until compact.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Archive path for the entry
+    /// * `data` - File contents
+    /// * `mode` - Unix file permissions (e.g., 0o644)
+    /// * `mtime` - Modification time (None uses current time)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path exceeds the archive's path_size
+    /// - The data size exceeds 4GB (ZIP format limitation)
+    /// - The archive offset would exceed 4GB (ZIP format limitation)
+    /// - Writing to the archive fails
+    fn add_entry_with_mtime(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        mode: u32,
+        mtime: Option<SystemTime>,
+    ) -> Result<(), BaleError>;
 
     /// Adds a file from the filesystem to the archive.
     ///

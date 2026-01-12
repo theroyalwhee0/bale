@@ -15,7 +15,7 @@ use nix::sys::stat::{Mode, SFlag};
 
 use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM, PERM_MASK};
 use crate::fuse::{ROOT_INO, TTL};
-use crate::{ArchiveRead, ArchiveWriter, BaleError, DosDateTime, EntryKind};
+use crate::{ArchiveRead, ArchiveWriter, BaleError, EntryKind};
 
 /// Maximum file size allowed for truncation (4GB).
 ///
@@ -172,7 +172,8 @@ impl fuser::Filesystem for BaleFs {
                         if let Some(path) = state.inode_to_path.get(&entry.ino)
                             && let Some((header, _, _)) = state.archive.find_entry_with_path(path)
                         {
-                            let mut attr = state.get_attr_for_file(entry.ino, entry.kind, header);
+                            let mut attr =
+                                state.get_attr_for_file(entry.ino, entry.kind, header, path);
                             // Override size if file has been modified.
                             if let Some(data) = state.modified_data.get(path) {
                                 attr.size = data.len() as u64;
@@ -226,7 +227,7 @@ impl fuser::Filesystem for BaleFs {
                     EntryKind::Symlink => FileType::Symlink,
                     _ => FileType::RegularFile,
                 };
-                let mut attr = state.get_attr_for_file(ino, file_type, header);
+                let mut attr = state.get_attr_for_file(ino, file_type, header, path);
 
                 // Override size if file has been modified.
                 if let Some(data) = state.modified_data.get(path) {
@@ -450,7 +451,7 @@ impl fuser::Filesystem for BaleFs {
         gid: Option<u32>,
         size: Option<u64>,
         _atime: Option<TimeOrNow>,
-        _mtime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
         _ctime: Option<SystemTime>,
         _fh: Option<u64>,
         _crtime: Option<SystemTime>,
@@ -481,8 +482,8 @@ impl fuser::Filesystem for BaleFs {
             return;
         }
 
-        // Check read-only for size or mode changes.
-        if (size.is_some() || mode.is_some()) && state.read_only {
+        // Check read-only for size, mode, or mtime changes.
+        if (size.is_some() || mode.is_some() || mtime.is_some()) && state.read_only {
             reply.error(libc::EROFS);
             return;
         }
@@ -497,6 +498,14 @@ impl fuser::Filesystem for BaleFs {
                     if let Some(new_mode) = mode {
                         let perm_bits = new_mode & PERM_MASK;
                         state.set_dir_mode(ino, SFlag::S_IFDIR.bits() | perm_bits);
+                    }
+                    // Handle directory mtime change.
+                    if let Some(new_mtime) = mtime {
+                        let time = match new_mtime {
+                            TimeOrNow::SpecificTime(t) => t,
+                            TimeOrNow::Now => SystemTime::now(),
+                        };
+                        state.set_dir_mtime(ino, time);
                     }
                     let attr = state.get_attr(ino, FileType::Directory);
                     reply.attr(&TTL, &attr);
@@ -516,6 +525,15 @@ impl fuser::Filesystem for BaleFs {
             state
                 .modified_modes
                 .insert(path.clone(), type_bits | perm_bits);
+        }
+
+        // Handle mtime change (utimensat).
+        if let Some(new_mtime) = mtime {
+            let time = match new_mtime {
+                TimeOrNow::SpecificTime(t) => t,
+                TimeOrNow::Now => SystemTime::now(),
+            };
+            state.set_file_mtime(&path, time);
         }
 
         // Handle truncation.
@@ -549,14 +567,7 @@ impl fuser::Filesystem for BaleFs {
             })
             .unwrap_or(0);
 
-        let mtime = state
-            .archive
-            .find_entry_with_path(&path)
-            .map(|(h, _, _)| {
-                DosDateTime::from_date_time_parts(h.mod_date.get(), h.mod_time.get())
-                    .to_system_time_or_epoch()
-            })
-            .unwrap_or(state.mount_time);
+        let file_mtime = state.get_file_mtime(&path);
 
         let mode = state.get_file_mode(&path);
         let perm = (mode & PERM_MASK) as u16;
@@ -565,10 +576,10 @@ impl fuser::Filesystem for BaleFs {
             ino,
             size,
             blocks: size.div_ceil(512),
-            atime: mtime,
-            mtime,
-            ctime: mtime,
-            crtime: mtime,
+            atime: file_mtime,
+            mtime: file_mtime,
+            ctime: file_mtime,
+            crtime: file_mtime,
             kind: FileType::RegularFile,
             perm: if perm == 0 {
                 DEFAULT_FILE_PERM as u16
