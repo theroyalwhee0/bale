@@ -446,8 +446,8 @@ impl fuser::Filesystem for BaleFs {
         _req: &Request<'_>,
         ino: u64,
         mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
         size: Option<u64>,
         _atime: Option<TimeOrNow>,
         _mtime: Option<TimeOrNow>,
@@ -466,6 +466,20 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // chown not supported - return EPERM unless setting to current owner.
+        if let Some(new_uid) = uid
+            && new_uid != state.uid
+        {
+            reply.error(libc::EPERM);
+            return;
+        }
+        if let Some(new_gid) = gid
+            && new_gid != state.gid
+        {
+            reply.error(libc::EPERM);
+            return;
+        }
 
         // Check read-only for size or mode changes.
         if (size.is_some() || mode.is_some()) && state.read_only {
