@@ -225,7 +225,6 @@ fn fuse_mkdir_nested() {
 
 /// Symlink operations via FUSE mount.
 #[test]
-#[ignore = "symlink creation not yet implemented"]
 fn fuse_symlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -249,7 +248,7 @@ fn fuse_symlink() {
     );
 
     // Verify symlink persists.
-    let (success, stdout, _) = run_bale(&["ls", "-l", archive.to_str().unwrap()]);
+    let (success, stdout, _) = run_bale(&["ls", archive.to_str().unwrap()]);
     assert!(success);
     assert!(stdout.contains("link.txt"), "symlink should exist");
 }

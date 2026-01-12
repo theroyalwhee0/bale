@@ -750,6 +750,77 @@ impl BaleFsState {
 
         Ok(())
     }
+
+    /// Creates a new symlink.
+    ///
+    /// Returns the inode of the new symlink and its attributes.
+    pub(super) fn create_symlink(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+        target: &str,
+    ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path.
+        let parent_path = self.get_dir_path(parent_ino);
+        let full_path = if parent_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+
+        // Check symlink doesn't already exist.
+        if self.path_to_inode.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Check no directory with that name exists.
+        if self.dir_inodes.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Allocate inode.
+        let ino = self.next_file_ino;
+        self.next_file_ino += 1;
+
+        // Add to path mappings.
+        self.inode_to_path.insert(ino, full_path.clone());
+        self.path_to_inode.insert(full_path.clone(), ino);
+
+        // Add to parent's contents.
+        if let Some(contents) = self.dir_contents.get_mut(&parent_ino) {
+            contents.push(FuseDirEntry::symlink(name, ino));
+        }
+
+        // Add symlink to archive.
+        self.archive
+            .add_symlink(&full_path, target, 0o777)
+            .map_err(|_| libc::EIO)?;
+
+        let attr = fuser::FileAttr {
+            ino,
+            size: target.len() as u64,
+            blocks: 0,
+            atime: self.mount_time,
+            mtime: self.mount_time,
+            ctime: self.mount_time,
+            crtime: self.mount_time,
+            kind: FileType::Symlink,
+            perm: 0o777,
+            nlink: 1,
+            uid: self.uid,
+            gid: self.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        };
+
+        Ok((ino, attr))
+    }
 }
 
 #[cfg(test)]
