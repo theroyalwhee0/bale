@@ -308,7 +308,6 @@ fn fuse_no_duplicate_entries() {
 
 /// setattr (chmod) via FUSE mount.
 #[test]
-#[ignore = "chmod not persisting mode correctly"]
 fn fuse_setattr_chmod() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
