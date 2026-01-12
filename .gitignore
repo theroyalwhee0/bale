@@ -31,3 +31,4 @@
 !tests/**/*.stdout
 !tests/**/*.toml
 !tests/**/*.sh
+!tests/**/*.txt

@@ -387,6 +387,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    use crate::proptest_config;
+
     // ==================== Unit Tests ====================
 
     /// The DOS epoch (1980-01-01 00:00:00) encodes correctly.
@@ -484,6 +486,8 @@ mod tests {
     // ==================== Property Tests ====================
 
     proptest! {
+        #![proptest_config(proptest_config::config())]
+
         /// Valid DosDateTime values from components pass is_valid().
         #[test]
         fn valid_components_accepted(
