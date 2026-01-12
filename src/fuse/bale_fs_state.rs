@@ -219,6 +219,12 @@ impl BaleFsState {
 
     /// Creates file attributes for a directory or generic entry.
     pub(super) fn get_attr(&self, ino: u64, kind: FileType) -> fuser::FileAttr {
+        let perm = if kind == FileType::Directory {
+            (self.get_dir_mode(ino) & PERM_MASK) as u16
+        } else {
+            DEFAULT_FILE_PERM as u16
+        };
+
         fuser::FileAttr {
             ino,
             size: 0,
@@ -228,11 +234,7 @@ impl BaleFsState {
             ctime: self.mount_time,
             crtime: self.mount_time,
             kind,
-            perm: if kind == FileType::Directory {
-                DEFAULT_DIR_PERM as u16
-            } else {
-                DEFAULT_FILE_PERM as u16
-            },
+            perm,
             nlink: 1,
             uid: self.uid,
             gid: self.gid,
@@ -311,6 +313,41 @@ impl BaleFsState {
                 if mode == 0 { DEFAULT_FILE_MODE } else { mode }
             })
             .unwrap_or(DEFAULT_FILE_MODE)
+    }
+
+    /// Gets the mode (permissions) for a directory by inode.
+    ///
+    /// Checks modified_modes first, then falls back to archive or default.
+    pub(super) fn get_dir_mode(&self, ino: u64) -> u32 {
+        let path = self.get_dir_path(ino);
+
+        // Check if mode was modified via chmod.
+        if let Some(&mode) = self.modified_modes.get(&path) {
+            return mode;
+        }
+
+        // Check archive for explicit directory entry.
+        let dir_path_with_slash = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", path)
+        };
+        if !dir_path_with_slash.is_empty()
+            && let Some((header, _, _)) = self.archive.find_entry_with_path(&dir_path_with_slash)
+        {
+            let mode = header.external_attrs.get() >> 16;
+            if mode != 0 {
+                return mode;
+            }
+        }
+
+        DEFAULT_DIR_MODE
+    }
+
+    /// Sets the mode (permissions) for a directory by inode.
+    pub(super) fn set_dir_mode(&mut self, ino: u64, mode: u32) {
+        let path = self.get_dir_path(ino);
+        self.modified_modes.insert(path, mode);
     }
 
     /// Syncs all modified files to the archive.

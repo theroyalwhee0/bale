@@ -11,7 +11,7 @@ use fuser::{
 };
 
 use nix::libc;
-use nix::sys::stat::Mode;
+use nix::sys::stat::{Mode, SFlag};
 
 use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM, PERM_MASK};
 use crate::fuse::{ROOT_INO, TTL};
@@ -463,8 +463,13 @@ impl fuser::Filesystem for BaleFs {
         let path = match state.inode_to_path.get(&ino) {
             Some(p) => p.clone(),
             None => {
-                // Might be a directory - just return current attrs.
+                // Might be a directory.
                 if state.dir_contents.contains_key(&ino) {
+                    // Handle directory mode change.
+                    if let Some(new_mode) = mode {
+                        let perm_bits = new_mode & PERM_MASK;
+                        state.set_dir_mode(ino, SFlag::S_IFDIR.bits() | perm_bits);
+                    }
                     let attr = state.get_attr(ino, FileType::Directory);
                     reply.attr(&TTL, &attr);
                     return;
