@@ -54,6 +54,10 @@ pub(super) struct BaleFsState {
     /// Used for write support when not read-only.
     pub(super) modified_data: HashMap<String, Vec<u8>>,
 
+    /// Modified modes for files (path -> new mode).
+    /// Tracks chmod operations until synced to archive.
+    pub(super) modified_modes: HashMap<String, u32>,
+
     /// Next available inode for files.
     next_file_ino: u64,
     /// Next available inode for directories.
@@ -74,6 +78,7 @@ impl BaleFsState {
             inode_to_path: HashMap::new(),
             path_to_inode: HashMap::new(),
             modified_data: HashMap::new(),
+            modified_modes: HashMap::new(),
             next_file_ino: FILE_INO_START,
             next_dir_ino: DIR_INO_START,
         };
@@ -289,8 +294,16 @@ impl BaleFsState {
         Ok(self.modified_data.get_mut(path).unwrap())
     }
 
-    /// Gets the mode (permissions) for a file from the archive.
+    /// Gets the mode (permissions) for a file.
+    ///
+    /// Checks modified_modes first, then falls back to archive.
     pub(super) fn get_file_mode(&self, path: &str) -> u32 {
+        // Check if mode was modified via chmod.
+        if let Some(&mode) = self.modified_modes.get(path) {
+            return mode;
+        }
+
+        // Fall back to archive.
         self.archive
             .find_entry_with_path(path)
             .map(|(header, _, _)| {
@@ -303,25 +316,54 @@ impl BaleFsState {
     /// Syncs all modified files to the archive.
     pub(super) fn sync_modified_to_archive(&mut self) -> Result<(), i32> {
         // Collect paths to avoid borrow issues.
-        let paths: Vec<String> = self.modified_data.keys().cloned().collect();
+        let data_paths: Vec<String> = self.modified_data.keys().cloned().collect();
 
-        log::trace!("sync_modified_to_archive: {} modified files", paths.len());
+        log::trace!(
+            "sync_modified_to_archive: {} modified files, {} modified modes",
+            data_paths.len(),
+            self.modified_modes.len()
+        );
 
-        for path in paths {
-            let mode = self.get_file_mode(&path);
-            let data = self.modified_data.get(&path).unwrap().clone();
+        // Sync files with modified data.
+        for path in &data_paths {
+            let mode = self.get_file_mode(path);
+            let data = self.modified_data.get(path).unwrap().clone();
             // Delete existing entry first to avoid duplicates (create() adds
             // an initial entry, so we must remove it before re-adding with
             // the final content).
-            self.archive.delete(&path);
+            self.archive.delete(path);
             self.archive
-                .add_entry(&path, &data, mode)
+                .add_entry(path, &data, mode)
+                .map_err(|_| libc::EIO)?;
+        }
+
+        // Sync files with only mode changes (not data changes).
+        let mode_only_paths: Vec<String> = self
+            .modified_modes
+            .keys()
+            .filter(|p| !self.modified_data.contains_key(*p))
+            .cloned()
+            .collect();
+
+        for path in &mode_only_paths {
+            let mode = self.get_file_mode(path);
+            // Read current data from archive.
+            let data = self
+                .archive
+                .file(path)
+                .map_err(|_| libc::EIO)?
+                .data()
+                .to_vec();
+            self.archive.delete(path);
+            self.archive
+                .add_entry(path, &data, mode)
                 .map_err(|_| libc::EIO)?;
         }
 
         log::trace!("sync_modified_to_archive: calling archive.sync()");
         self.archive.sync().map_err(|_| libc::EIO)?;
         self.modified_data.clear();
+        self.modified_modes.clear();
         Ok(())
     }
 

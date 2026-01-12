@@ -226,6 +226,11 @@ impl fuser::Filesystem for BaleFs {
                     attr.blocks = attr.size.div_ceil(512);
                 }
 
+                // Override mode if it has been changed via chmod.
+                if let Some(&mode) = state.modified_modes.get(path) {
+                    attr.perm = (mode & PERM_MASK) as u16;
+                }
+
                 reply.attr(&TTL, &attr);
                 return;
             }
@@ -426,7 +431,7 @@ impl fuser::Filesystem for BaleFs {
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _mode: Option<u32>,
+        mode: Option<u32>,
         _uid: Option<u32>,
         _gid: Option<u32>,
         size: Option<u64>,
@@ -448,8 +453,8 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        // Check read-only for size changes.
-        if size.is_some() && state.read_only {
+        // Check read-only for size or mode changes.
+        if (size.is_some() || mode.is_some()) && state.read_only {
             reply.error(libc::EROFS);
             return;
         }
@@ -468,6 +473,17 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Handle mode change (chmod).
+        if let Some(new_mode) = mode {
+            // Preserve file type bits, update permission bits.
+            let current_mode = state.get_file_mode(&path);
+            let type_bits = current_mode & !PERM_MASK;
+            let perm_bits = new_mode & PERM_MASK;
+            state
+                .modified_modes
+                .insert(path.clone(), type_bits | perm_bits);
+        }
 
         // Handle truncation.
         if let Some(new_size) = size {
