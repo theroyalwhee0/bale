@@ -17,6 +17,14 @@ use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM, PERM_MASK};
 use crate::fuse::{ROOT_INO, TTL};
 use crate::{ArchiveRead, ArchiveWriter, BaleError, DosDateTime, EntryKind};
 
+/// Maximum file size allowed for truncation (4GB).
+///
+/// This prevents OOM crashes from huge ftruncate requests. The limit is
+/// chosen to fit in memory while still allowing large files. Files in the
+/// archive can be larger if added directly, but cannot be created or
+/// extended beyond this size via FUSE.
+const MAX_FILE_SIZE: u64 = 4 * 1024 * 1024 * 1024;
+
 /// FUSE filesystem backed by a bale archive.
 ///
 /// This struct wraps an `ArchiveWriter` and provides FUSE filesystem operations.
@@ -412,9 +420,15 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        // Extend buffer if needed.
+        // Check size limit to prevent OOM crashes.
         let start = offset as usize;
-        let end = start + data.len();
+        let end = start.saturating_add(data.len());
+        if end as u64 > MAX_FILE_SIZE {
+            reply.error(libc::EFBIG);
+            return;
+        }
+
+        // Extend buffer if needed.
         if end > buffer.len() {
             buffer.resize(end, 0);
         }
@@ -487,6 +501,12 @@ impl fuser::Filesystem for BaleFs {
 
         // Handle truncation.
         if let Some(new_size) = size {
+            // Check size limit to prevent OOM crashes.
+            if new_size > MAX_FILE_SIZE {
+                reply.error(libc::EFBIG);
+                return;
+            }
+
             let buffer = match state.load_into_modified(&path) {
                 Ok(b) => b,
                 Err(e) => {
