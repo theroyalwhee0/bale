@@ -30,3 +30,4 @@
 !tests/**/*.stderr
 !tests/**/*.stdout
 !tests/**/*.toml
+!tests/**/*.sh
