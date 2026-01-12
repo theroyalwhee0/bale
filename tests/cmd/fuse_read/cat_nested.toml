@@ -1,0 +1,3 @@
+bin.name = "bale"
+args = ["mount", "tests/fixtures/valid/multi_file.bale", "--read-only", "--shell", "cat src/main.rs"]
+status.code = 0

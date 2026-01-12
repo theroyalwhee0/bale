@@ -622,6 +622,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
     fn sync(&mut self) -> Result<(), BaleError> {
         if !self.dirty {
+            log::trace!("ArchiveWriter::sync: skipped (not dirty)");
             return Ok(());
         }
 
@@ -632,6 +633,14 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let cd_size = self.entries.len() * cd_stride;
         let cd_offset = self.write_offset;
         let total_size = cd_offset + cd_size + BaleEocd::COMBINED_SIZE;
+
+        log::trace!(
+            "ArchiveWriter::sync: entries={}, write_offset={}, cd_size={}, total_size={}",
+            entry_count,
+            cd_offset,
+            cd_size,
+            total_size
+        );
 
         self.mmap.reserve(cd_size + BaleEocd::COMBINED_SIZE)?;
         self.mmap.set_len(total_size)?;
@@ -663,7 +672,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         );
         bytes[offset..offset + Trailer::SIZE].copy_from_slice(&trailer.to_bytes());
 
+        // Sync truncates file to len (which is total_size at this point).
+        // This is important when entries are deleted - the file must shrink
+        // so the new trailer is at the end.
         self.mmap.sync()?;
+        // Reset len to write_offset for subsequent add operations.
         self.mmap.set_len(self.write_offset)?;
 
         self.dirty = false;
@@ -716,7 +729,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ArchiveReader, ArchiveWriter};
+    use crate::{ArchiveReader, ArchiveWriter, Entry};
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -919,6 +932,52 @@ mod tests {
         assert!(reader.find_entry("b.txt").is_some());
     }
 
+    /// Delete from reopened archive truncates file correctly.
+    ///
+    /// Regression test: after delete + sync, the file must be truncated so
+    /// the new trailer is at the end. Otherwise the old trailer is read.
+    #[test]
+    fn delete_from_reopened_archive_truncates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with 2 entries.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("a.txt", b"aaa", 0o644).unwrap();
+            writer.add_entry("b.txt", b"bbb", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let size_before = std::fs::metadata(&path).unwrap().len();
+
+        // Reopen and delete one entry.
+        {
+            let mut writer = ArchiveWriter::open(&path).unwrap();
+            assert_eq!(writer.entry_count(), 2);
+            assert!(writer.delete("a.txt"));
+            writer.sync().unwrap();
+        }
+
+        let size_after = std::fs::metadata(&path).unwrap().len();
+
+        // File should be smaller (one fewer CD entry).
+        assert!(
+            size_after < size_before,
+            "file should shrink after delete: before={size_before}, after={size_after}"
+        );
+
+        // Reopen and verify only 1 entry.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 1);
+        assert!(reader.find_entry("a.txt").is_none());
+        assert!(reader.find_entry("b.txt").is_some());
+
+        // Verify data is still readable.
+        let entry = reader.find_entry("b.txt").unwrap();
+        assert_eq!(reader.read_data(entry).unwrap(), b"bbb");
+    }
+
     /// Opening an existing archive preserves entries and data offsets.
     #[test]
     fn open_existing_archive() {
@@ -1071,5 +1130,220 @@ mod tests {
         let entry = writer.find_entry("test.txt").unwrap();
         let data = writer.read_data(entry).unwrap();
         assert_eq!(data, b"test data");
+    }
+
+    // ------------------------------------------------------------------------
+    // Entry type tests (FileEntry, DirEntry, SymlinkEntry, Entry)
+    // ------------------------------------------------------------------------
+
+    /// FileEntry provides access to file metadata and data.
+    #[test]
+    fn file_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("test.txt", b"hello", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let file = reader.file("test.txt").unwrap();
+
+        assert_eq!(file.path().as_str(), Some("test.txt"));
+        assert_eq!(file.data(), b"hello");
+        assert_eq!(file.size(), 5);
+        assert_eq!(file.mode(), 0o755);
+        assert_eq!(file.crc32(), crc32fast::hash(b"hello"));
+        assert!(file.id() > 0);
+        assert!(file.header().signature.get() != 0);
+        // mtime() returns a DosDateTime.
+        let _ = file.mtime();
+    }
+
+    /// DirEntry provides access to directory metadata.
+    #[test]
+    fn dir_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_folder("mydir", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let folder = reader.folder("mydir").unwrap();
+
+        assert_eq!(folder.path().as_str(), Some("mydir"));
+        assert_eq!(folder.mode() & 0o777, 0o755);
+        assert!(folder.id() > 0);
+        assert!(folder.header().signature.get() != 0);
+        let _ = folder.mtime();
+    }
+
+    /// SymlinkEntry provides access to symlink metadata and target.
+    #[test]
+    fn symlink_entry_accessors() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_symlink("link", "target.txt", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let symlink = reader.symlink("link").unwrap();
+
+        assert_eq!(symlink.path().as_str(), Some("link"));
+        assert_eq!(symlink.target(), Some("target.txt"));
+        assert_eq!(symlink.target_bytes(), b"target.txt");
+        assert_eq!(symlink.mode() & 0o777, 0o777);
+        assert!(symlink.id() > 0);
+        assert!(symlink.header().signature.get() != 0);
+        let _ = symlink.mtime();
+    }
+
+    /// Entry enum provides type checking and conversion.
+    #[test]
+    fn entry_enum_type_checks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "file.txt", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // Test file entry.
+        let file_entry = reader.entry("file.txt").unwrap();
+        assert!(file_entry.is_file());
+        assert!(!file_entry.is_directory());
+        assert!(!file_entry.is_symlink());
+        assert!(file_entry.as_file().is_some());
+        assert!(file_entry.as_directory().is_none());
+        assert!(file_entry.as_symlink().is_none());
+
+        // Test directory entry.
+        let dir_entry = reader.entry("dir").unwrap();
+        assert!(!dir_entry.is_file());
+        assert!(dir_entry.is_directory());
+        assert!(!dir_entry.is_symlink());
+        assert!(dir_entry.as_file().is_none());
+        assert!(dir_entry.as_directory().is_some());
+        assert!(dir_entry.as_symlink().is_none());
+
+        // Test symlink entry.
+        let link_entry = reader.entry("link").unwrap();
+        assert!(!link_entry.is_file());
+        assert!(!link_entry.is_directory());
+        assert!(link_entry.is_symlink());
+        assert!(link_entry.as_file().is_none());
+        assert!(link_entry.as_directory().is_none());
+        assert!(link_entry.as_symlink().is_some());
+    }
+
+    /// Entry enum into_* conversions consume the entry.
+    #[test]
+    fn entry_enum_into_conversions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "target", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // into_file on file succeeds.
+        let entry = reader.entry("file.txt").unwrap();
+        assert!(entry.into_file().is_some());
+
+        // into_directory on dir succeeds.
+        let entry = reader.entry("dir").unwrap();
+        assert!(entry.into_directory().is_some());
+
+        // into_symlink on link succeeds.
+        let entry = reader.entry("link").unwrap();
+        assert!(entry.into_symlink().is_some());
+
+        // into_file on non-file returns None.
+        let entry = reader.entry("dir").unwrap();
+        assert!(entry.into_file().is_none());
+    }
+
+    /// Entry From implementations work.
+    #[test]
+    fn entry_from_conversions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o644).unwrap();
+            writer.add_folder("dir", 0o755).unwrap();
+            writer.add_symlink("link", "target", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        // From<FileEntry>.
+        let file = reader.file("file.txt").unwrap();
+        let entry: Entry = file.into();
+        assert!(entry.is_file());
+
+        // From<DirEntry>.
+        let folder = reader.folder("dir").unwrap();
+        let entry: Entry = folder.into();
+        assert!(entry.is_directory());
+
+        // From<SymlinkEntry>.
+    }
+
+    /// Adding a folder and syncing should truncate the file properly.
+    #[test]
+    fn add_folder_sync_truncates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create empty archive.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.sync().unwrap();
+        }
+        let size_after_touch = std::fs::metadata(&path).unwrap().len();
+
+        // Reopen and add folder.
+        {
+            let mut writer = ArchiveWriter::open(&path).unwrap();
+            writer.add_folder("testdir", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+        let size_after_sync = std::fs::metadata(&path).unwrap().len();
+
+        // File should be small (not 1MB from reserve()).
+        assert!(
+            size_after_sync < 10000,
+            "file should be small after sync, got {} bytes",
+            size_after_sync
+        );
+        assert!(
+            size_after_sync > size_after_touch,
+            "file should grow to include folder entry"
+        );
     }
 }
