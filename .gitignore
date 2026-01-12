@@ -31,3 +31,7 @@
 !tests/**/*.stdout
 !tests/**/*.toml
 !tests/**/*.sh
+
+# Whitelist proptest regression files.
+!proptest-regressions/
+!proptest-regressions/*.txt

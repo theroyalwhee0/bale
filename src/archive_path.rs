@@ -513,6 +513,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    use crate::proptest_config;
+
     // ==================== Unit Tests ====================
 
     /// Backslashes are converted to forward slashes.
@@ -945,6 +947,8 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(proptest_config::config())]
+
         /// Valid paths are accepted and produce non-empty results.
         #[test]
         fn valid_paths_accepted(path in valid_path()) {

@@ -33,6 +33,9 @@ pub mod fuse;
 mod local_file;
 /// Memory-mapped file access.
 mod mmap;
+/// Proptest configuration (test-only).
+#[cfg(test)]
+mod proptest_config;
 /// Unified archive tail (trailer) structures.
 pub mod tail;
 
