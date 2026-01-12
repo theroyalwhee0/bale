@@ -178,6 +178,13 @@ impl MappedArchiveMut {
         }
         // Round up to next chunk size.
         let new_capacity = ((required / Self::DEFAULT_CHUNK_SIZE) + 1) * Self::DEFAULT_CHUNK_SIZE;
+        log::trace!(
+            "MappedArchiveMut::reserve: len={}, additional={}, capacity={} -> {}",
+            self.len,
+            additional,
+            self.capacity(),
+            new_capacity
+        );
         self.resize_file(new_capacity)
     }
 
@@ -186,8 +193,8 @@ impl MappedArchiveMut {
     /// This only changes the file capacity, not the logical length (`len`).
     /// The caller (typically `reserve`) is responsible for managing `len`.
     fn resize_file(&mut self, new_capacity: usize) -> Result<(), BaleError> {
-        // Flush before resizing.
-        self.mmap.flush()?;
+        // Flush the current content before resizing.
+        self.mmap.flush_async_range(0, self.len)?;
         self.file.set_len(new_capacity as u64)?;
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
@@ -225,43 +232,24 @@ impl MappedArchiveMut {
         Ok(())
     }
 
-    /// Flushes changes to disk and truncates file to committed length.
+    /// Flushes changes to disk and truncates file to logical length.
     ///
-    /// The file is truncated to `max(len, committed_len)` to preserve any
-    /// previously synced content, even if the logical length was reduced
-    /// for overwriting. After truncating, the mmap is remapped to match
-    /// the new file size.
+    /// The file is truncated to `len` and remapped to match the new size.
+    /// Call [`set_len()`](Self::set_len) first to set the desired final size.
     ///
     /// # Errors
     ///
     /// Returns an error if flushing, truncating, or remapping fails.
     pub fn sync(&mut self) -> Result<(), BaleError> {
-        // Preserve the larger of logical length and committed length.
-        // This ensures previously synced content isn't lost when len is
-        // temporarily reduced (e.g., for overwriting a central directory).
-        let file_len = self.len.max(self.committed_len);
-        self.mmap.flush()?;
-        self.file.set_len(file_len as u64)?;
-        self.committed_len = file_len;
-        // Remap to match new file size so capacity() is accurate.
-        // SAFETY: We hold an exclusive lock on the file.
-        #[allow(unsafe_code)]
-        let new_mmap = unsafe { memmap2::MmapMut::map_mut(&self.file)? };
-        self.mmap = new_mmap;
-        Ok(())
-    }
-
-    /// Flushes changes and truncates file to exactly the logical length.
-    ///
-    /// Unlike [`sync()`](Self::sync), this always truncates to `len`, even if
-    /// that's smaller than `committed_len`. Use this when the archive has
-    /// shrunk (e.g., after deleting entries).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if flushing, truncating, or remapping fails.
-    pub fn sync_and_truncate(&mut self) -> Result<(), BaleError> {
-        self.mmap.flush()?;
+        log::trace!(
+            "MappedArchiveMut::sync: len={}, committed={}, capacity={}",
+            self.len,
+            self.committed_len,
+            self.capacity()
+        );
+        // Use async flush to avoid blocking in FUSE daemon shutdown.
+        // The set_len() call will sync metadata.
+        self.mmap.flush_async_range(0, self.len)?;
         self.file.set_len(self.len as u64)?;
         self.committed_len = self.len;
         // Remap to match new file size so capacity() is accurate.
@@ -274,13 +262,29 @@ impl MappedArchiveMut {
 }
 
 impl Drop for MappedArchiveMut {
-    /// Automatically syncs the archive on drop.
+    /// Flushes and truncates on drop, preserving synced content.
     ///
-    /// Logs an error if sync fails. For proper error handling, call
-    /// [`sync()`](Self::sync) explicitly before dropping.
+    /// Truncates to `max(len, committed_len)` to preserve any previously
+    /// synced content even if `len` was reduced for subsequent writes.
+    /// For proper error handling, call [`sync()`](Self::sync) explicitly.
     fn drop(&mut self) {
-        if let Err(e) = self.sync() {
-            log::error!("MappedArchiveMut::sync() failed on drop: {e}");
+        // Preserve the larger of logical length and committed length.
+        // This handles the case where len was reset after sync() for
+        // subsequent writes (e.g., ArchiveWriter resets len to write_offset).
+        let final_len = self.len.max(self.committed_len);
+        log::trace!(
+            "MappedArchiveMut::drop: len={}, committed={}, final={}",
+            self.len,
+            self.committed_len,
+            final_len
+        );
+        // Use async flush to avoid blocking in signal handlers.
+        if let Err(e) = self.mmap.flush_async_range(0, final_len) {
+            log::error!("MappedArchiveMut::drop: flush failed: {e}");
+            return;
+        }
+        if let Err(e) = self.file.set_len(final_len as u64) {
+            log::error!("MappedArchiveMut::drop: set_len failed: {e}");
         }
     }
 }

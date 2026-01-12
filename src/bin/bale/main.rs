@@ -49,6 +49,8 @@ use error::BaleCliError;
 ///
 /// All errors are printed to stderr before exiting.
 fn main() -> ExitCode {
+    env_logger::init();
+
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

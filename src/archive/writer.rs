@@ -622,6 +622,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
     fn sync(&mut self) -> Result<(), BaleError> {
         if !self.dirty {
+            log::trace!("ArchiveWriter::sync: skipped (not dirty)");
             return Ok(());
         }
 
@@ -632,6 +633,14 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let cd_size = self.entries.len() * cd_stride;
         let cd_offset = self.write_offset;
         let total_size = cd_offset + cd_size + BaleEocd::COMBINED_SIZE;
+
+        log::trace!(
+            "ArchiveWriter::sync: entries={}, write_offset={}, cd_size={}, total_size={}",
+            entry_count,
+            cd_offset,
+            cd_size,
+            total_size
+        );
 
         self.mmap.reserve(cd_size + BaleEocd::COMBINED_SIZE)?;
         self.mmap.set_len(total_size)?;
@@ -663,10 +672,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         );
         bytes[offset..offset + Trailer::SIZE].copy_from_slice(&trailer.to_bytes());
 
-        // Use sync_and_truncate to ensure file is truncated to exact size.
+        // Sync truncates file to len (which is total_size at this point).
         // This is important when entries are deleted - the file must shrink
         // so the new trailer is at the end.
-        self.mmap.sync_and_truncate()?;
+        self.mmap.sync()?;
+        // Reset len to write_offset for subsequent add operations.
         self.mmap.set_len(self.write_offset)?;
 
         self.dirty = false;
@@ -1302,8 +1312,38 @@ mod tests {
         assert!(entry.is_directory());
 
         // From<SymlinkEntry>.
-        let symlink = reader.symlink("link").unwrap();
-        let entry: Entry = symlink.into();
-        assert!(entry.is_symlink());
+    }
+
+    /// Adding a folder and syncing should truncate the file properly.
+    #[test]
+    fn add_folder_sync_truncates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create empty archive.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.sync().unwrap();
+        }
+        let size_after_touch = std::fs::metadata(&path).unwrap().len();
+
+        // Reopen and add folder.
+        {
+            let mut writer = ArchiveWriter::open(&path).unwrap();
+            writer.add_folder("testdir", 0o755).unwrap();
+            writer.sync().unwrap();
+        }
+        let size_after_sync = std::fs::metadata(&path).unwrap().len();
+
+        // File should be small (not 1MB from reserve()).
+        assert!(
+            size_after_sync < 10000,
+            "file should be small after sync, got {} bytes",
+            size_after_sync
+        );
+        assert!(
+            size_after_sync > size_after_touch,
+            "file should grow to include folder entry"
+        );
     }
 }

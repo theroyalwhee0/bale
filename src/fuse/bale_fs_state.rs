@@ -305,14 +305,21 @@ impl BaleFsState {
         // Collect paths to avoid borrow issues.
         let paths: Vec<String> = self.modified_data.keys().cloned().collect();
 
+        log::trace!("sync_modified_to_archive: {} modified files", paths.len());
+
         for path in paths {
             let mode = self.get_file_mode(&path);
             let data = self.modified_data.get(&path).unwrap().clone();
+            // Delete existing entry first to avoid duplicates (create() adds
+            // an initial entry, so we must remove it before re-adding with
+            // the final content).
+            self.archive.delete(&path);
             self.archive
                 .add_entry(&path, &data, mode)
                 .map_err(|_| libc::EIO)?;
         }
 
+        log::trace!("sync_modified_to_archive: calling archive.sync()");
         self.archive.sync().map_err(|_| libc::EIO)?;
         self.modified_data.clear();
         Ok(())
