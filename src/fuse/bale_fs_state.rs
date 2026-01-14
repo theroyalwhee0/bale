@@ -9,7 +9,8 @@ use nix::sys::stat::{Mode, SFlag};
 
 use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO};
 use crate::{
-    ArchiveRead, ArchiveWrite, ArchiveWriter, CentralDirectoryHeader, DosDateTime, EntryKind,
+    ArchivePath, ArchiveRead, ArchiveWrite, ArchiveWriter, BaleError, CentralDirectoryHeader,
+    DosDateTime, EntryKind,
 };
 
 /// Default permission bits for regular files (rw-r--r--).
@@ -119,6 +120,19 @@ impl BaleFsState {
         } else {
             Ok(())
         }
+    }
+
+    /// Validates a full path using ArchivePath rules (safename + reserved prefix).
+    ///
+    /// Returns `Ok(())` if valid, or `Err(errno)` on failure.
+    fn validate_archive_path(path: &str) -> Result<(), i32> {
+        ArchivePath::try_from(path).map_err(|e| match e {
+            BaleError::UnsafeFilename(_) => libc::EINVAL,
+            BaleError::ReservedPath(_) => libc::EINVAL,
+            BaleError::InvalidPath => libc::EINVAL,
+            _ => libc::EIO,
+        })?;
+        Ok(())
     }
 
     /// Builds the directory tree from archive entries.
@@ -551,8 +565,9 @@ impl BaleFsState {
             format!("{}/{}", parent_path, name)
         };
 
-        // Check path length.
+        // Check path length and reserved prefix.
         self.validate_path_length(&full_path)?;
+        Self::validate_archive_path(&full_path)?;
 
         // Check directory doesn't already exist.
         if self.dir_inodes.contains_key(&full_path) {
@@ -701,8 +716,9 @@ impl BaleFsState {
             format!("{}/{}", parent_path, name)
         };
 
-        // Check path length.
+        // Check path length and reserved prefix.
         self.validate_path_length(&full_path)?;
+        Self::validate_archive_path(&full_path)?;
 
         // Check file doesn't already exist.
         if self.path_to_inode.contains_key(&full_path) {
@@ -841,8 +857,9 @@ impl BaleFsState {
             format!("{}/{}", new_parent_path, new_name)
         };
 
-        // Check new path length.
+        // Check new path length and reserved prefix.
         self.validate_path_length(&new_path)?;
+        Self::validate_archive_path(&new_path)?;
 
         // Check if source is a file or directory.
         let is_file = self.path_to_inode.contains_key(&old_path);
@@ -995,8 +1012,9 @@ impl BaleFsState {
             format!("{}/{}", parent_path, name)
         };
 
-        // Check path length.
+        // Check path length and reserved prefix.
         self.validate_path_length(&full_path)?;
+        Self::validate_archive_path(&full_path)?;
 
         // Check symlink doesn't already exist.
         if self.path_to_inode.contains_key(&full_path) {
