@@ -31,6 +31,11 @@ pub enum Command {
     Touch {
         /// The archive to create or touch.
         path: PathBuf,
+        /// Maximum path size in bytes (1-4096, default 256).
+        ///
+        /// Only used when creating a new archive.
+        #[arg(long, default_value = "256")]
+        path_size: u16,
     },
     /// Add files to a bale archive.
     Add {
@@ -60,6 +65,7 @@ pub enum Command {
         entries: Vec<String>,
     },
     /// Delete entries from a bale archive.
+    #[command(visible_alias = "rm")]
     Delete {
         /// The archive to modify.
         archive: PathBuf,

@@ -97,6 +97,30 @@ impl BaleFsState {
         state
     }
 
+    /// Validates a filename component using safename rules.
+    ///
+    /// Checks length (≤255 bytes) and security rules (no control chars,
+    /// leading dashes, etc.).
+    ///
+    /// Returns `Ok(())` if valid, or `Err(errno)` on failure.
+    pub(super) fn validate_name(name: &str) -> Result<(), i32> {
+        safename::validate_file(name).map_err(|e| match e {
+            safename::SafeNameError::InvalidLength { .. } => libc::ENAMETOOLONG,
+            safename::SafeNameError::InvalidByte { .. } => libc::EINVAL,
+        })
+    }
+
+    /// Validates that a full path doesn't exceed the archive's path_size.
+    ///
+    /// Returns `Ok(())` if valid, or `Err(ENAMETOOLONG)` if too long.
+    pub(super) fn validate_path_length(&self, path: &str) -> Result<(), i32> {
+        if path.len() > self.archive.path_size() {
+            Err(libc::ENAMETOOLONG)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Builds the directory tree from archive entries.
     ///
     /// Iterates through all archive entries and creates:
@@ -511,6 +535,9 @@ impl BaleFsState {
         name: &str,
         mode: Mode,
     ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check name length.
+        Self::validate_name(name)?;
+
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
             return Err(libc::ENOENT);
@@ -523,6 +550,9 @@ impl BaleFsState {
         } else {
             format!("{}/{}", parent_path, name)
         };
+
+        // Check path length.
+        self.validate_path_length(&full_path)?;
 
         // Check directory doesn't already exist.
         if self.dir_inodes.contains_key(&full_path) {
@@ -655,6 +685,9 @@ impl BaleFsState {
         name: &str,
         mode: Mode,
     ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check name length.
+        Self::validate_name(name)?;
+
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
             return Err(libc::ENOENT);
@@ -667,6 +700,9 @@ impl BaleFsState {
         } else {
             format!("{}/{}", parent_path, name)
         };
+
+        // Check path length.
+        self.validate_path_length(&full_path)?;
 
         // Check file doesn't already exist.
         if self.path_to_inode.contains_key(&full_path) {
@@ -778,6 +814,9 @@ impl BaleFsState {
         new_parent_ino: u64,
         new_name: &str,
     ) -> Result<(), i32> {
+        // Check new name length.
+        Self::validate_name(new_name)?;
+
         // Check both parents exist.
         if !self.dir_contents.contains_key(&old_parent_ino) {
             return Err(libc::ENOENT);
@@ -801,6 +840,9 @@ impl BaleFsState {
         } else {
             format!("{}/{}", new_parent_path, new_name)
         };
+
+        // Check new path length.
+        self.validate_path_length(&new_path)?;
 
         // Check if source is a file or directory.
         let is_file = self.path_to_inode.contains_key(&old_path);
@@ -937,6 +979,9 @@ impl BaleFsState {
         name: &str,
         target: &str,
     ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check name length.
+        Self::validate_name(name)?;
+
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
             return Err(libc::ENOENT);
@@ -949,6 +994,9 @@ impl BaleFsState {
         } else {
             format!("{}/{}", parent_path, name)
         };
+
+        // Check path length.
+        self.validate_path_length(&full_path)?;
 
         // Check symlink doesn't already exist.
         if self.path_to_inode.contains_key(&full_path) {
