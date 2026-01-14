@@ -510,6 +510,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         mode: u32,
         mtime: Option<std::time::SystemTime>,
     ) -> Result<(), BaleError> {
+        // Validate path against safename rules and reserved prefixes.
+        let _ = ArchivePath::try_from(path)?;
+
         let path_bytes = path.as_bytes();
         let path_size = self.path_size();
 

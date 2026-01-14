@@ -158,7 +158,7 @@ Stored as the EOCD comment field.
 | 5 | 1 | Minor version |
 | 6 | 1 | Patch version |
 | 7 | 1 | Alignment power (2^N bytes) |
-| 8 | 2 | Path size (1-2048) |
+| 8 | 2 | Path size (1-4096) |
 | 10 | 148 | Reserved (zeros) |
 
 ## Default Configuration
@@ -166,7 +166,7 @@ Stored as the EOCD comment field.
 | Setting | Default | Range |
 |---------|---------|-------|
 | Alignment | 4096 bytes (2^12) | 1 to 16 MB (2^0 to 2^24) |
-| Path size | 256 bytes | 1 to 2048 bytes |
+| Path size | 256 bytes | 1 to 4096 bytes |
 
 **Path length constraint:** If a file's path exceeds the configured `path_size`,
 archive creation fails with an error. Choose a `path_size` large enough for your
@@ -252,6 +252,35 @@ Total: 13450 bytes
 ```
 
 CD Entry offset for file at index `i`: `12288 + (i × 302)`
+
+## Reserved Paths
+
+Path components starting with `.bale` are reserved for internal format use.
+User content cannot use these paths; attempting to add entries with `.bale*`
+components will fail with a `ReservedPath` error.
+
+**Reserved pattern:** Any path component starting with `.bale`
+
+Examples of reserved paths (rejected):
+
+- `.bale` - Reserved prefix as filename
+- `.bale.txt` - Reserved prefix with extension
+- `.bale/file.txt` - Reserved directory
+- `foo/.bale/bar` - Reserved component in path
+- `.baledata` - Reserved prefix with suffix
+
+Examples of allowed paths (accepted):
+
+- `.bal` - Different prefix (not `.bale`)
+- `bale` - No leading dot
+- `foo.bale` - `.bale` not at component start
+- `mybale/file.txt` - Contains "bale" but not `.bale` prefix
+
+This reservation enables future format extensions such as:
+
+- Virtual `.bale/` metadata folder in FUSE mounts
+- Format-level metadata entries (e.g., `.bale/manifest.json`)
+- Internal bookkeeping entries
 
 ## ZIP Compatibility
 

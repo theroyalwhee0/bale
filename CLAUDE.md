@@ -206,7 +206,7 @@ Expected output goes in matching `.stdout` files.
 | LFH Stride | `30 + path_size + 8` (header + path + extra) |
 | Byte order | Little-endian                                |
 | Alignment  | 4096 bytes (configurable, 2^N)               |
-| Max path   | 256 bytes (configurable, 1-2048)             |
+| Max path   | 256 bytes (configurable, 1-4096)             |
 
 ### Archive Layout
 
@@ -235,7 +235,7 @@ Expected output goes in matching `.stdout` files.
 | 5      | 1    | Minor version (2)                       |
 | 6      | 1    | Patch version (0)                       |
 | 7      | 1    | Alignment power (2^N, e.g., 12 = 4096)  |
-| 8      | 2    | Path size (1-2048, little-endian)       |
+| 8      | 2    | Path size (1-4096, little-endian)       |
 | 10     | 4    | Next ID (u32, for stable entry IDs)     |
 | 14     | 144  | Reserved (zeros)                        |
 
