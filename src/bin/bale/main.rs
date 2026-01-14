@@ -68,7 +68,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), BaleCliError> {
     match cli.command {
         // Archive creation.
-        Command::Touch { path } => commands::touch::run(path),
+        Command::Touch { path, path_size } => commands::touch::run(path, path_size),
 
         // Content modification.
         Command::Add {

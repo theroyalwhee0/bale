@@ -153,6 +153,12 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Validate filename component using safename rules.
+        if let Err(e) = BaleFsState::validate_name(name_str) {
+            reply.error(e);
+            return;
+        }
+
         // Find parent directory contents.
         let contents = match state.dir_contents.get(&parent) {
             Some(c) => c,
@@ -874,7 +880,7 @@ impl fuser::Filesystem for BaleFs {
             file_count + dir_count, // files (inodes)
             0,                      // ffree
             4096,                   // bsize (block size)
-            256,                    // namelen (our max path component)
+            255,                    // namelen (POSIX NAME_MAX)
             0,                      // frsize (fragment size)
         );
     }

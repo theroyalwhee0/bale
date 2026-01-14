@@ -6,6 +6,8 @@ set -e
 ARCHIVE="/tmp/test-pjdfstest.bale"
 TESTS_DIR="$HOME/projects/ref/pjdfstest/tests"
 OUTPUT_DIR="$HOME/projects/pjdfstest-results"
+# Use 4096 path size to match POSIX PATH_MAX for pjdfstest compliance.
+PATH_SIZE=4096
 
 # Tests that should work without permission/ownership complications.
 # These don't test chown/mkfifo/mknod/link and don't run as different users.
@@ -78,7 +80,7 @@ run_tests() {
 
     echo "=== Running $name tests ==="
     rm -f "$ARCHIVE"
-    cargo run --quiet -- touch "$ARCHIVE"
+    cargo run --quiet -- touch --path-size "$PATH_SIZE" "$ARCHIVE"
     cargo run --quiet -- mount "$ARCHIVE" --shell \
         "prove -v $paths :: --failures > $output 2>&1 || true"
     echo "  -> $output"

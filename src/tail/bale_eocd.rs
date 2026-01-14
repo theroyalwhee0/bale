@@ -57,8 +57,8 @@ impl BaleEocd {
     /// Minimum allowed path size.
     pub const MIN_PATH_SIZE: u16 = 1;
 
-    /// Maximum allowed path size.
-    pub const MAX_PATH_SIZE: u16 = 2048;
+    /// Maximum allowed path size (matches POSIX PATH_MAX).
+    pub const MAX_PATH_SIZE: u16 = 4096;
 
     /// Maximum alignment power (2^24 = 16 MB).
     pub const MAX_ALIGNMENT_POW2: u8 = 24;
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn path_size_over_max_fails_validation() {
         let mut bale = BaleEocd::new();
-        bale.path_size = U16::new(3000);
+        bale.path_size = U16::new(5000);
         assert!(!bale.is_valid());
     }
 
