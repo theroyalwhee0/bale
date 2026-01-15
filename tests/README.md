@@ -59,6 +59,33 @@ These tests require external tools (`zipinfo`, `unzip`, `file`, `fusermount`):
 | `duplicate_paths.bale` | Same path appears multiple times |
 | `unsorted_cd.bale` | Central Directory not sorted alphabetically |
 
+## External Tools
+
+Integration tests require external tools. Install with:
+
+```bash
+# Debian/Ubuntu
+sudo apt install unzip file fuse3
+
+# Fedora
+sudo dnf install unzip file fuse3
+
+# Arch
+sudo pacman -S unzip file fuse3
+```
+
+| Tool | Package | Used By |
+|------|---------|---------|
+| `zipinfo` | unzip | ZIP structure verification |
+| `unzip` | unzip | ZIP extraction testing |
+| `file` | file | File type detection |
+| `fusermount3` | fuse3 | FUSE mount/unmount |
+
+The pjdfstest script additionally requires:
+
+- `prove` - Perl test harness (package: `perl`)
+- `pjdfstest` - POSIX compliance suite (clone from GitHub)
+
 ## Scripts (`bin/`)
 
 - `run-pjdfstest.sh` - Runs pjdfstest POSIX compliance suite against FUSE mount
