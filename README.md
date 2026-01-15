@@ -1,5 +1,8 @@
 # bale
 
+> **Warning**: This project is a work-in-progress. It has known bugs, incomplete
+> features, and the API will change. Use at your own risk.
+
 A Rust library and CLI for working with bale archives - a mmap-first, zero-copy
 zip-compatible archive format with fixed-stride entries for efficient random
 access.
@@ -139,4 +142,11 @@ cargo fmt
 
 ## Status
 
-Early development. The API is not yet stable.
+Version 0.1.0. The format is stable but the API may change in future releases.
+
+## License & Copyright
+
+Licensed under the Apache License, Version 2.0. See [LICENSE.txt](LICENSE.txt)
+for details.
+
+Copyright 2025 Adam Mill

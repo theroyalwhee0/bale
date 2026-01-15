@@ -1,5 +1,5 @@
 disallowed-methods = [
     { path = "std::ffi::OsStr::to_string_lossy", reason = "leads to loss of information; use to_str() with proper error handling" },
     { path = "std::path::Path::to_string_lossy", reason = "leads to loss of information; use to_str() with proper error handling" },
-    { path = "std::string::String::from_utf8_lossy", reason = "use from_utf8() and handle errors explicitly" },
+    { path = "std::string::String::from_utf8_lossy", reason = "leads to loss of information; use from_utf8() with proper error handling" },
 ]

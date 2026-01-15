@@ -4,6 +4,20 @@ version = "0.1.0"
 authors = ["Adam Mill <hismajesty@theroyalwhee.com>"]
 edition = "2024"
 rust-version = "1.89.0"
+description = "A mmap-first, fixed-stride zip-like pack format"
+license = "Apache-2.0"
+repository = "https://github.com/theroyalwhee0/bale"
+keywords = ["archive", "zip", "mmap", "pack", "fuse"]
+categories = ["compression", "filesystem"]
+exclude = [
+    "CLAUDE.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    ".markdownlintrc",
+    "clippy.toml",
+    "docs/",
+]
 
 [[bin]]
 name = "bale"
@@ -18,26 +32,26 @@ compact = ["reader", "writer"]
 cli = ["reader", "writer", "dep:clap", "dep:env_logger"]
 fuse = ["cli", "dep:fuser"]
 bin = ["compact", "fuse"]
+# Enable integration tests requiring external tools (zipinfo, unzip, file, fusermount).
+integration-tests = []
 
 [dependencies]
-# Core utilities
+# General.
 thiserror = "2.0.17"
 chrono = "0.4.42"
-tempfile = "3.24.0"
-safename = { version = "0.1.0", features = ["medium"] }
 nix = { version = "0.30.1", default-features = false, features = ["fs", "process", "user"] }
+crc32fast = "1.5.0"
+zerocopy = { version = "0.8.31", features = ["derive"] }
 
-# Logging
+# Logging.
 log = "0.4.29"
 env_logger = { version = "0.11.8", optional = true }
 
-# File I/O
+# File System.
+tempfile = "3.24.0"
+safename = { version = "0.1.0", features = ["medium"] }
 fs4 = "0.13.1"
 memmap2 = "0.9.9"
-
-# Archive format
-crc32fast = "1.5.0"
-zerocopy = { version = "0.8.31", features = ["derive"] }
 
 # CLI (optional)
 clap = { version = "4", features = ["derive"], optional = true }

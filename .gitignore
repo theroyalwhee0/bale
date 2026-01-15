@@ -5,8 +5,13 @@
 !.gitignore
 !Cargo.lock
 !Cargo.toml
+!CHANGELOG.md
 !CLAUDE.md
+!CODE_OF_CONDUCT.md
+!CONTRIBUTING.md
 !README.md
+!SECURITY.md
+!LICENSE.txt
 !.markdownlintrc
 !clippy.toml
 
