@@ -83,7 +83,7 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         } => commands::delete::run(archive, &entries, ignore_missing),
 
         // Content access.
-        Command::Ls { archive } => commands::list::run(archive),
+        Command::List { archive } => commands::list::run(archive),
         Command::Extract {
             archive,
             output,

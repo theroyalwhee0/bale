@@ -1,6 +1,8 @@
 //! FUSE write operation integration tests.
 //!
 //! Tests file creation, deletion, and modification via `bale mount --shell`.
+//!
+//! These tests require FUSE support and are gated behind the `integration-tests` feature.
 
 use std::fs;
 use std::process::Command;
@@ -23,6 +25,7 @@ fn run_bale(args: &[&str]) -> (bool, String, String) {
 
 /// Create a file via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_create_file() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -54,6 +57,7 @@ fn fuse_create_file() {
 
 /// Create a directory via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_mkdir() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -80,6 +84,7 @@ fn fuse_mkdir() {
 
 /// Delete a file via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_unlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -106,6 +111,7 @@ fn fuse_unlink() {
 
 /// Delete a directory via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_rmdir() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -132,6 +138,7 @@ fn fuse_rmdir() {
 
 /// Rename a file via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_rename() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -162,6 +169,7 @@ fn fuse_rename() {
 
 /// Write to existing file via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_write_existing() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -199,6 +207,7 @@ fn fuse_write_existing() {
 
 /// Create nested directories via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_mkdir_nested() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -225,6 +234,7 @@ fn fuse_mkdir_nested() {
 
 /// Symlink operations via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_symlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -255,6 +265,7 @@ fn fuse_symlink() {
 
 /// getattr returns correct file size after write.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_getattr_after_write() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -277,6 +288,7 @@ fn fuse_getattr_after_write() {
 /// Regression test: create() adds an initial entry, then sync_modified_to_archive()
 /// must delete before re-adding to avoid duplicates.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_no_duplicate_entries() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -308,6 +320,7 @@ fn fuse_no_duplicate_entries() {
 
 /// setattr (chmod) via FUSE mount.
 #[test]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_setattr_chmod() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");

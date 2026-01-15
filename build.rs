@@ -162,10 +162,13 @@ fn add_profile(file: &mut File) -> io::Result<()> {
     const RELEASE: &str = "release";
     const DEBUG: &str = "debug";
 
-    // Determine if we're building in release mode
+    // Determine build profile, validating it's a known value.
     let profile = env::var(PROFILE).expect("Expected PROFILE to be set");
-    let is_release = profile == RELEASE;
-    let mode = if is_release { RELEASE } else { DEBUG };
+    let mode = match profile.as_str() {
+        RELEASE => RELEASE,
+        DEBUG => DEBUG,
+        _ => panic!("Unknown PROFILE '{profile}', expected '{RELEASE}' or '{DEBUG}'"),
+    };
 
     // If EXPECT_PROFILE is defined, verify it matches our current profile.
     if let Ok(expected) = env::var(EXPECT_PROFILE)
