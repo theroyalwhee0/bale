@@ -16,6 +16,7 @@ exclude = [
     "SECURITY.md",
     ".markdownlintrc",
     "clippy.toml",
+    "docs/",
 ]
 
 [[bin]]
