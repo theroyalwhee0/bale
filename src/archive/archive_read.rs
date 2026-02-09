@@ -1,7 +1,8 @@
 //! Read operations trait for archives.
 
 use crate::archive::{DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::{ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader};
+use crate::format::{EntryRow, Trailer};
+use crate::{ArchivePath, BaleError};
 
 /// Read operations for archives.
 ///
@@ -17,79 +18,73 @@ pub trait ArchiveRead {
     ///
     /// # Panics
     ///
-    /// Panics if `alignment_pow2` is invalid. This cannot happen for archives
+    /// Panics if `alignment_power` is invalid. This cannot happen for archives
     /// opened via [`open()`](super::Archive::open) since validation occurs on construction.
     fn alignment(&self) -> u32;
 
     /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.
     ///
-    /// The returned path borrows directly from the in-memory entries.
+    /// The returned path borrows directly from the mmap.
     /// Returns `None` if the index is out of bounds.
     fn get_path(&self, index: usize) -> Option<ArchivePath<'_>>;
 
-    /// Returns an iterator over all Central Directory entries.
+    /// Returns an iterator over all entry rows.
     ///
-    /// Each item is a tuple of (header, path_bytes) where path_bytes is the
-    /// null-padded path from the CD entry.
-    fn iter_entries(&self) -> impl Iterator<Item = (&CentralDirectoryHeader, &[u8])>;
+    /// Each item is a tuple of (entry_row, path_bytes) where path_bytes is the
+    /// null-padded path from the directory table.
+    fn iter_entries(&self) -> impl Iterator<Item = (&EntryRow, &[u8])>;
 
-    /// Finds an entry by path using linear scan.
+    /// Finds an entry row by path.
     ///
-    /// Returns the last matching entry. Bale uses append-only shadowing: when
-    /// a file is updated, the new version is appended and the old version
-    /// remains but is "shadowed". The last occurrence is the current version.
-    ///
-    /// The path comparison is byte-exact against the null-padded path.
-    fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader>;
+    /// Returns the entry row for the given path, or `None` if not found.
+    /// The directory table is sorted by path, enabling binary search.
+    fn find_entry(&self, path: &str) -> Option<&EntryRow>;
 
-    /// Finds an entry by path and returns header, trimmed path bytes, and ID.
+    /// Finds an entry by path and returns entry row, trimmed path bytes, and ID.
     ///
     /// Like [`find_entry`](Self::find_entry), but also returns the path bytes
     /// from the archive (with null padding removed) and the stable entry ID.
-    /// This is useful when you need to construct an entry wrapper with the
-    /// path borrowed from the archive.
-    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8], u32)>;
+    fn find_entry_with_path(&self, path: &str) -> Option<(&EntryRow, &[u8], u32)>;
 
-    /// Returns a zero-copy slice of the file data for the given entry.
+    /// Returns a zero-copy slice of the file data for the given entry row.
     ///
     /// # Errors
     ///
-    /// Returns an error if the entry's offset or size is invalid.
-    fn read_data(&self, entry: &CentralDirectoryHeader) -> Result<&[u8], BaleError>;
+    /// Returns an error if the entry's data offset or size is invalid.
+    fn read_data(&self, entry: &EntryRow) -> Result<&[u8], BaleError>;
 
-    /// Returns a reference to the BaleEocd.
-    fn bale_eocd(&self) -> &BaleEocd;
+    /// Returns a reference to the archive trailer.
+    fn trailer(&self) -> &Trailer;
 
     /// Verifies the CRC-32 checksum for an entry.
     ///
     /// Reads the entry data and computes its CRC-32, comparing against the
-    /// stored value in the Central Directory header.
+    /// stored value in the data block header.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The entry data cannot be read
     /// - The computed CRC does not match the stored CRC
-    fn verify_crc(&self, entry: &CentralDirectoryHeader) -> Result<(), BaleError>;
+    fn verify_crc(&self, entry: &EntryRow) -> Result<(), BaleError>;
 
-    /// Checks if the Central Directory is sorted by path bytes.
+    /// Checks if the directory table is sorted by path bytes.
     ///
-    /// A sorted CD enables binary search for entry lookup. Archives created
-    /// by `compact` are always sorted.
+    /// A sorted directory table enables binary search for entry lookup.
+    /// Archives created by the writer are always sorted.
     fn is_sorted(&self) -> bool;
 
     /// Returns a list of duplicate paths in the archive.
     ///
     /// Duplicate paths occur when the same path appears multiple times in the
-    /// Central Directory (shadowing). Returns the paths that have duplicates,
-    /// not the total count of duplicates.
+    /// directory table (e.g., hard links with the same path are not duplicates
+    /// since they share the same entry ID).
     fn find_duplicates(&self) -> Vec<ArchivePath<'static>>;
 
     /// Checks if the archive contains orphaned data.
     ///
-    /// Orphaned data exists when there are gaps between entries or between
-    /// the last entry and the Central Directory. This can occur after
-    /// deletions or when entries are shadowed.
+    /// Orphaned data exists when there are data blocks not referenced by any
+    /// entry in the entry table.
     fn has_orphaned_data(&self) -> bool;
 
     /// Returns a file entry by path.
@@ -110,11 +105,6 @@ pub trait ArchiveRead {
     /// This method provides type-safe access to directory entries without manual
     /// kind checking. The path is normalized before lookup (trailing slashes
     /// are handled automatically).
-    ///
-    /// Note: This only finds explicit directory entries. ZIP archives created
-    /// with standard tools include explicit directory entries. For implicit
-    /// directories (those that exist only because files have paths containing
-    /// them), this method returns `EntryNotFound`.
     ///
     /// # Errors
     ///
