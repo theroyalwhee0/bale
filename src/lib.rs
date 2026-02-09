@@ -1,7 +1,7 @@
 //! Bale archive format library.
 //!
-//! A mmap-first, zero-copy zip-compatible archive format with fixed-stride
-//! entries for efficient random access.
+//! A mmap-first, zero-copy archive format with fixed-stride tables for
+//! efficient random access.
 //!
 //! # Features
 //!
@@ -15,29 +15,23 @@
 mod archive;
 /// Validated, normalized paths within a bale archive.
 mod archive_path;
-/// Central Directory Header for ZIP entries.
-mod central_dir;
 /// Archive compaction.
 #[cfg(feature = "compact")]
 mod compact;
-/// MS-DOS date/time format for ZIP archives.
-mod dos_time;
 /// Entry type classification.
 mod entry_kind;
 /// Error types for bale operations.
 mod error;
+/// Binary format structures for the bale archive format v1.0.0.
+pub mod format;
 /// FUSE filesystem support.
 #[cfg(feature = "fuse")]
 pub mod fuse;
-/// Local File Header for ZIP entries.
-mod local_file;
 /// Memory-mapped file access.
 mod mmap;
 /// Proptest configuration (test-only).
 #[cfg(test)]
 mod proptest_config;
-/// Unified archive tail (trailer) structures.
-pub mod tail;
 
 #[cfg(feature = "reader")]
 pub use archive::ArchiveReader;
@@ -46,12 +40,9 @@ pub use archive::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry
 #[cfg(feature = "writer")]
 pub use archive::{ArchiveWrite, ArchiveWriter};
 pub use archive_path::ArchivePath;
-pub use central_dir::CentralDirectoryHeader;
 #[cfg(feature = "compact")]
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
-pub use dos_time::DosDateTime;
 pub use entry_kind::EntryKind;
 pub use error::BaleError;
-pub use local_file::LocalFileHeader;
+pub use format::{DataBlockHeader, DirectoryRow, EntryRow, FileHeader, Trailer};
 pub use mmap::{MappedArchive, MappedArchiveMut};
-pub use tail::{BaleEocd, Eocd, Trailer, Zip64Eocd, Zip64EocdLocator};

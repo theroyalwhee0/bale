@@ -1,7 +1,7 @@
 //! Core archive struct with generic memory-map backing.
 
-use crate::central_dir::CdEntry;
-use crate::{BaleEocd, MappedArchive, MappedArchiveMut};
+use crate::format::Trailer;
+use crate::{MappedArchive, MappedArchiveMut};
 
 /// A bale archive with generic memory-map backing.
 ///
@@ -9,24 +9,26 @@ use crate::{BaleEocd, MappedArchive, MappedArchiveMut};
 /// The type parameter `M` determines whether the archive is read-only
 /// ([`MappedArchive`]) or read-write ([`MappedArchiveMut`]).
 ///
+/// The entry and directory tables are accessed directly from the mmap via
+/// offsets stored in the trailer. The trailer contains all configuration
+/// (alignment, path_size) and table locations.
+///
 /// # Example
 ///
 /// ```ignore
 /// use bale::{ArchiveReader, ArchiveRead};
 ///
 /// let reader = ArchiveReader::open("archive.bale")?;
-/// for (header, path) in reader.iter_entries() {
-///     let data = reader.read_data(header)?;
-///     // process data...
+/// for entry in reader.iter_entries() {
+///     // process entry...
 /// }
 /// ```
+#[allow(dead_code)] // Fields used by reader (#128) and writer (#129) implementations.
 pub struct Archive<M> {
     /// The memory-mapped archive file.
     pub(super) mmap: M,
-    /// In-memory Central Directory entries.
-    pub(super) entries: Vec<CdEntry>,
-    /// Archive configuration from the BaleEocd.
-    pub(super) bale_eocd: BaleEocd,
+    /// Archive trailer containing configuration and table offsets.
+    pub(super) trailer: Trailer,
     /// Current write offset (end of file data). Only used for writers.
     pub(super) write_offset: usize,
     /// Whether the archive has been modified since the last sync. Only used for writers.

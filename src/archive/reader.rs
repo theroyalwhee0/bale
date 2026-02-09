@@ -1,13 +1,13 @@
 //! Read-only archive implementation.
+//!
+//! **Stub**: This implementation is being rewritten for the v1.0.0 format.
+//! The reader will be implemented in issue #128.
 
 use super::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::central_dir::parse_cd_entries;
-use crate::{
-    ArchivePath, BaleEocd, BaleError, CentralDirectoryHeader, EntryKind, Eocd, LocalFileHeader,
-    MappedArchive, Trailer, Zip64Eocd,
-};
-use std::collections::HashSet;
+use crate::format::{EntryRow, Trailer};
+use crate::{ArchivePath, BaleError, MappedArchive};
 use std::path::Path;
+use zerocopy::FromBytes;
 
 impl Archive<MappedArchive> {
     /// Opens an archive for reading.
@@ -17,456 +17,150 @@ impl Archive<MappedArchive> {
     /// Returns an error if:
     /// - The file cannot be opened or memory-mapped
     /// - The archive is too small to contain a valid trailer
-    /// - Any trailer signature is invalid (ZIP64 EOCD, Locator, EOCD, or BaleEocd)
+    /// - The trailer magic or version is invalid
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let mmap = MappedArchive::open(path)?;
         let bytes = mmap.as_bytes();
+        let len = bytes.len() as u64;
 
-        // Parse and validate trailer.
-        let trailer = Trailer::from_archive_bytes(bytes)?;
-        let bale_eocd = trailer.bale_eocd;
-        let path_size = trailer.path_size() as usize;
-        let cd_offset = trailer.cd_offset() as usize;
-        let entry_count = trailer.entry_count() as usize;
+        if len < Trailer::MIN_ARCHIVE_SIZE {
+            return Err(BaleError::TooSmall {
+                size: len,
+                minimum: Trailer::MIN_ARCHIVE_SIZE,
+            });
+        }
 
-        // Parse Central Directory entries.
-        let entries = parse_cd_entries(bytes, cd_offset, entry_count, path_size)?;
+        // Read and validate trailer from last 64 bytes.
+        let trailer_bytes = &bytes[bytes.len() - Trailer::SIZE..];
+        let trailer = *Trailer::ref_from_bytes(trailer_bytes)
+            .map_err(|e| BaleError::Corrupted(format!("invalid trailer: {e}")))?;
+        trailer.validated()?;
 
         Ok(Self {
             mmap,
-            entries,
-            bale_eocd,
+            trailer,
             write_offset: 0,
             dirty: false,
         })
     }
-
-    /// Returns a reference to the parsed trailer.
-    ///
-    /// Note: This reconstructs the trailer from stored components. For most
-    /// uses, prefer the individual accessor methods like [`bale_eocd()`](Self::bale_eocd).
-    #[must_use]
-    pub fn trailer(&self) -> Trailer {
-        // Reconstruct trailer from stored data.
-        // CD offset is computed from entries.
-        let cd_offset = self.compute_cd_offset();
-        let cd_size = self.entries.len() * CentralDirectoryHeader::stride(self.path_size());
-        let zip64_eocd_offset = cd_offset + cd_size;
-
-        Trailer::new(
-            self.entries.len() as u64,
-            cd_size as u64,
-            cd_offset as u64,
-            zip64_eocd_offset as u64,
-            self.bale_eocd,
-        )
-    }
-
-    /// Returns a reference to the ZIP64 EOCD.
-    #[must_use]
-    pub fn zip64_eocd(&self) -> Zip64Eocd {
-        self.trailer().zip64_eocd
-    }
-
-    /// Returns a reference to the EOCD.
-    #[must_use]
-    pub fn eocd(&self) -> Eocd {
-        self.trailer().eocd
-    }
-
-    /// Computes the CD offset from entries.
-    fn compute_cd_offset(&self) -> usize {
-        if self.entries.is_empty() {
-            return 0;
-        }
-
-        // Find the highest local_header_offset + entry size.
-        let path_size = self.path_size();
-        let local_stride = LocalFileHeader::stride(path_size);
-        let alignment = self.alignment() as usize;
-
-        let mut max_end: usize = 0;
-        for entry in &self.entries {
-            let local_offset = entry.header.local_header_offset.get() as usize;
-            let data_size = entry.header.uncompressed_size.get() as usize;
-            let unaligned_size = local_stride + data_size;
-            let aligned_size = unaligned_size.div_ceil(alignment) * alignment;
-            let entry_end = local_offset + aligned_size;
-            max_end = max_end.max(entry_end);
-        }
-
-        max_end
-    }
 }
 
 impl ArchiveRead for Archive<MappedArchive> {
+    /// Returns the number of entries in the archive.
     fn entry_count(&self) -> usize {
-        self.entries.len()
+        self.trailer.entry_count.get() as usize
     }
 
+    /// Returns the configured path size.
     fn path_size(&self) -> usize {
-        self.bale_eocd.path_size() as usize
+        self.trailer.path_size() as usize
     }
 
+    /// Returns the configured alignment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if alignment_power is invalid (cannot happen for validated archives).
     fn alignment(&self) -> u32 {
-        self.bale_eocd
-            .alignment()
-            .expect("validated on construction")
+        self.trailer.alignment().expect("validated on construction")
     }
 
-    fn get_path(&self, index: usize) -> Option<ArchivePath<'_>> {
-        let entry = self.entries.get(index)?;
-        let path_bytes = &entry.path;
-
-        // Trim null padding for the ArchivePath.
-        let end = path_bytes
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(path_bytes.len());
-
-        Some(ArchivePath::from_bytes(&path_bytes[..end]))
+    /// Returns the path at the given directory table index.
+    fn get_path(&self, _index: usize) -> Option<ArchivePath<'_>> {
+        todo!("will be implemented in #128")
     }
 
-    fn iter_entries(&self) -> impl Iterator<Item = (&CentralDirectoryHeader, &[u8])> {
-        self.entries
-            .iter()
-            .map(|entry| (&entry.header, entry.path.as_slice()))
+    /// Iterates over all entry rows with their paths.
+    fn iter_entries(&self) -> impl Iterator<Item = (&EntryRow, &[u8])> {
+        std::iter::empty()
     }
 
-    fn find_entry(&self, path: &str) -> Option<&CentralDirectoryHeader> {
-        self.find_entry_with_path(path).map(|(h, _, _)| h)
+    /// Finds an entry by path.
+    fn find_entry(&self, _path: &str) -> Option<&EntryRow> {
+        todo!("will be implemented in #128")
     }
 
-    fn find_entry_with_path(&self, path: &str) -> Option<(&CentralDirectoryHeader, &[u8], u32)> {
-        let path_bytes = path.as_bytes();
-        let path_size = self.path_size();
-
-        if path_bytes.len() > path_size {
-            return None;
-        }
-
-        let mut result = None;
-        for entry in &self.entries {
-            if entry.path.starts_with(path_bytes)
-                && entry.path[path_bytes.len()..].iter().all(|&b| b == 0)
-            {
-                // Trim null padding from the stored path.
-                let end = entry
-                    .path
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(entry.path.len());
-                result = Some((&entry.header, &entry.path[..end], entry.id));
-            }
-        }
-        result
+    /// Finds an entry by path with path bytes and ID.
+    fn find_entry_with_path(&self, _path: &str) -> Option<(&EntryRow, &[u8], u32)> {
+        todo!("will be implemented in #128")
     }
 
-    fn read_data(&self, entry: &CentralDirectoryHeader) -> Result<&[u8], BaleError> {
-        let bytes = self.mmap.as_bytes();
-        let local_offset = entry.local_header_offset.get() as usize;
-        let path_size = self.path_size();
-        let data_size = entry.uncompressed_size.get() as usize;
-
-        let local_stride = LocalFileHeader::stride(path_size);
-        let data_start = local_offset
-            .checked_add(local_stride)
-            .ok_or_else(|| BaleError::Corrupted("offset overflow".to_string()))?;
-        let data_end = data_start
-            .checked_add(data_size)
-            .ok_or_else(|| BaleError::Corrupted("size overflow".to_string()))?;
-
-        if data_end > bytes.len() {
-            return Err(BaleError::Corrupted(format!(
-                "entry data extends beyond archive: offset={local_offset}, size={data_size}"
-            )));
-        }
-
-        Ok(&bytes[data_start..data_end])
+    /// Reads data for the given entry row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data offset or size is invalid.
+    fn read_data(&self, _entry: &EntryRow) -> Result<&[u8], BaleError> {
+        todo!("will be implemented in #128")
     }
 
-    fn bale_eocd(&self) -> &BaleEocd {
-        &self.bale_eocd
+    /// Returns a reference to the trailer.
+    fn trailer(&self) -> &Trailer {
+        &self.trailer
     }
 
-    fn verify_crc(&self, entry: &CentralDirectoryHeader) -> Result<(), BaleError> {
-        let data = self.read_data(entry)?;
-        let computed = crc32fast::hash(data);
-        let stored = entry.crc32.get();
-
-        if computed != stored {
-            return Err(BaleError::Corrupted(format!(
-                "CRC mismatch: expected {:08x}, got {:08x}",
-                stored, computed
-            )));
-        }
-
-        Ok(())
+    /// Verifies the CRC-32 checksum for an entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CRC does not match.
+    fn verify_crc(&self, _entry: &EntryRow) -> Result<(), BaleError> {
+        todo!("will be implemented in #128")
     }
 
+    /// Checks if the directory table is sorted.
     fn is_sorted(&self) -> bool {
-        let mut prev: Option<&[u8]> = None;
-        for entry in &self.entries {
-            if let Some(p) = prev
-                && p > entry.path.as_slice()
-            {
-                return false;
-            }
-            prev = Some(&entry.path);
-        }
-        true
+        todo!("will be implemented in #128")
     }
 
+    /// Returns duplicate paths.
     fn find_duplicates(&self) -> Vec<ArchivePath<'static>> {
-        let mut seen: HashSet<&[u8]> = HashSet::new();
-        let mut duplicate_set: HashSet<&[u8]> = HashSet::new();
-
-        for entry in &self.entries {
-            if !seen.insert(&entry.path) {
-                duplicate_set.insert(&entry.path);
-            }
-        }
-
-        duplicate_set
-            .into_iter()
-            .map(|path_bytes| {
-                // Trim null padding.
-                let end = path_bytes
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(path_bytes.len());
-                // Create owned ArchivePath from trimmed bytes.
-                ArchivePath::from(path_bytes[..end].to_vec())
-            })
-            .collect()
+        todo!("will be implemented in #128")
     }
 
+    /// Checks for orphaned data blocks.
     fn has_orphaned_data(&self) -> bool {
-        if self.entries.is_empty() {
-            return false;
-        }
-
-        // Sort entries by local_header_offset.
-        let mut sorted_entries: Vec<_> = self.entries.iter().collect();
-        sorted_entries.sort_by_key(|e| e.header.local_header_offset.get());
-
-        let path_size = self.path_size();
-        let alignment = self.alignment() as usize;
-        let local_header_stride = LocalFileHeader::stride(path_size);
-        let cd_offset = self.compute_cd_offset();
-
-        let mut expected_offset: usize = 0;
-
-        for entry in &sorted_entries {
-            let local_offset = entry.header.local_header_offset.get() as usize;
-            let data_size = entry.header.uncompressed_size.get() as usize;
-
-            if local_offset != expected_offset {
-                return true;
-            }
-
-            let Some(entry_size) = local_header_stride.checked_add(data_size) else {
-                return true;
-            };
-            let aligned_size = entry_size.div_ceil(alignment).saturating_mul(alignment);
-            let Some(next_offset) = local_offset.checked_add(aligned_size) else {
-                return true;
-            };
-            expected_offset = next_offset;
-        }
-
-        expected_offset != cd_offset
+        todo!("will be implemented in #128")
     }
 
-    fn file(&self, path: impl AsRef<str>) -> Result<FileEntry<'_>, BaleError> {
-        let path_str = path.as_ref();
-        let (header, path_bytes, id) = self
-            .find_entry_with_path(path_str)
-            .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
-
-        if header.kind() != EntryKind::File {
-            return Err(BaleError::NotAFile(path_str.to_string()));
-        }
-
-        let data = self.read_data(header)?;
-        let archive_path = ArchivePath::from_bytes(path_bytes);
-
-        Ok(FileEntry {
-            header,
-            path: archive_path,
-            data,
-            id,
-        })
+    /// Returns a file entry by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not found or not a file.
+    fn file(&self, _path: impl AsRef<str>) -> Result<FileEntry<'_>, BaleError> {
+        todo!("will be implemented in #128")
     }
 
-    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
-        let path_str = path.as_ref();
-
-        // Try with and without trailing slash.
-        let found = self.find_entry_with_path(path_str).or_else(|| {
-            if path_str.ends_with('/') {
-                self.find_entry_with_path(path_str.trim_end_matches('/'))
-            } else {
-                self.find_entry_with_path(&format!("{path_str}/"))
-            }
-        });
-
-        let (header, path_bytes, id) =
-            found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
-
-        if header.kind() != EntryKind::Directory {
-            return Err(BaleError::NotADirectory(path_str.to_string()));
-        }
-
-        // Trim trailing slash for the ArchivePath.
-        let trimmed = if path_bytes.ends_with(b"/") {
-            &path_bytes[..path_bytes.len() - 1]
-        } else {
-            path_bytes
-        };
-        let archive_path = ArchivePath::from_bytes(trimmed);
-
-        Ok(DirEntry {
-            header,
-            path: archive_path,
-            id,
-        })
+    /// Returns a directory entry by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not found or not a directory.
+    fn folder(&self, _path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
+        todo!("will be implemented in #128")
     }
 
-    fn symlink(&self, path: impl AsRef<str>) -> Result<SymlinkEntry<'_>, BaleError> {
-        let path_str = path.as_ref();
-        let (header, path_bytes, id) = self
-            .find_entry_with_path(path_str)
-            .ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
-
-        if header.kind() != EntryKind::Symlink {
-            return Err(BaleError::NotASymlink(path_str.to_string()));
-        }
-
-        let target = self.read_data(header)?;
-        let archive_path = ArchivePath::from_bytes(path_bytes);
-
-        Ok(SymlinkEntry {
-            header,
-            path: archive_path,
-            target,
-            id,
-        })
+    /// Returns a symlink entry by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not found or not a symlink.
+    fn symlink(&self, _path: impl AsRef<str>) -> Result<SymlinkEntry<'_>, BaleError> {
+        todo!("will be implemented in #128")
     }
 
-    fn entry(&self, path: impl AsRef<str>) -> Result<Entry<'_>, BaleError> {
-        let path_str = path.as_ref();
-
-        // Try direct lookup first.
-        let found = self.find_entry_with_path(path_str).or_else(|| {
-            // For directories, also try with/without trailing slash.
-            if path_str.ends_with('/') {
-                self.find_entry_with_path(path_str.trim_end_matches('/'))
-            } else {
-                self.find_entry_with_path(&format!("{path_str}/"))
-            }
-        });
-
-        let (header, path_bytes, id) =
-            found.ok_or_else(|| BaleError::EntryNotFound(path_str.to_string()))?;
-
-        match header.kind() {
-            EntryKind::File => {
-                let data = self.read_data(header)?;
-                let archive_path = ArchivePath::from_bytes(path_bytes);
-                Ok(Entry::File(FileEntry {
-                    header,
-                    path: archive_path,
-                    data,
-                    id,
-                }))
-            }
-            EntryKind::Directory => {
-                // Trim trailing slash for the ArchivePath.
-                let trimmed = if path_bytes.ends_with(b"/") {
-                    &path_bytes[..path_bytes.len() - 1]
-                } else {
-                    path_bytes
-                };
-                let archive_path = ArchivePath::from_bytes(trimmed);
-                Ok(Entry::Directory(DirEntry {
-                    header,
-                    path: archive_path,
-                    id,
-                }))
-            }
-            EntryKind::Symlink => {
-                let target = self.read_data(header)?;
-                let archive_path = ArchivePath::from_bytes(path_bytes);
-                Ok(Entry::Symlink(SymlinkEntry {
-                    header,
-                    path: archive_path,
-                    target,
-                    id,
-                }))
-            }
-            EntryKind::Other(_) => {
-                // Treat unknown types as files for now.
-                let data = self.read_data(header)?;
-                let archive_path = ArchivePath::from_bytes(path_bytes);
-                Ok(Entry::File(FileEntry {
-                    header,
-                    path: archive_path,
-                    data,
-                    id,
-                }))
-            }
-        }
+    /// Returns any entry by path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not found.
+    fn entry(&self, _path: impl AsRef<str>) -> Result<Entry<'_>, BaleError> {
+        todo!("will be implemented in #128")
     }
 
-    fn find_by_id(&self, id: u32) -> Option<Entry<'_>> {
-        // Linear scan to find entry with matching ID.
-        for entry in &self.entries {
-            if entry.id == id {
-                // Trim null padding from the stored path.
-                let end = entry
-                    .path
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap_or(entry.path.len());
-                let path_bytes = &entry.path[..end];
-                let archive_path = ArchivePath::from_bytes(path_bytes);
-
-                return match entry.header.kind() {
-                    EntryKind::File | EntryKind::Other(_) => {
-                        let data = self.read_data(&entry.header).ok()?;
-                        Some(Entry::File(FileEntry {
-                            header: &entry.header,
-                            path: archive_path,
-                            data,
-                            id,
-                        }))
-                    }
-                    EntryKind::Directory => {
-                        // Trim trailing slash for the ArchivePath.
-                        let trimmed = if path_bytes.ends_with(b"/") {
-                            ArchivePath::from_bytes(&path_bytes[..path_bytes.len() - 1])
-                        } else {
-                            archive_path
-                        };
-                        Some(Entry::Directory(DirEntry {
-                            header: &entry.header,
-                            path: trimmed,
-                            id,
-                        }))
-                    }
-                    EntryKind::Symlink => {
-                        let target = self.read_data(&entry.header).ok()?;
-                        Some(Entry::Symlink(SymlinkEntry {
-                            header: &entry.header,
-                            path: archive_path,
-                            target,
-                            id,
-                        }))
-                    }
-                };
-            }
-        }
-        None
+    /// Finds an entry by its stable ID.
+    fn find_by_id(&self, _id: u32) -> Option<Entry<'_>> {
+        todo!("will be implemented in #128")
     }
 }

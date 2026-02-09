@@ -88,6 +88,9 @@ Do NOT use `gh issue` directly.
 
 ```bash
 focus-issue <issue-number>
+
+# When working against a non-main base branch (e.g., refactor):
+MAIN_BRANCH=refactor focus-issue <issue-number>
 ```
 
 This command:

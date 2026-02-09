@@ -1,21 +1,20 @@
 //! Directory entry wrapper for ergonomic access.
 
-use crate::{ArchivePath, CentralDirectoryHeader, DosDateTime};
+use crate::ArchivePath;
+use crate::format::EntryRow;
 
 /// A directory entry in the archive.
 ///
-/// This struct wraps a Central Directory header for an explicit directory entry.
-/// Note that ZIP archives may have implicit directories (directories that exist
-/// only because files have paths containing them). This struct only represents
-/// explicit directory entries that were stored in the archive.
+/// This struct wraps an entry row for a directory. In the bale format,
+/// directories are explicit entries in both the entry table and directory table.
 ///
 /// # Lifetime
 ///
 /// The lifetime `'a` is tied to the archive that created this entry.
 #[derive(Debug)]
 pub struct DirEntry<'a> {
-    /// The Central Directory header for this directory.
-    pub(crate) header: &'a CentralDirectoryHeader,
+    /// The entry row for this directory.
+    pub(crate) entry: &'a EntryRow,
     /// The directory path (without null padding or trailing slash).
     pub(crate) path: ArchivePath<'a>,
     /// Stable entry ID.
@@ -30,23 +29,27 @@ impl<'a> DirEntry<'a> {
     }
 
     /// Returns the Unix mode (file type and permissions).
-    ///
-    /// The mode is extracted from the upper 16 bits of `external_attrs`.
     #[must_use]
     pub fn mode(&self) -> u32 {
-        self.header.external_attrs.get() >> 16
+        self.entry.mode.get()
     }
 
-    /// Returns the modification time.
+    /// Returns the creation time as Unix epoch milliseconds.
     #[must_use]
-    pub fn mtime(&self) -> DosDateTime {
-        DosDateTime::from_date_time_parts(self.header.mod_date.get(), self.header.mod_time.get())
+    pub fn created_time(&self) -> i64 {
+        self.entry.created_time.get()
     }
 
-    /// Returns a reference to the Central Directory header.
+    /// Returns the modification time as Unix epoch milliseconds.
     #[must_use]
-    pub fn header(&self) -> &'a CentralDirectoryHeader {
-        self.header
+    pub fn modified_time(&self) -> i64 {
+        self.entry.modified_time.get()
+    }
+
+    /// Returns a reference to the entry row.
+    #[must_use]
+    pub fn entry(&self) -> &'a EntryRow {
+        self.entry
     }
 
     /// Returns the stable entry ID.
