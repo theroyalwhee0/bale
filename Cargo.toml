@@ -4,10 +4,10 @@ version = "0.1.0"
 authors = ["Adam Mill <hismajesty@theroyalwhee.com>"]
 edition = "2024"
 rust-version = "1.89.0"
-description = "A mmap-first, fixed-stride zip-like pack format"
+description = "A mmap-first, zero-copy archive format with fixed-stride tables"
 license = "Apache-2.0"
 repository = "https://github.com/theroyalwhee0/bale"
-keywords = ["archive", "zip", "mmap", "pack", "fuse"]
+keywords = ["archive", "mmap", "zero-copy", "pack", "fuse"]
 categories = ["compression", "filesystem"]
 exclude = [
     "CLAUDE.md",
