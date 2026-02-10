@@ -42,6 +42,8 @@ impl Archive<MappedArchive> {
             trailer,
             write_offset: 0,
             dirty: false,
+            entry_rows: Vec::new(),
+            dir_entries: Vec::new(),
         })
     }
 
