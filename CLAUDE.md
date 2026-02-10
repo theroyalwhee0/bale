@@ -5,8 +5,9 @@ provide context for future Claude sessions working on this project.
 
 ## Project Overview
 
-`bale` is a Rust library implementing a mmap-first, zero-copy zip-compatible
-archive format. It uses fixed-stride entries for efficient random access.
+`bale` is a Rust library implementing a mmap-first, zero-copy archive format.
+It uses fixed-stride tables for efficient random access with separated entry
+metadata and directory paths to support hard links and symlinks.
 
 ## Code Organization
 
@@ -87,6 +88,9 @@ Do NOT use `gh issue` directly.
 
 ```bash
 focus-issue <issue-number>
+
+# When working against a non-main base branch (e.g., refactor):
+MAIN_BRANCH=refactor focus-issue <issue-number>
 ```
 
 This command:
@@ -198,66 +202,33 @@ Expected output goes in matching `.stdout` files.
 
 ## Format Specification
 
-| Property   | Value                                        |
-| ---------- | -------------------------------------------- |
-| Version    | 0.2.0                                        |
-| EOCD       | Standard 22-byte zip format                  |
-| CD Stride  | `46 + path_size + 8` (header + path + extra) |
-| LFH Stride | `30 + path_size + 8` (header + path + extra) |
-| Byte order | Little-endian                                |
-| Alignment  | 4096 bytes (configurable, 2^N)               |
-| Max path   | 256 bytes (configurable, 1-4096)             |
+See [docs/format.md](docs/format.md) for the full binary format specification.
+
+| Property        | Value                              |
+| --------------- | ---------------------------------- |
+| Version         | 1.0.0                              |
+| File header     | 8 bytes (`BALE\0` + version)       |
+| Trailer         | 64 bytes (config, offsets, counts)  |
+| Entry stride    | 48 bytes (metadata, no paths)      |
+| Dir row stride  | `path_size + 4`                    |
+| Data block hdr  | 32 bytes (id, sizes, crc, compression) |
+| Byte order      | Little-endian                      |
+| Alignment       | 4096 bytes (configurable, 2^N)     |
+| Max path        | 256 bytes (configurable, 1-4096)   |
+| Timestamps      | i64 Unix epoch milliseconds        |
 
 ### Archive Layout
 
 ```text
 ┌─────────────────────────────────────┐
-│ Local File Header + Data (aligned)  │ ← Repeats for each file
+│ File Header (8 bytes)               │ ← "BALE\0" + version
 ├─────────────────────────────────────┤
-│ Central Directory Headers           │ ← Fixed stride entries
+│ Data Blocks (aligned)               │ ← Per-entry: header + data + padding
 ├─────────────────────────────────────┤
-│ ZIP64 EOCD (56 bytes)               │ ← Always present
-│ ZIP64 EOCD Locator (20 bytes)       │
-│ EOCD (22 bytes)                     │
-│ BaleEocd (158 bytes)                │ ← 256-byte trailer total
+│ Entry Table (48B × N)               │ ← Sorted by entry ID
+├─────────────────────────────────────┤
+│ Directory Table ((path_size+4) × M) │ ← Sorted by path
+├─────────────────────────────────────┤
+│ Trailer (64 bytes)                  │ ← Config, offsets, counts
 └─────────────────────────────────────┘
 ```
-
-### BaleEocd (EOCD Comment)
-
-158-byte structure stored as the EOCD comment field. Combined with ZIP64 EOCD
-(56), ZIP64 Locator (20), and EOCD (22), the trailer is exactly 256 bytes.
-
-| Offset | Size | Field                                   |
-| ------ | ---- | --------------------------------------- |
-| 0      | 4    | Magic signature "BALE" (0x454C4142 LE)  |
-| 4      | 1    | Major version (0)                       |
-| 5      | 1    | Minor version (2)                       |
-| 6      | 1    | Patch version (0)                       |
-| 7      | 1    | Alignment power (2^N, e.g., 12 = 4096)  |
-| 8      | 2    | Path size (1-4096, little-endian)       |
-| 10     | 4    | Next ID (u32, for stable entry IDs)     |
-| 14     | 144  | Reserved (zeros)                        |
-
-### Entry IDs and Extra Fields
-
-Each entry has a stable u32 ID stored in a ZIP-compatible extra field:
-
-| Offset | Size | Field                                   |
-| ------ | ---- | --------------------------------------- |
-| 0      | 2    | Tag (0xBA1D = "BAID" with 1 as I)       |
-| 2      | 2    | Size (always 4)                         |
-| 4      | 4    | Entry ID (u32, little-endian)           |
-
-- IDs start at 1 (0 reserved for root/no-ID)
-- IDs are assigned sequentially and never reused within an archive session
-- Compact operation renumbers entries 1..N
-- Extra field adds 8 bytes to CD and local file header stride
-
-### ZIP64 Compatibility
-
-ZIP64 structures are always present to maintain a fixed 256-byte trailer size.
-The ZIP64 EOCD Locator must be exactly 20 bytes, positioned immediately before
-the EOCD (required by ZIP tools that search backward from EOCD).
-
-Reference: [APPNOTE.TXT](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT)

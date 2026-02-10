@@ -24,8 +24,6 @@ pub trait ArchiveWrite: ArchiveRead {
     ///
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
-    /// - The data size exceeds 4GB (ZIP format limitation)
-    /// - The archive offset would exceed 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     fn add_entry(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError>;
 
@@ -45,8 +43,6 @@ pub trait ArchiveWrite: ArchiveRead {
     ///
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
-    /// - The data size exceeds 4GB (ZIP format limitation)
-    /// - The archive offset would exceed 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     fn add_entry_with_mtime(
         &mut self,
@@ -74,24 +70,21 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Returns an error if:
     /// - The source file cannot be read
     /// - The archive path exceeds path_size
-    /// - The file size exceeds 4GB (ZIP format limitation)
     /// - Writing to the archive fails
     fn add_file(&mut self, src: impl AsRef<Path>, archive_path: &str) -> Result<(), BaleError>;
 
     /// Deletes all entries matching a path.
     ///
-    /// Removes all matching entries from the Central Directory. If duplicate
-    /// entries exist (from shadowing), all are removed. The file data remains
-    /// in the archive (orphaned) until a compact operation.
+    /// Removes all matching entries from the directory and entry tables.
+    /// The file data remains in the archive (orphaned) until a compact operation.
     ///
     /// Returns `true` if any entries were deleted, `false` if none matched.
     fn delete(&mut self, path: &str) -> bool;
 
     /// Flushes all changes to disk.
     ///
-    /// Rewrites the Central Directory and full trailer (ZIP64 EOCD, ZIP64 EOCD
-    /// Locator, EOCD, and BaleEocd). The CD starts at an aligned offset for
-    /// efficient mmap access. The file is truncated to the logical size.
+    /// Rewrites the entry table, directory table, and trailer. The file is
+    /// truncated to the logical size.
     ///
     /// If no changes have been made since the last sync, this is a no-op.
     ///
@@ -103,8 +96,6 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Creates an explicit directory entry.
     ///
     /// Directory entries have zero-length data and directory mode bits set.
-    /// The path should not have a trailing slash; it will be added internally
-    /// if needed for ZIP compatibility.
     ///
     /// # Arguments
     ///
@@ -121,8 +112,8 @@ pub trait ArchiveWrite: ArchiveRead {
 
     /// Creates a symbolic link entry.
     ///
-    /// Symlink entries store the target path as their data, with symlink mode
-    /// bits set in external attributes.
+    /// Symlink entries store the target path as their data block content,
+    /// with symlink mode bits set.
     ///
     /// # Arguments
     ///
@@ -135,7 +126,6 @@ pub trait ArchiveWrite: ArchiveRead {
     ///
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
-    /// - The target length exceeds 4GB
     /// - Writing to the archive fails
     fn add_symlink(
         &mut self,
