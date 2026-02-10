@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use bale::{ArchiveWrite, ArchiveWriter, FileHeader, Trailer};
+use bale::{ArchiveWrite, ArchiveWriter, BaleEocd, Eocd, Zip64Eocd, Zip64EocdLocator};
 use zerocopy::IntoBytes;
 
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
@@ -29,20 +29,36 @@ fn generate_all_fixtures() {
     generate_bad_crc_bale();
 }
 
-/// Generates an empty bale archive (FileHeader + Trailer = 72 bytes).
+/// Generates an empty bale archive with full 256-byte trailer.
+///
+/// The trailer consists of:
+/// - ZIP64 EOCD (56 bytes)
+/// - ZIP64 EOCD Locator (20 bytes)
+/// - EOCD (22 bytes)
+/// - BaleEocd (158 bytes)
 fn generate_empty_bale() {
     let path = Path::new(VALID_FIXTURES_DIR).join("empty.bale");
     let mut file = File::create(&path).expect("failed to create empty.bale");
 
-    // File header (8 bytes).
-    let header = FileHeader::new();
-    file.write_all(header.as_bytes())
-        .expect("failed to write FileHeader");
+    // ZIP64 EOCD at offset 0 (entry_count=0, cd_size=0, cd_offset=0).
+    let zip64_eocd = Zip64Eocd::new(0, 0, 0);
+    file.write_all(zip64_eocd.as_bytes())
+        .expect("failed to write ZIP64 EOCD");
 
-    // Trailer (64 bytes) with default settings.
-    let trailer = Trailer::new();
-    file.write_all(trailer.as_bytes())
-        .expect("failed to write Trailer");
+    // ZIP64 EOCD Locator pointing to offset 0.
+    let zip64_locator = Zip64EocdLocator::new(0);
+    file.write_all(zip64_locator.as_bytes())
+        .expect("failed to write ZIP64 EOCD Locator");
+
+    // EOCD with comment length = BaleEocd::SIZE.
+    let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
+    file.write_all(eocd.as_bytes())
+        .expect("failed to write EOCD");
+
+    // BaleEocd with default settings.
+    let bale_eocd = BaleEocd::new();
+    file.write_all(bale_eocd.as_bytes())
+        .expect("failed to write BaleEocd");
 }
 
 /// Generates a bale archive containing a single "hello.txt" file.
@@ -213,10 +229,10 @@ fn generate_orphaned_data_bale() {
 // Invalid (repairable) fixtures
 // =============================================================================
 
-/// Generates a bale archive with an unsorted directory table.
+/// Generates a bale archive with an unsorted Central Directory.
 ///
-/// Entries are added in reverse alphabetical order (c, b, a) and the
-/// directory table is not sorted, making binary search impossible.
+/// Entries are added in reverse alphabetical order (c, b, a) and the CD
+/// is not sorted, making binary search impossible.
 fn generate_unsorted_cd_bale() {
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("unsorted_cd.bale");
 
@@ -240,7 +256,7 @@ fn generate_unsorted_cd_bale() {
 
 /// Generates a bale archive with duplicate paths.
 ///
-/// The same path appears multiple times in the directory table.
+/// The same path appears multiple times in the Central Directory.
 /// Only the last entry is accessible (shadowing).
 fn generate_duplicate_paths_bale() {
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("duplicate_paths.bale");
@@ -262,9 +278,9 @@ fn generate_duplicate_paths_bale() {
     writer.sync().expect("failed to sync archive");
 }
 
-/// Generates a bale archive with an incorrect CRC-32C checksum.
+/// Generates a bale archive with an incorrect CRC-32 checksum.
 ///
-/// The archive is structurally valid but the CRC in the entry row
+/// The archive is structurally valid but the CRC in the Central Directory
 /// does not match the actual file data.
 fn generate_bad_crc_bale() {
     use std::io::{Read, Seek, SeekFrom};
@@ -283,28 +299,26 @@ fn generate_bad_crc_bale() {
         writer.sync().expect("failed to sync archive");
     }
 
-    // Corrupt the CRC in the first entry row.
-    // The CRC-32C field is at offset 4 within the entry row (after entry_id).
-    // Read the entry_table_offset from the trailer to find the entry table.
+    // Now corrupt the CRC in the Central Directory.
+    // The CD is located before the trailer (last 256 bytes).
+    // CRC32 is at offset 16 in the CentralDirectoryHeader.
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&archive_path)
         .expect("failed to open archive");
 
-    // Read entry_table_offset from trailer (at file_size - Trailer::SIZE).
     let file_len = file.metadata().expect("failed to get metadata").len();
-    let trailer_offset = file_len - Trailer::SIZE as u64;
-    file.seek(SeekFrom::Start(trailer_offset))
-        .expect("failed to seek to trailer");
-    let mut trailer_bytes = [0u8; Trailer::SIZE];
-    file.read_exact(&mut trailer_bytes)
-        .expect("failed to read trailer");
-    let entry_table_offset =
-        u64::from_le_bytes(trailer_bytes[..8].try_into().expect("slice to array"));
+    let trailer_size = 256u64; // ZIP64 EOCD (56) + Locator (20) + EOCD (22) + BaleEocd (158)
+    let cd_header_size = 46u64;
+    let path_size = 256u64;
+    let cd_entry_size = cd_header_size + path_size;
 
-    // CRC is at entry_table_offset + 4 (offset of crc32c field in EntryRow).
-    let crc_offset = entry_table_offset + 4;
+    // CD starts at file_len - trailer_size - cd_entry_size
+    let cd_offset = file_len - trailer_size - cd_entry_size;
+
+    // CRC32 is at offset 16 in the CD header.
+    let crc_offset = cd_offset + 16;
 
     // Read current CRC.
     file.seek(SeekFrom::Start(crc_offset))

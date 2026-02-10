@@ -227,13 +227,13 @@ impl fuser::Filesystem for BaleFs {
         // Check if it's a file/symlink.
         if let Some(path) = state.inode_to_path.get(&ino) {
             // Determine file type from archive.
-            if let Some((entry_row, _, _)) = state.archive.find_entry_with_path(path) {
-                let kind = entry_row.kind();
+            if let Some((header, _, _)) = state.archive.find_entry_with_path(path) {
+                let kind = EntryKind::from_mode(header.external_attrs.get() >> 16);
                 let file_type = match kind {
                     EntryKind::Symlink => FileType::Symlink,
                     _ => FileType::RegularFile,
                 };
-                let mut attr = state.get_attr_for_file(ino, file_type, entry_row, path);
+                let mut attr = state.get_attr_for_file(ino, file_type, header, path);
 
                 // Override size if file has been modified.
                 if let Some(data) = state.modified_data.get(path) {
@@ -569,7 +569,7 @@ impl fuser::Filesystem for BaleFs {
                 state
                     .archive
                     .find_entry_with_path(&path)
-                    .map(|(entry_row, _, _)| entry_row.file_size.get())
+                    .map(|(h, _, _)| h.uncompressed_size.get() as u64)
             })
             .unwrap_or(0);
 

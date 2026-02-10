@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
-use bale::format::EntryRow;
 use bale::{ArchivePath, ArchiveRead, ArchiveReader, BaleError};
 
 use crate::error::BaleCliError;
@@ -28,20 +27,20 @@ pub fn run(
 
     if entries.is_empty() {
         // Extract all entries in a single pass.
-        for (entry_row, path_bytes) in reader.iter_entries() {
-            extract_entry(&reader, entry_row, path_bytes, output_dir)?;
+        for (header, path_bytes) in reader.iter_entries() {
+            extract_entry(&reader, header, path_bytes, output_dir)?;
         }
     } else {
         // Build set of requested paths for O(1) lookup.
         let mut requested: HashSet<&str> = entries.iter().map(String::as_str).collect();
 
         // Single pass through archive, extracting matches.
-        for (entry_row, path_bytes) in reader.iter_entries() {
+        for (header, path_bytes) in reader.iter_entries() {
             let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
             if let Some(path_str) = archive_path.as_str()
                 && requested.remove(path_str)
             {
-                extract_entry(&reader, entry_row, path_bytes, output_dir)?;
+                extract_entry(&reader, header, path_bytes, output_dir)?;
             }
         }
 
@@ -61,7 +60,7 @@ pub fn run(
 /// safe relative path (no leading slashes, no `..` components).
 fn extract_entry(
     reader: &ArchiveReader,
-    entry_row: &EntryRow,
+    header: &bale::CentralDirectoryHeader,
     path_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<(), BaleCliError> {
@@ -80,7 +79,7 @@ fn extract_entry(
     }
 
     // Read and write data.
-    let data = reader.read_data(entry_row)?;
+    let data = reader.read_data(header)?;
     let mut file = File::create(&dest_path)?;
     file.write_all(data)?;
 
@@ -88,7 +87,7 @@ fn extract_entry(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = entry_row.mode.get();
+        let mode = header.external_attrs.get() >> 16;
         if mode != 0 {
             fs::set_permissions(&dest_path, fs::Permissions::from_mode(mode))?;
         }

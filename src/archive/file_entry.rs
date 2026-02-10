@@ -1,21 +1,20 @@
 //! File entry wrapper for ergonomic access.
 
-use crate::ArchivePath;
-use crate::format::EntryRow;
+use crate::{ArchivePath, CentralDirectoryHeader, DosDateTime};
 
 /// A file entry in the archive.
 ///
-/// This struct wraps an entry row and provides convenient access to file
-/// metadata and data. The data is pre-resolved for ergonomics.
+/// This struct wraps a Central Directory header and provides convenient
+/// access to file metadata and data. The data is pre-resolved for ergonomics.
 ///
 /// # Lifetime
 ///
 /// The lifetime `'a` is tied to the archive that created this entry.
-/// All borrowed data (path, entry row, file data) remains valid for this lifetime.
+/// All borrowed data (path, header, file data) remains valid for this lifetime.
 #[derive(Debug)]
 pub struct FileEntry<'a> {
-    /// The entry row for this file.
-    pub(crate) entry: &'a EntryRow,
+    /// The Central Directory header for this file.
+    pub(crate) header: &'a CentralDirectoryHeader,
     /// The file path (without null padding).
     pub(crate) path: ArchivePath<'a>,
     /// The file data.
@@ -34,7 +33,13 @@ impl<'a> FileEntry<'a> {
     /// Returns the uncompressed file size in bytes.
     #[must_use]
     pub fn size(&self) -> u64 {
-        self.entry.file_size.get()
+        self.header.uncompressed_size.get() as u64
+    }
+
+    /// Returns the CRC-32 checksum of the file data.
+    #[must_use]
+    pub fn crc32(&self) -> u32 {
+        self.header.crc32.get()
     }
 
     /// Returns the file path.
@@ -44,27 +49,23 @@ impl<'a> FileEntry<'a> {
     }
 
     /// Returns the Unix mode (file type and permissions).
+    ///
+    /// The mode is extracted from the upper 16 bits of `external_attrs`.
     #[must_use]
     pub fn mode(&self) -> u32 {
-        self.entry.mode.get()
+        self.header.external_attrs.get() >> 16
     }
 
-    /// Returns the creation time as Unix epoch milliseconds.
+    /// Returns the modification time.
     #[must_use]
-    pub fn created_time(&self) -> i64 {
-        self.entry.created_time.get()
+    pub fn mtime(&self) -> DosDateTime {
+        DosDateTime::from_date_time_parts(self.header.mod_date.get(), self.header.mod_time.get())
     }
 
-    /// Returns the modification time as Unix epoch milliseconds.
+    /// Returns a reference to the Central Directory header.
     #[must_use]
-    pub fn modified_time(&self) -> i64 {
-        self.entry.modified_time.get()
-    }
-
-    /// Returns a reference to the entry row.
-    #[must_use]
-    pub fn entry(&self) -> &'a EntryRow {
-        self.entry
+    pub fn header(&self) -> &'a CentralDirectoryHeader {
+        self.header
     }
 
     /// Returns the stable entry ID.

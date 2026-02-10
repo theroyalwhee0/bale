@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use bale::{ArchivePath, ArchiveRead, ArchiveReader};
+use bale::{ArchivePath, ArchiveRead, ArchiveReader, DosDateTime};
 use nix::sys::stat::{Mode, SFlag};
 
 use crate::error::BaleCliError;
@@ -23,14 +23,14 @@ const EXEC_MASK: u32 = Mode::S_IXUSR.bits() | Mode::S_IXGRP.bits() | Mode::S_IXO
 pub fn run(archive_path: impl AsRef<Path>) -> Result<(), BaleCliError> {
     let reader = ArchiveReader::open(archive_path)?;
 
-    for (entry_row, path_bytes) in reader.iter_entries() {
+    for (header, path_bytes) in reader.iter_entries() {
         let path = ArchivePath::from_null_padded_bytes(path_bytes);
-        let size = entry_row.file_size.get();
-        let mode = entry_row.mode.get();
-        let mtime_ms = entry_row.modified_time.get();
+        let size = header.uncompressed_size.get();
+        let mode = header.external_attrs.get() >> 16;
+        let mtime = DosDateTime::from_date_time_parts(header.mod_date.get(), header.mod_time.get());
 
         let perms = format_permissions(mode);
-        let date_time = format_mtime_millis(mtime_ms);
+        let date_time = format_date_time(&mtime);
         let indicator = get_type_indicator(mode, path.as_str().unwrap_or(""));
 
         #[allow(clippy::print_stdout)]
@@ -114,15 +114,13 @@ fn format_permissions(mode: u32) -> String {
     )
 }
 
-/// Formats a Unix epoch millisecond timestamp as `Mon DD HH:MM`.
-fn format_mtime_millis(mtime_ms: i64) -> String {
-    let dt =
-        chrono::DateTime::from_timestamp_millis(mtime_ms).unwrap_or(chrono::DateTime::UNIX_EPOCH);
-    let month_idx = (chrono::Datelike::month(&dt) as usize).saturating_sub(1);
+/// Formats a DOS datetime as `Mon DD HH:MM` (e.g., `Jan  2 18:30`).
+fn format_date_time(mtime: &DosDateTime) -> String {
+    let month_idx = mtime.month().saturating_sub(1) as usize;
     let month = MONTHS.get(month_idx).unwrap_or(&"???");
-    let day = chrono::Datelike::day(&dt);
-    let hour = chrono::Timelike::hour(&dt);
-    let minute = chrono::Timelike::minute(&dt);
+    let day = mtime.day();
+    let hour = mtime.hour();
+    let minute = mtime.minute();
 
     format!("{month} {day:2} {hour:02}:{minute:02}")
 }
@@ -174,15 +172,14 @@ mod tests {
         assert_eq!(format_permissions(0o120777), "lrwxrwxrwx");
     }
 
-    /// Date formatting works correctly with epoch milliseconds.
+    /// Date formatting works correctly.
     #[test]
     fn format_date() {
-        // 2024-01-02 18:30:00 UTC in milliseconds.
-        let mtime_ms = 1_704_220_200_000i64;
-        let result = format_mtime_millis(mtime_ms);
-        // Verify format is "Mon DD HH:MM".
-        assert_eq!(result.len(), 12);
-        assert!(result.contains(':'));
+        let mtime = DosDateTime::from_components(2024, 1, 2, 18, 30, 0).unwrap();
+        assert_eq!(format_date_time(&mtime), "Jan  2 18:30");
+
+        let mtime2 = DosDateTime::from_components(2024, 12, 25, 9, 5, 0).unwrap();
+        assert_eq!(format_date_time(&mtime2), "Dec 25 09:05");
     }
 
     /// Type indicators are correct.

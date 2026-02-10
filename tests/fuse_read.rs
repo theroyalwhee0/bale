@@ -4,7 +4,7 @@
 
 /// Verifies FUSE read operations work correctly.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[cfg_attr(not(feature = "integration-tests"), ignore = "requires FUSE")]
 fn fuse_read_operations() {
     trycmd::TestCases::new()
         .case("tests/cmd/fuse_read/*.toml")
