@@ -16,11 +16,10 @@ pub trait ArchiveRead {
 
     /// Returns the configured alignment for this archive.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `alignment_power` is invalid. This cannot happen for archives
-    /// opened via [`open()`](super::Archive::open) since validation occurs on construction.
-    fn alignment(&self) -> u32;
+    /// Returns an error if `alignment_power` is invalid.
+    fn alignment(&self) -> Result<u32, BaleError>;
 
     /// Returns the path for the entry at the given index as a zero-copy `ArchivePath`.
     ///
@@ -85,7 +84,11 @@ pub trait ArchiveRead {
     ///
     /// Orphaned data exists when there are data blocks not referenced by any
     /// entry in the entry table.
-    fn has_orphaned_data(&self) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the archive metadata is corrupted.
+    fn has_orphaned_data(&self) -> Result<bool, BaleError>;
 
     /// Returns a file entry by path.
     ///

@@ -183,7 +183,7 @@ impl Archive<MappedArchiveMut> {
         }
 
         // Pad to alignment boundary.
-        let alignment = self.trailer.alignment().expect("validated on construction") as usize;
+        let alignment = self.trailer.alignment()? as usize;
         let current = self.write_offset;
         let padding = (alignment - (current % alignment)) % alignment;
         if padding > 0 {
@@ -267,11 +267,11 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
 
     /// Returns the configured alignment.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if alignment_power is invalid (cannot happen for validated archives).
-    fn alignment(&self) -> u32 {
-        self.trailer.alignment().expect("validated on construction")
+    /// Returns an error if `alignment_power` is invalid.
+    fn alignment(&self) -> Result<u32, BaleError> {
+        self.trailer.alignment()
     }
 
     /// Returns the path at the given directory table index.
@@ -402,7 +402,11 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
     }
 
     /// Checks for orphaned data blocks.
-    fn has_orphaned_data(&self) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the alignment is invalid.
+    fn has_orphaned_data(&self) -> Result<bool, BaleError> {
         let referenced: HashSet<u64> = self
             .entry_rows
             .iter()
@@ -410,20 +414,20 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             .filter(|&offset| offset != 0)
             .collect();
 
-        let alignment = self.alignment() as u64;
+        let alignment = self.alignment()? as u64;
         let data_region_end = self.write_offset as u64;
 
         let mut offset = {
             let start = FileHeader::SIZE as u64;
             if alignment == 0 {
-                return false;
+                return Ok(false);
             }
             start.div_ceil(alignment) * alignment
         };
 
         while offset < data_region_end {
             if !referenced.contains(&offset) {
-                return true;
+                return Ok(true);
             }
             // Skip to next alignment boundary past this data block.
             let entry = self
@@ -438,7 +442,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             };
             offset = next;
         }
-        false
+        Ok(false)
     }
 
     /// Returns a file entry by path.
@@ -773,7 +777,7 @@ mod tests {
         assert!(reader.iter_entries().next().is_none());
         assert!(reader.is_sorted());
         assert!(reader.find_duplicates().is_empty());
-        assert!(!reader.has_orphaned_data());
+        assert!(!reader.has_orphaned_data().unwrap());
     }
 
     /// Single file entry round-trips through writer and reader.

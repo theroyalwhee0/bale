@@ -50,15 +50,21 @@ impl Archive<MappedArchive> {
     /// Returns a zero-copy slice of the entry table from the mmap.
     ///
     /// Returns an empty slice when the archive has no entries.
-    fn entry_table(&self) -> &[EntryRow] {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry table bytes cannot be interpreted as
+    /// a valid `[EntryRow]` slice (e.g., corrupted archive data).
+    fn entry_table(&self) -> Result<&[EntryRow], BaleError> {
         let count = self.trailer.entry_count.get() as usize;
         if count == 0 {
-            return &[];
+            return Ok(&[]);
         }
         let offset = self.trailer.entry_table_offset.get() as usize;
         let len = count * EntryRow::SIZE;
         let bytes = &self.mmap.as_bytes()[offset..offset + len];
-        <[EntryRow]>::ref_from_bytes(bytes).expect("entry table aligned and sized correctly")
+        <[EntryRow]>::ref_from_bytes(bytes)
+            .map_err(|e| BaleError::Corrupted(format!("invalid entry table: {e}")))
     }
 
     /// Returns the raw bytes of the directory table from the mmap.
@@ -88,8 +94,10 @@ impl Archive<MappedArchive> {
     }
 
     /// Finds an entry row by ID using binary search on the entry table.
+    ///
+    /// Returns `None` if the ID is not found or the entry table is corrupted.
     fn find_entry_row_by_id(&self, id: u32) -> Option<&EntryRow> {
-        let table = self.entry_table();
+        let table = self.entry_table().ok()?;
         table
             .binary_search_by_key(&id, |row| row.entry_id.get())
             .ok()
@@ -187,11 +195,11 @@ impl ArchiveRead for Archive<MappedArchive> {
 
     /// Returns the configured alignment.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if alignment_power is invalid (cannot happen for validated archives).
-    fn alignment(&self) -> u32 {
-        self.trailer.alignment().expect("validated on construction")
+    /// Returns an error if `alignment_power` is invalid.
+    fn alignment(&self) -> Result<u32, BaleError> {
+        self.trailer.alignment()
     }
 
     /// Returns the path at the given directory table index.
@@ -326,15 +334,19 @@ impl ArchiveRead for Archive<MappedArchive> {
     }
 
     /// Checks for orphaned data blocks not referenced by any entry.
-    fn has_orphaned_data(&self) -> bool {
-        let entry_table = self.entry_table();
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry table or alignment is corrupted.
+    fn has_orphaned_data(&self) -> Result<bool, BaleError> {
+        let entry_table = self.entry_table()?;
         let referenced: HashSet<u64> = entry_table
             .iter()
             .map(|row| row.data_offset.get())
             .filter(|&offset| offset != 0)
             .collect();
 
-        let alignment = self.alignment() as u64;
+        let alignment = self.alignment()? as u64;
         let data_region_end = self.trailer.entry_table_offset.get();
 
         // Walk aligned offsets from the first alignment boundary after the file
@@ -342,7 +354,7 @@ impl ArchiveRead for Archive<MappedArchive> {
         let mut offset = {
             let start = FileHeader::SIZE as u64;
             if alignment == 0 {
-                return false;
+                return Ok(false);
             }
             // Round up to next alignment boundary.
             start.div_ceil(alignment) * alignment
@@ -352,11 +364,11 @@ impl ArchiveRead for Archive<MappedArchive> {
             // Each alignment boundary in the data region that is not referenced
             // by any entry is an orphaned data block.
             if !referenced.contains(&offset) {
-                return true;
+                return Ok(true);
             }
             offset += alignment;
         }
-        false
+        Ok(false)
     }
 
     /// Returns a file entry by path.
@@ -624,13 +636,13 @@ mod tests {
 
         assert_eq!(archive.entry_count(), 0);
         assert_eq!(archive.path_size(), TEST_PATH_SIZE as usize);
-        assert_eq!(archive.alignment(), TEST_ALIGNMENT);
+        assert_eq!(archive.alignment().unwrap(), TEST_ALIGNMENT);
         assert!(archive.iter_entries().next().is_none());
         assert!(archive.find_entry("hello.txt").is_none());
         assert!(archive.get_path(0).is_none());
         assert!(archive.is_sorted());
         assert!(archive.find_duplicates().is_empty());
-        assert!(!archive.has_orphaned_data());
+        assert!(!archive.has_orphaned_data().unwrap());
     }
 
     /// Single file entry can be found and read.
