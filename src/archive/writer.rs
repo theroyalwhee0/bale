@@ -6,7 +6,7 @@
 //! to disk via [`sync()`](ArchiveWrite::sync).
 
 use super::{Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::format::{DataBlockHeader, DirectoryRow, EntryRow, FileHeader, Trailer};
+use crate::format::{DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchiveMut};
 use nix::sys::stat::SFlag;
 use std::collections::HashSet;
@@ -172,14 +172,14 @@ impl Archive<MappedArchiveMut> {
 
     /// Writes a data block to the mmap at the next aligned offset.
     ///
-    /// Returns the data block offset (0 if data is empty).
+    /// Returns `(data_offset, crc)` where `data_offset` is 0 for empty data.
     ///
     /// # Errors
     ///
     /// Returns an error if writing to the mmap fails.
-    fn write_data_block(&mut self, entry_id: u32, data: &[u8]) -> Result<u64, BaleError> {
+    fn write_data_block(&mut self, data: &[u8]) -> Result<(u64, u32), BaleError> {
         if data.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
         // Pad to alignment boundary.
@@ -194,18 +194,15 @@ impl Archive<MappedArchiveMut> {
 
         let data_offset = self.write_offset as u64;
 
-        // Write the 32-byte data block header.
+        // Compute CRC before writing.
         let crc = crc32c::crc32c(data);
-        let header = DataBlockHeader::new(entry_id, data.len() as u64, crc);
-        self.mmap.set_len(self.write_offset)?;
-        self.mmap.extend(header.as_bytes())?;
-        self.write_offset += DataBlockHeader::SIZE;
 
-        // Write the data.
+        // Write the raw data (no header).
+        self.mmap.set_len(self.write_offset)?;
         self.mmap.extend(data)?;
         self.write_offset += data.len();
 
-        Ok(data_offset)
+        Ok((data_offset, crc))
     }
 
     /// Constructs an `Entry` from an in-memory entry row, path bytes, and ID.
@@ -345,15 +342,14 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         let offset = offset as usize;
         let block_size = entry.block_size.get() as usize;
         let bytes = self.mmap.as_bytes();
-        let data_start = offset + DataBlockHeader::SIZE;
-        let data_end = data_start + block_size;
+        let data_end = offset + block_size;
         if data_end > bytes.len() {
             return Err(BaleError::Corrupted(format!(
                 "data block at offset {offset} extends beyond archive (end {data_end} > len {})",
                 bytes.len()
             )));
         }
-        Ok(&bytes[data_start..data_end])
+        Ok(&bytes[offset..data_end])
     }
 
     /// Returns a reference to the trailer.
@@ -371,18 +367,8 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         if offset == 0 {
             return Ok(());
         }
-        let offset = offset as usize;
-        let bytes = self.mmap.as_bytes();
-        let header_end = offset + DataBlockHeader::SIZE;
-        if header_end > bytes.len() {
-            return Err(BaleError::Corrupted(format!(
-                "data block header at offset {offset} extends beyond archive"
-            )));
-        }
-        let header = DataBlockHeader::ref_from_bytes(&bytes[offset..header_end])
-            .map_err(|e| BaleError::Corrupted(format!("invalid data block header: {e}")))?;
-        let stored_crc = header.crc32.get();
 
+        let stored_crc = entry.crc32c.get();
         let data = self.read_data(entry)?;
         let computed_crc = crc32c::crc32c(data);
 
@@ -426,7 +412,6 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             .filter(|&offset| offset != 0)
             .collect();
 
-        let bytes = self.mmap.as_bytes();
         let alignment = self.alignment() as u64;
         let data_region_end = self.write_offset as u64;
 
@@ -439,17 +424,21 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         };
 
         while offset < data_region_end {
-            let header_end = offset as usize + DataBlockHeader::SIZE;
-            if header_end > bytes.len() {
-                break;
-            }
-            if let Ok(header) = DataBlockHeader::ref_from_bytes(&bytes[offset as usize..header_end])
-                && (header.block_size.get() > 0 || header.file_size.get() > 0)
-                && !referenced.contains(&offset)
-            {
+            if !referenced.contains(&offset) {
                 return true;
             }
-            offset += alignment;
+            // Skip to next alignment boundary past this data block.
+            let entry = self
+                .entry_rows
+                .iter()
+                .find(|r| r.data_offset.get() == offset);
+            let block_size = entry.map_or(0, |e| e.block_size.get());
+            let next = if block_size > 0 {
+                ((offset + block_size).div_ceil(alignment)) * alignment
+            } else {
+                offset + alignment
+            };
+            offset = next;
         }
         false
     }
@@ -583,14 +572,15 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let entry_id = self.trailer.next_id();
         self.trailer.set_next_id(entry_id + 1);
 
-        // Write data block.
-        let data_offset = self.write_data_block(entry_id, data)?;
+        // Write data block (returns offset and CRC).
+        let (data_offset, crc) = self.write_data_block(data)?;
 
         // Create entry row with timestamps.
         let now = now_millis();
         let modified_time = mtime.map_or(now, system_time_to_millis);
         let entry_row = EntryRow::new_file(
             entry_id,
+            crc,
             data_offset,
             data.len() as u64,
             data.len() as u64,

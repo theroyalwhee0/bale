@@ -262,9 +262,9 @@ fn generate_duplicate_paths_bale() {
     writer.sync().expect("failed to sync archive");
 }
 
-/// Generates a bale archive with an incorrect CRC-32 checksum.
+/// Generates a bale archive with an incorrect CRC-32C checksum.
 ///
-/// The archive is structurally valid but the CRC in the data block header
+/// The archive is structurally valid but the CRC in the entry row
 /// does not match the actual file data.
 fn generate_bad_crc_bale() {
     use std::io::{Read, Seek, SeekFrom};
@@ -283,16 +283,28 @@ fn generate_bad_crc_bale() {
         writer.sync().expect("failed to sync archive");
     }
 
-    // Corrupt the CRC in the first data block header.
-    // Data blocks start after the file header (8 bytes).
-    // In a DataBlockHeader, crc32 is at offset 20 (entry_id:4 + file_size:8 + block_size:8).
+    // Corrupt the CRC in the first entry row.
+    // The CRC-32C field is at offset 4 within the entry row (after entry_id).
+    // Read the entry_table_offset from the trailer to find the entry table.
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&archive_path)
         .expect("failed to open archive");
 
-    let crc_offset = FileHeader::SIZE as u64 + 20;
+    // Read entry_table_offset from trailer (at file_size - Trailer::SIZE).
+    let file_len = file.metadata().expect("failed to get metadata").len();
+    let trailer_offset = file_len - Trailer::SIZE as u64;
+    file.seek(SeekFrom::Start(trailer_offset))
+        .expect("failed to seek to trailer");
+    let mut trailer_bytes = [0u8; Trailer::SIZE];
+    file.read_exact(&mut trailer_bytes)
+        .expect("failed to read trailer");
+    let entry_table_offset =
+        u64::from_le_bytes(trailer_bytes[..8].try_into().expect("slice to array"));
+
+    // CRC is at entry_table_offset + 4 (offset of crc32c field in EntryRow).
+    let crc_offset = entry_table_offset + 4;
 
     // Read current CRC.
     file.seek(SeekFrom::Start(crc_offset))
