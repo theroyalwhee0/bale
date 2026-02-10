@@ -202,16 +202,15 @@ Expected output goes in matching `.stdout` files.
 
 ## Format Specification
 
-See [docs/format.md](docs/format.md) for the full binary format specification.
+See [docs/bale-spec.md](docs/bale-spec.md) for the full binary format specification.
 
 | Property        | Value                              |
 | --------------- | ---------------------------------- |
 | Version         | 1.0.0                              |
 | File header     | 8 bytes (`BALE\0` + version)       |
 | Trailer         | 64 bytes (config, offsets, counts)  |
-| Entry stride    | 48 bytes (metadata, no paths)      |
+| Entry stride    | 64 bytes (metadata, no paths)      |
 | Dir row stride  | `path_size + 4`                    |
-| Data block hdr  | 32 bytes (id, sizes, crc, compression) |
 | Byte order      | Little-endian                      |
 | Alignment       | 4096 bytes (configurable, 2^N)     |
 | Max path        | 256 bytes (configurable, 1-4096)   |
@@ -223,9 +222,9 @@ See [docs/format.md](docs/format.md) for the full binary format specification.
 ┌─────────────────────────────────────┐
 │ File Header (8 bytes)               │ ← "BALE\0" + version
 ├─────────────────────────────────────┤
-│ Data Blocks (aligned)               │ ← Per-entry: header + data + padding
+│ Data Blocks (aligned)               │ ← Per-entry: raw data + padding
 ├─────────────────────────────────────┤
-│ Entry Table (48B × N)               │ ← Sorted by entry ID
+│ Entry Table (64B × N)               │ ← Sorted by entry ID
 ├─────────────────────────────────────┤
 │ Directory Table ((path_size+4) × M) │ ← Sorted by path
 ├─────────────────────────────────────┤
