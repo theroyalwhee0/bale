@@ -263,12 +263,10 @@ impl ArchiveRead for Archive<MappedArchive> {
     ///
     /// Returns an error if the data cannot be read or the CRC does not match.
     fn verify_crc(&self, entry: &EntryRow) -> Result<(), BaleError> {
-        let offset = entry.data_offset.get();
-        if offset == 0 {
-            // No data block; nothing to verify.
+        let Some(stored_crc) = entry.crc().get() else {
+            // No CRC; nothing to verify (directory or empty entry).
             return Ok(());
-        }
-        let stored_crc = entry.crc32c.get();
+        };
         let data = self.read_data(entry)?;
         let computed_crc = crc32fast::hash(data);
 
@@ -464,7 +462,7 @@ impl ArchiveRead for Archive<MappedArchive> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::FileHeader;
+    use crate::format::{Crc, FileHeader};
     use zerocopy::IntoBytes;
 
     /// Default path size used in tests.
@@ -511,13 +509,16 @@ mod tests {
             /// Offset in the archive where the data block starts.
             offset: u64,
             /// CRC-32 of the data bytes.
-            crc: u32,
+            crc: Crc,
         }
         let mut data_infos: Vec<DataInfo> = Vec::new();
 
         for entry in entries {
             if entry.data.is_empty() {
-                data_infos.push(DataInfo { offset: 0, crc: 0 });
+                data_infos.push(DataInfo {
+                    offset: 0,
+                    crc: Crc::NONE,
+                });
                 continue;
             }
             // Pad to alignment.
@@ -527,7 +528,7 @@ mod tests {
             buf.extend(std::iter::repeat_n(0u8, padding));
 
             let data_offset = buf.len() as u64;
-            let crc = crc32fast::hash(entry.data);
+            let crc = Crc::compute(entry.data);
 
             // Write raw data (no header).
             buf.extend_from_slice(entry.data);

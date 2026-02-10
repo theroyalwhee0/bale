@@ -44,5 +44,5 @@ pub use archive_path::ArchivePath;
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
 pub use entry_kind::EntryKind;
 pub use error::BaleError;
-pub use format::{DirectoryRow, EntryRow, FileHeader, Trailer};
+pub use format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 pub use mmap::{MappedArchive, MappedArchiveMut};
