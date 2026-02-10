@@ -8,6 +8,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // REF: https://doc.rust-lang.org/cargo/reference/build-scripts.html
@@ -49,6 +50,12 @@ fn main() -> io::Result<()> {
 
     // Add build mode (release/debug) to the env file.
     add_profile(&mut env_file)?;
+
+    // Add git commit info to the env file.
+    add_git_info(&mut env_file)?;
+
+    // Add target triple and linking type to the env file.
+    add_target_info(&mut env_file)?;
 
     // Success.
     Ok(())
@@ -186,6 +193,137 @@ fn add_profile(file: &mut File) -> io::Result<()> {
 
     // Set the EXPECT_PROFILE environment variable for the build
     println!("cargo:rustc-env={EXPECT_PROFILE}={mode}");
+
+    // Success
+    Ok(())
+}
+
+/// Run a git command and return trimmed stdout on success.
+///
+/// # Parameters
+///
+/// - `args` The arguments to pass to `git`.
+///
+/// # Returns
+///
+/// - Ok with trimmed stdout on success, or Err with a description on failure.
+fn run_git(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+
+    if !output.status.success() {
+        let stderr =
+            String::from_utf8(output.stderr).unwrap_or_else(|_| "non-UTF-8 stderr".to_owned());
+        return Err(format!("git {args:?} failed: {stderr}"));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().to_owned())
+        .map_err(|e| format!("git output not valid UTF-8: {e}"))
+}
+
+/// Collects git commit hash and dirty status.
+///
+/// Returns the long hash, short hash, and uncommitted flag (`"1"` or `"0"`).
+/// Hash strings are suffixed with `*` when the working tree is dirty.
+///
+/// # Errors
+///
+/// Returns a description of the failure if any git command fails.
+fn collect_git_info() -> Result<(String, String, String), String> {
+    let mut long = run_git(&["rev-parse", "HEAD"])?;
+    let mut short = run_git(&["rev-parse", "--short", "HEAD"])?;
+    let status = run_git(&["status", "--porcelain"])?;
+    let dirty = !status.is_empty();
+    let uncommitted = if dirty { "1" } else { "0" };
+
+    if dirty {
+        long.push('*');
+        short.push('*');
+    }
+
+    Ok((long, short, uncommitted.to_owned()))
+}
+
+/// Add git commit information to the build environment variables.
+///
+/// Exports `GIT_HASH_LONG`, `GIT_HASH_SHORT`, and `GIT_UNCOMMITTED`.
+/// If git is unavailable or any command fails, placeholder values are used.
+///
+/// # Parameters
+///
+/// - `file` The build data file to write the environment variables to.
+///
+/// # Returns
+///
+/// - Ok if the build script runs successfully. Else it returns an error.
+fn add_git_info(file: &mut File) -> io::Result<()> {
+    const GIT_HASH_LONG: &str = "GIT_HASH_LONG";
+    const GIT_HASH_SHORT: &str = "GIT_HASH_SHORT";
+    const GIT_UNCOMMITTED: &str = "GIT_UNCOMMITTED";
+
+    // Rerun on commits and staging changes.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+
+    let (long, short, uncommitted) = match collect_git_info() {
+        Ok(values) => values,
+        Err(reason) => {
+            println!("cargo:warning=Failed to get git info: {reason}");
+            ("-".to_owned(), "-".to_owned(), "0".to_owned())
+        }
+    };
+
+    // Write to the env file.
+    writeln!(file, "{GIT_HASH_LONG}={long}")?;
+    writeln!(file, "{GIT_HASH_SHORT}={short}")?;
+    writeln!(file, "{GIT_UNCOMMITTED}={uncommitted}")?;
+
+    // Set environment variables for the build.
+    println!("cargo:rustc-env={GIT_HASH_LONG}={long}");
+    println!("cargo:rustc-env={GIT_HASH_SHORT}={short}");
+    println!("cargo:rustc-env={GIT_UNCOMMITTED}={uncommitted}");
+
+    // Success
+    Ok(())
+}
+
+/// Add target triple and linking type to the build environment variables.
+///
+/// Exports `BUILD_TARGET` (the Rust target triple) and `BUILD_LINKING`
+/// (`static` when `crt-static` is present, otherwise `dynamic`).
+///
+/// # Parameters
+///
+/// - `file` The build data file to write the environment variables to.
+///
+/// # Returns
+///
+/// - Ok if the build script runs successfully. Else it returns an error.
+fn add_target_info(file: &mut File) -> io::Result<()> {
+    const BUILD_TARGET: &str = "BUILD_TARGET";
+    const BUILD_LINKING: &str = "BUILD_LINKING";
+
+    let target = env::var("TARGET").expect("Expected TARGET to be set");
+
+    let linking = env::var("CARGO_CFG_TARGET_FEATURE")
+        .unwrap_or_default()
+        .split(',')
+        .any(|f| f == "crt-static");
+    let linking = if linking { "static" } else { "dynamic" };
+
+    // Write to the env file.
+    writeln!(file, "{BUILD_TARGET}={target}")?;
+    writeln!(file, "{BUILD_LINKING}={linking}")?;
+
+    // Inform Cargo to rerun when target changes.
+    println!("cargo:rerun-if-env-changed=TARGET");
+
+    // Set environment variables for the build.
+    println!("cargo:rustc-env={BUILD_TARGET}={target}");
+    println!("cargo:rustc-env={BUILD_LINKING}={linking}");
 
     // Success
     Ok(())
