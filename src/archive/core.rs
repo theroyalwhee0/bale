@@ -1,6 +1,6 @@
 //! Core archive struct with generic memory-map backing.
 
-use crate::format::Trailer;
+use crate::format::{EntryRow, Trailer};
 use crate::{MappedArchive, MappedArchiveMut};
 
 /// A bale archive with generic memory-map backing.
@@ -9,9 +9,9 @@ use crate::{MappedArchive, MappedArchiveMut};
 /// The type parameter `M` determines whether the archive is read-only
 /// ([`MappedArchive`]) or read-write ([`MappedArchiveMut`]).
 ///
-/// The entry and directory tables are accessed directly from the mmap via
-/// offsets stored in the trailer. The trailer contains all configuration
-/// (alignment, path_size) and table locations.
+/// For read-only archives, tables are accessed directly from the mmap via
+/// offsets stored in the trailer. For read-write archives, tables are loaded
+/// into memory (`entry_rows`, `dir_entries`) for modification.
 ///
 /// # Example
 ///
@@ -23,16 +23,19 @@ use crate::{MappedArchive, MappedArchiveMut};
 ///     // process entry...
 /// }
 /// ```
-#[allow(dead_code)] // Fields used by reader (#128) and writer (#129) implementations.
 pub struct Archive<M> {
     /// The memory-mapped archive file.
     pub(super) mmap: M,
     /// Archive trailer containing configuration and table offsets.
     pub(super) trailer: Trailer,
-    /// Current write offset (end of file data). Only used for writers.
+    /// Current write offset (end of data region). Only used for writers.
     pub(super) write_offset: usize,
     /// Whether the archive has been modified since the last sync. Only used for writers.
     pub(super) dirty: bool,
+    /// In-memory entry rows. Only used for writers.
+    pub(super) entry_rows: Vec<EntryRow>,
+    /// In-memory directory entries (path_bytes, entry_id). Only used for writers.
+    pub(super) dir_entries: Vec<(Vec<u8>, u32)>,
 }
 
 /// Read-only archive type alias.
