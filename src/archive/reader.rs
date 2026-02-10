@@ -4,7 +4,7 @@
 //! directly from the memory-mapped file via offsets stored in the trailer.
 
 use super::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::format::{DataBlockHeader, DirectoryRow, EntryRow, FileHeader, Trailer};
+use crate::format::{DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchive};
 use std::collections::HashSet;
 use std::path::Path;
@@ -242,15 +242,14 @@ impl ArchiveRead for Archive<MappedArchive> {
         let offset = offset as usize;
         let block_size = entry.block_size.get() as usize;
         let bytes = self.mmap.as_bytes();
-        let data_start = offset + DataBlockHeader::SIZE;
-        let data_end = data_start + block_size;
+        let data_end = offset + block_size;
         if data_end > bytes.len() {
             return Err(BaleError::Corrupted(format!(
                 "data block at offset {offset} extends beyond archive (end {data_end} > len {})",
                 bytes.len()
             )));
         }
-        Ok(&bytes[data_start..data_end])
+        Ok(&bytes[offset..data_end])
     }
 
     /// Returns a reference to the trailer.
@@ -269,18 +268,7 @@ impl ArchiveRead for Archive<MappedArchive> {
             // No data block; nothing to verify.
             return Ok(());
         }
-        let offset = offset as usize;
-        let bytes = self.mmap.as_bytes();
-        let header_end = offset + DataBlockHeader::SIZE;
-        if header_end > bytes.len() {
-            return Err(BaleError::Corrupted(format!(
-                "data block header at offset {offset} extends beyond archive"
-            )));
-        }
-        let header = DataBlockHeader::ref_from_bytes(&bytes[offset..header_end])
-            .map_err(|e| BaleError::Corrupted(format!("invalid data block header: {e}")))?;
-        let stored_crc = header.crc32.get();
-
+        let stored_crc = entry.crc32c.get();
         let data = self.read_data(entry)?;
         let computed_crc = crc32fast::hash(data);
 
@@ -346,7 +334,6 @@ impl ArchiveRead for Archive<MappedArchive> {
             .filter(|&offset| offset != 0)
             .collect();
 
-        let bytes = self.mmap.as_bytes();
         let alignment = self.alignment() as u64;
         let data_region_end = self.trailer.entry_table_offset.get();
 
@@ -362,19 +349,10 @@ impl ArchiveRead for Archive<MappedArchive> {
         };
 
         while offset < data_region_end {
-            // Read the data block header at this offset to check if it's a valid block.
-            let header_end = offset as usize + DataBlockHeader::SIZE;
-            if header_end > bytes.len() {
-                break;
-            }
-            if let Ok(header) = DataBlockHeader::ref_from_bytes(&bytes[offset as usize..header_end])
-            {
-                // A valid-looking block: check if its offset is referenced.
-                if (header.block_size.get() > 0 || header.file_size.get() > 0)
-                    && !referenced.contains(&offset)
-                {
-                    return true;
-                }
+            // Each alignment boundary in the data region that is not referenced
+            // by any entry is an orphaned data block.
+            if !referenced.contains(&offset) {
+                return true;
             }
             offset += alignment;
         }
@@ -486,7 +464,7 @@ impl ArchiveRead for Archive<MappedArchive> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::{DataBlockHeader, FileHeader};
+    use crate::format::FileHeader;
     use zerocopy::IntoBytes;
 
     /// Default path size used in tests.
@@ -528,16 +506,18 @@ mod tests {
         let file_header = FileHeader::new();
         buf.extend_from_slice(file_header.as_bytes());
 
-        // 2. Data blocks (aligned).
+        // 2. Data blocks (aligned, raw bytes with no per-block header).
         struct DataInfo {
             /// Offset in the archive where the data block starts.
             offset: u64,
+            /// CRC-32 of the data bytes.
+            crc: u32,
         }
         let mut data_infos: Vec<DataInfo> = Vec::new();
 
         for entry in entries {
             if entry.data.is_empty() {
-                data_infos.push(DataInfo { offset: 0 });
+                data_infos.push(DataInfo { offset: 0, crc: 0 });
                 continue;
             }
             // Pad to alignment.
@@ -547,17 +527,14 @@ mod tests {
             buf.extend(std::iter::repeat_n(0u8, padding));
 
             let data_offset = buf.len() as u64;
-
-            // Write data block header.
             let crc = crc32fast::hash(entry.data);
-            let header = DataBlockHeader::new(entry.id, entry.data.len() as u64, crc);
-            buf.extend_from_slice(header.as_bytes());
 
-            // Write data.
+            // Write raw data (no header).
             buf.extend_from_slice(entry.data);
 
             data_infos.push(DataInfo {
                 offset: data_offset,
+                crc,
             });
         }
 
@@ -573,6 +550,7 @@ mod tests {
                 };
                 let row = EntryRow::new_file(
                     e.id,
+                    di.crc,
                     di.offset,
                     e.data.len() as u64,
                     block_size,
@@ -900,10 +878,9 @@ mod tests {
             id: 1,
         }]);
 
-        // Corrupt a data byte (after the data block header, within the data).
-        // The data block is aligned to TEST_ALIGNMENT. File header is 8 bytes,
-        // so data starts at offset 4096 (first alignment boundary).
-        let data_byte_offset = TEST_ALIGNMENT as usize + DataBlockHeader::SIZE;
+        // Corrupt a data byte. Data starts directly at the first alignment
+        // boundary (4096) with no per-block header.
+        let data_byte_offset = TEST_ALIGNMENT as usize;
         bytes[data_byte_offset] ^= 0xFF;
 
         let archive = archive_from_bytes(&bytes);
