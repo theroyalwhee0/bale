@@ -117,7 +117,7 @@ if let Some(entry) = reader.find_entry("hello.txt") {
 ## Format
 
 Bale is a native archive format designed for mmap-based random access.
-See [docs/format.md](docs/format.md) for the full specification.
+See [docs/bale-spec.md](docs/bale-spec.md) for the full specification.
 
 | Property        | Value                            |
 | --------------- | -------------------------------- |
