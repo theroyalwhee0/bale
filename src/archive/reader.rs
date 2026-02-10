@@ -42,6 +42,8 @@ impl Archive<MappedArchive> {
             trailer,
             write_offset: 0,
             dirty: false,
+            entry_rows: Vec::new(),
+            dir_entries: Vec::new(),
         })
     }
 
@@ -282,7 +284,7 @@ impl ArchiveRead for Archive<MappedArchive> {
         let stored_crc = header.crc32.get();
 
         let data = self.read_data(entry)?;
-        let computed_crc = crc32fast::hash(data);
+        let computed_crc = crc32c::crc32c(data);
 
         if stored_crc != computed_crc {
             return Err(BaleError::Corrupted(format!(
@@ -549,7 +551,7 @@ mod tests {
             let data_offset = buf.len() as u64;
 
             // Write data block header.
-            let crc = crc32fast::hash(entry.data);
+            let crc = crc32c::crc32c(entry.data);
             let header = DataBlockHeader::new(entry.id, entry.data.len() as u64, crc);
             buf.extend_from_slice(header.as_bytes());
 

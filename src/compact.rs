@@ -336,7 +336,6 @@ mod tests {
 
     /// Compacting an empty archive works.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn compact_empty_archive() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -357,7 +356,6 @@ mod tests {
 
     /// Compacting removes shadowed duplicates.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn compact_removes_duplicates() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -388,7 +386,6 @@ mod tests {
 
     /// Compacting sorts entries by path.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn compact_sorts_entries() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -421,7 +418,6 @@ mod tests {
 
     /// Compacting preserves file permissions.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn compact_preserves_mode() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -493,7 +489,6 @@ mod tests {
 
     /// Rename duplicates on archive with no duplicates does nothing.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn rename_duplicates_no_duplicates() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -516,7 +511,6 @@ mod tests {
 
     /// Rename duplicates renames earlier occurrences.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn rename_duplicates_renames_earlier() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
@@ -566,7 +560,6 @@ mod tests {
 
     /// Rename duplicates sorts entries after renaming.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn rename_duplicates_sorts_entries() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");

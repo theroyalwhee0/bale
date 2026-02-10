@@ -1,6 +1,6 @@
 //! Core archive struct with generic memory-map backing.
 
-use crate::format::Trailer;
+use crate::format::{EntryRow, Trailer};
 use crate::{MappedArchive, MappedArchiveMut};
 
 /// A bale archive with generic memory-map backing.
@@ -23,7 +23,6 @@ use crate::{MappedArchive, MappedArchiveMut};
 ///     // process entry...
 /// }
 /// ```
-#[allow(dead_code)] // Fields used by reader (#128) and writer (#129) implementations.
 pub struct Archive<M> {
     /// The memory-mapped archive file.
     pub(super) mmap: M,
@@ -33,6 +32,10 @@ pub struct Archive<M> {
     pub(super) write_offset: usize,
     /// Whether the archive has been modified since the last sync. Only used for writers.
     pub(super) dirty: bool,
+    /// In-memory entry table (used by writers, empty for readers).
+    pub(super) entry_rows: Vec<EntryRow>,
+    /// In-memory directory table: (null-padded path bytes, entry_id). Used by writers, empty for readers.
+    pub(super) dir_entries: Vec<(Vec<u8>, u32)>,
 }
 
 /// Read-only archive type alias.
