@@ -80,7 +80,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
 
     // Open existing archive for reading.
     let reader = ArchiveReader::open(path)?;
-    let alignment = reader.alignment();
+    let alignment = reader.alignment()?;
     let path_size = reader.path_size() as u16;
 
     // Collect entries, keeping only the last occurrence of each path (shadowing).
@@ -235,7 +235,7 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
 
     // Open existing archive for reading.
     let reader = ArchiveReader::open(path)?;
-    let alignment = reader.alignment();
+    let alignment = reader.alignment()?;
     let path_size = reader.path_size() as u16;
 
     // First pass: count occurrences of each path.

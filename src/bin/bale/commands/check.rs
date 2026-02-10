@@ -65,7 +65,7 @@ pub fn run(archive_path: impl AsRef<Path>, quiet: bool) -> Result<(), BaleCliErr
     }
 
     // Check orphaned data.
-    let has_orphaned_data = reader.has_orphaned_data();
+    let has_orphaned_data = reader.has_orphaned_data()?;
     if has_orphaned_data {
         errors.push("Archive contains orphaned data (run 'bale compact' to reclaim)".to_string());
     }
