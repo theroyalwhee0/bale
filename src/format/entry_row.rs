@@ -1,6 +1,7 @@
 //! Entry table row containing per-entry metadata.
 
 use crate::EntryKind;
+use crate::format::Crc;
 use zerocopy::byteorder::little_endian::{I64, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -67,7 +68,7 @@ impl EntryRow {
     #[allow(clippy::too_many_arguments)]
     pub fn new_file(
         entry_id: u32,
-        crc32c: u32,
+        crc: Crc,
         data_offset: u64,
         file_size: u64,
         block_size: u64,
@@ -77,7 +78,7 @@ impl EntryRow {
     ) -> Self {
         Self {
             entry_id: U32::new(entry_id),
-            crc32c: U32::new(crc32c),
+            crc32c: U32::new(crc.to_u32()),
             data_offset: U64::new(data_offset),
             file_size: U64::new(file_size),
             block_size: U64::new(block_size),
@@ -93,12 +94,12 @@ impl EntryRow {
     /// Creates a new `EntryRow` for a directory.
     ///
     /// Directories have no data block (`data_offset = 0`, `file_size = 0`,
-    /// `block_size = 0`) and no CRC (`crc32c = 0`).
+    /// `block_size = 0`) and no CRC.
     #[must_use]
     pub fn new_directory(entry_id: u32, created_time: i64, modified_time: i64, mode: u32) -> Self {
         Self {
             entry_id: U32::new(entry_id),
-            crc32c: U32::new(0),
+            crc32c: U32::new(Crc::NONE.to_u32()),
             data_offset: U64::new(0),
             file_size: U64::new(0),
             block_size: U64::new(0),
@@ -109,6 +110,12 @@ impl EntryRow {
             flags: 0,
             reserved: [0u8; Self::RESERVED_SIZE],
         }
+    }
+
+    /// Returns the CRC-32 checksum for this entry.
+    #[must_use]
+    pub fn crc(&self) -> Crc {
+        Crc::new(self.crc32c.get())
     }
 
     /// Returns the entry kind based on the mode field.
@@ -134,7 +141,7 @@ mod tests {
     fn new_file() {
         let row = EntryRow::new_file(
             1,
-            0xDEAD_BEEF,
+            Crc::new(0xDEAD_BEEF),
             4096,
             1024,
             1024,
@@ -143,7 +150,7 @@ mod tests {
             0o100644,
         );
         assert_eq!(row.entry_id.get(), 1);
-        assert_eq!(row.crc32c.get(), 0xDEAD_BEEF);
+        assert_eq!(row.crc().get(), Some(0xDEAD_BEEF));
         assert_eq!(row.data_offset.get(), 4096);
         assert_eq!(row.file_size.get(), 1024);
         assert_eq!(row.block_size.get(), 1024);
@@ -160,7 +167,7 @@ mod tests {
     fn new_directory() {
         let row = EntryRow::new_directory(3, 1_700_000_000_000, 1_700_000_001_000, 0o040755);
         assert_eq!(row.entry_id.get(), 3);
-        assert_eq!(row.crc32c.get(), 0);
+        assert_eq!(row.crc().get(), None);
         assert_eq!(row.data_offset.get(), 0);
         assert_eq!(row.file_size.get(), 0);
         assert_eq!(row.block_size.get(), 0);
@@ -172,20 +179,20 @@ mod tests {
     /// Entry kind is correctly derived from mode.
     #[test]
     fn kind_from_mode() {
-        let file = EntryRow::new_file(1, 0, 4096, 100, 100, 0, 0, 0o100644);
+        let file = EntryRow::new_file(1, Crc::NONE, 4096, 100, 100, 0, 0, 0o100644);
         assert_eq!(file.kind(), EntryKind::File);
 
         let dir = EntryRow::new_directory(2, 0, 0, 0o040755);
         assert_eq!(dir.kind(), EntryKind::Directory);
 
-        let symlink = EntryRow::new_file(3, 0, 4096, 11, 11, 0, 0, 0o120777);
+        let symlink = EntryRow::new_file(3, Crc::NONE, 4096, 11, 11, 0, 0, 0o120777);
         assert_eq!(symlink.kind(), EntryKind::Symlink);
     }
 
     /// Negative timestamps are supported (pre-epoch dates).
     #[test]
     fn negative_timestamps() {
-        let row = EntryRow::new_file(1, 0, 4096, 100, 100, -1_000_000, -500_000, 0o100644);
+        let row = EntryRow::new_file(1, Crc::NONE, 4096, 100, 100, -1_000_000, -500_000, 0o100644);
         assert_eq!(row.created_time.get(), -1_000_000);
         assert_eq!(row.modified_time.get(), -500_000);
     }
@@ -195,7 +202,7 @@ mod tests {
     fn roundtrip() {
         let row = EntryRow::new_file(
             42,
-            0xCAFE_BABE,
+            Crc::new(0xCAFE_BABE),
             8192,
             65536,
             32768,
@@ -208,7 +215,7 @@ mod tests {
 
         let restored = EntryRow::ref_from_bytes(bytes).unwrap();
         assert_eq!(restored.entry_id.get(), 42);
-        assert_eq!(restored.crc32c.get(), 0xCAFE_BABE);
+        assert_eq!(restored.crc().get(), Some(0xCAFE_BABE));
         assert_eq!(restored.data_offset.get(), 8192);
         assert_eq!(restored.file_size.get(), 65536);
         assert_eq!(restored.block_size.get(), 32768);
