@@ -1,8 +1,23 @@
 //! Archive trailer at the end of every bale archive.
 
 use crate::BaleError;
+use bitflags::bitflags;
 use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+bitflags! {
+    /// Trailer flags bitfield.
+    ///
+    /// Stored as a `u8` in the trailer at offset 39.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TrailerFlags: u8 {
+        /// Directory table is fully sorted with no tombstones.
+        ///
+        /// When set, readers may use binary search for path lookup.
+        /// When clear, readers must use linear scan.
+        const COMPACTED = 0x01;
+    }
+}
 
 /// Archive trailer (64 bytes), always the last 64 bytes of the file.
 ///
@@ -26,7 +41,8 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 /// | 32     | 4    | Next entry ID        | LE, next ID to assign              |
 /// | 36     | 1    | Alignment power      | Exponent N where alignment = 2^N   |
 /// | 37     | 2    | Path size            | LE, maximum path length (1-4096)   |
-/// | 39     | 25   | Reserved             | Must be zero                       |
+/// | 39     | 1    | Flags                | Bitfield (see [`TrailerFlags`])    |
+/// | 40     | 24   | Reserved             | Must be zero                       |
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct Trailer {
@@ -52,6 +68,8 @@ pub struct Trailer {
     pub alignment_power: u8,
     /// Maximum path length in bytes (1-4096).
     pub path_size: U16,
+    /// Flags bitfield (see [`TrailerFlags`]).
+    pub flags: u8,
     /// Reserved for future use. Must be zero.
     pub reserved: [u8; Self::RESERVED_SIZE],
 }
@@ -64,7 +82,7 @@ impl Trailer {
     pub const MAGIC_SIZE: usize = 5;
 
     /// Size of the reserved field in bytes.
-    const RESERVED_SIZE: usize = 25;
+    const RESERVED_SIZE: usize = 24;
 
     /// Expected magic bytes: `"BALE\0"`.
     pub const MAGIC: [u8; Self::MAGIC_SIZE] = *b"BALE\0";
@@ -109,6 +127,7 @@ impl Trailer {
             next_id: U32::new(1),
             alignment_power: Self::DEFAULT_ALIGNMENT_POWER,
             path_size: U16::new(Self::DEFAULT_PATH_SIZE),
+            flags: TrailerFlags::COMPACTED.bits(),
             reserved: [0u8; Self::RESERVED_SIZE],
         }
     }
@@ -158,6 +177,7 @@ impl Trailer {
             next_id: U32::new(1),
             alignment_power,
             path_size: U16::new(path_size),
+            flags: TrailerFlags::COMPACTED.bits(),
             reserved: [0u8; Self::RESERVED_SIZE],
         })
     }
@@ -194,6 +214,37 @@ impl Trailer {
     /// Sets the next entry ID to assign.
     pub fn set_next_id(&mut self, id: u32) {
         self.next_id = U32::new(id);
+    }
+
+    /// Returns the trailer flags as a [`TrailerFlags`] bitfield.
+    #[must_use]
+    pub fn flags(&self) -> TrailerFlags {
+        TrailerFlags::from_bits_truncate(self.flags)
+    }
+
+    /// Returns `true` if the compacted flag is set.
+    ///
+    /// When compacted, the directory table is fully sorted with no tombstones,
+    /// enabling binary search for path lookups.
+    #[must_use]
+    pub fn is_compacted(&self) -> bool {
+        self.flags().contains(TrailerFlags::COMPACTED)
+    }
+
+    /// Sets the compacted flag.
+    ///
+    /// Call after sorting the directory table and removing all tombstones.
+    pub fn set_compacted(&mut self) {
+        self.flags = (self.flags() | TrailerFlags::COMPACTED).bits();
+    }
+
+    /// Clears the compacted flag.
+    ///
+    /// Call after any mutation that may leave the directory table unsorted
+    /// or containing tombstones (e.g., insertion or deletion without full
+    /// re-sort).
+    pub fn clear_compacted(&mut self) {
+        self.flags = (self.flags() - TrailerFlags::COMPACTED).bits();
     }
 
     /// Returns the version as a tuple (major, minor, patch).
@@ -346,6 +397,52 @@ mod tests {
     fn reserved_is_zero() {
         let trailer = Trailer::new();
         assert!(trailer.reserved.iter().all(|&b| b == 0));
+    }
+
+    /// New trailers have the compacted flag set (empty = trivially compacted).
+    #[test]
+    fn new_trailer_is_compacted() {
+        let trailer = Trailer::new();
+        assert!(trailer.is_compacted());
+        assert!(trailer.flags().contains(TrailerFlags::COMPACTED));
+    }
+
+    /// new_with_options also sets the compacted flag.
+    #[test]
+    fn new_with_options_is_compacted() {
+        let trailer = Trailer::new_with_options(4096, 256).unwrap();
+        assert!(trailer.is_compacted());
+    }
+
+    /// set_compacted and clear_compacted toggle the flag.
+    #[test]
+    fn compacted_flag_toggle() {
+        let mut trailer = Trailer::new();
+        assert!(trailer.is_compacted());
+
+        trailer.clear_compacted();
+        assert!(!trailer.is_compacted());
+        assert_eq!(trailer.flags, 0);
+
+        trailer.set_compacted();
+        assert!(trailer.is_compacted());
+        assert_eq!(trailer.flags, TrailerFlags::COMPACTED.bits());
+    }
+
+    /// Compacted flag survives round-trip serialization.
+    #[test]
+    fn compacted_flag_roundtrip() {
+        let mut trailer = Trailer::new();
+        trailer.clear_compacted();
+
+        let bytes = trailer.as_bytes();
+        let restored = Trailer::ref_from_bytes(bytes).unwrap();
+        assert!(!restored.is_compacted());
+
+        let trailer2 = Trailer::new();
+        let bytes2 = trailer2.as_bytes();
+        let restored2 = Trailer::ref_from_bytes(bytes2).unwrap();
+        assert!(restored2.is_compacted());
     }
 
     /// Round-trip serialization preserves all fields.

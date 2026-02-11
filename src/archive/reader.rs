@@ -104,35 +104,66 @@ impl Archive<MappedArchive> {
             .map(|idx| &table[idx])
     }
 
-    /// Finds a directory row by path using binary search.
+    /// Compares a null-padded stored path against a search key without allocating.
     ///
-    /// Returns the directory row and the entry ID on success.
+    /// The stored path is `path_size` bytes (null-padded). The search key is
+    /// the raw path string bytes.
+    fn cmp_path_bytes(stored: &[u8], search: &[u8]) -> std::cmp::Ordering {
+        for (i, &stored_byte) in stored.iter().enumerate() {
+            let search_byte = if i < search.len() { search[i] } else { 0 };
+            match stored_byte.cmp(&search_byte) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        // If the search key is longer than path_size, there cannot be a match,
+        // but the stored path sorts before the search key.
+        if search.len() > stored.len() {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+
+    /// Finds a directory row by path.
+    ///
+    /// Uses binary search when the compacted flag is set (directory table is
+    /// sorted with no tombstones). Falls back to linear scan when clear,
+    /// skipping tombstoned rows (entry_id == 0).
     fn find_directory_row_by_path(&self, path: &str) -> Option<(DirectoryRow<'_>, u32)> {
         let path_size = self.trailer.path_size() as usize;
-        let padded = {
-            let mut buf = vec![0u8; path_size];
-            let len = path.len().min(path_size);
-            buf[..len].copy_from_slice(&path.as_bytes()[..len]);
-            buf
-        };
-
         let stride = DirectoryRow::stride(self.trailer.path_size());
         let table = self.directory_table_bytes();
-        let count = self.trailer.directory_entry_count.get() as usize;
+        let search = path.as_bytes();
 
-        let result = (0..count).collect::<Vec<_>>().binary_search_by(|&idx| {
-            let start = idx * stride;
-            let row_path = &table[start..start + path_size];
-            row_path.cmp(&padded)
-        });
-
-        match result {
-            Ok(idx) => {
-                let row = self.directory_row(idx)?;
-                let entry_id = row.entry_id();
-                Some((row, entry_id))
+        if self.trailer.is_compacted() {
+            // Binary search: directory table is sorted with no tombstones.
+            let rows: Vec<&[u8]> = table.chunks_exact(stride).collect();
+            let result =
+                rows.binary_search_by(|row| Self::cmp_path_bytes(&row[..path_size], search));
+            match result {
+                Ok(idx) => {
+                    let row = self.directory_row(idx)?;
+                    let entry_id = row.entry_id();
+                    Some((row, entry_id))
+                }
+                Err(_) => None,
             }
-            Err(_) => None,
+        } else {
+            // Linear scan: table may be unsorted or contain tombstones.
+            for chunk in table.chunks_exact(stride) {
+                if Self::cmp_path_bytes(&chunk[..path_size], search) == std::cmp::Ordering::Equal {
+                    let row = DirectoryRow::from_bytes(&chunk[..stride], self.trailer.path_size())
+                        .ok()?;
+                    let entry_id = row.entry_id();
+                    // Skip tombstoned rows (entry_id == 0).
+                    if entry_id == 0 {
+                        continue;
+                    }
+                    return Some((row, entry_id));
+                }
+            }
+            None
         }
     }
 
@@ -612,6 +643,15 @@ mod tests {
         trailer.next_id = zerocopy::byteorder::little_endian::U32::new(next_id);
         trailer.alignment_power = alignment_power;
         trailer.path_size = zerocopy::byteorder::little_endian::U16::new(path_size);
+
+        // Set compacted flag only if the directory table is sorted.
+        let is_sorted = entries.windows(2).all(|w| w[0].path <= w[1].path);
+        if is_sorted {
+            trailer.set_compacted();
+        } else {
+            trailer.clear_compacted();
+        }
+
         buf.extend_from_slice(trailer.as_bytes());
 
         buf
@@ -805,7 +845,7 @@ mod tests {
         assert!(archive.is_sorted());
     }
 
-    /// Unsorted directory table is detected.
+    /// Unsorted directory table is detected and uses linear scan.
     #[test]
     fn is_sorted_when_unsorted() {
         let bytes = build_test_archive(&[
@@ -830,6 +870,17 @@ mod tests {
         ]);
         let archive = archive_from_bytes(&bytes);
         assert!(!archive.is_sorted());
+        assert!(!archive.trailer().is_compacted());
+
+        // Linear scan still finds all entries.
+        assert!(archive.find_entry("aaa").is_some());
+        assert!(archive.find_entry("bbb").is_some());
+        assert!(archive.find_entry("ccc").is_some());
+        assert!(archive.find_entry("ddd").is_none());
+
+        // Data is correct.
+        let entry = archive.find_entry("bbb").unwrap();
+        assert_eq!(archive.read_data(entry).unwrap(), b"b");
     }
 
     /// Duplicate paths are detected.
