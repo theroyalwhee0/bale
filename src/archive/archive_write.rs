@@ -81,6 +81,74 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Returns `true` if any entries were deleted, `false` if none matched.
     fn delete(&mut self, path: &str) -> bool;
 
+    /// Creates a hard link pointing to an existing entry.
+    ///
+    /// Adds a new directory row mapping `link` to the same entry ID as
+    /// `target`. No new entry row is created — both paths share the same
+    /// entry metadata and data block.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - Existing path to link to
+    /// * `link` - New path for the hard link
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The target path does not exist (`EntryNotFound`)
+    /// - The target is a directory (`NotAFile`)
+    /// - The link path already exists (`PathExists`)
+    /// - The link path exceeds path_size (`PathTooLong`)
+    fn hard_link(&mut self, target: &str, link: &str) -> Result<(), BaleError>;
+
+    /// Removes a single directory row for a path.
+    ///
+    /// If other directory rows still reference the same entry ID (hard links),
+    /// the entry row is preserved. If no references remain, the entry row is
+    /// also removed.
+    ///
+    /// Returns `true` if the path was found and removed, `false` otherwise.
+    fn unlink(&mut self, path: &str) -> bool;
+
+    /// Renames an entry by updating its path in the directory table.
+    ///
+    /// For directory entries, all descendant paths are also updated with the
+    /// new prefix. The rename is atomic: if any resulting path would exceed
+    /// `path_size`, no changes are made.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Current path
+    /// * `to` - New path
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The source path does not exist (`EntryNotFound`)
+    /// - The destination path already exists (`PathExists`)
+    /// - Any resulting path exceeds path_size (`PathTooLong`)
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), BaleError>;
+
+    /// Replaces the content of an existing file entry.
+    ///
+    /// Writes a new data block and updates the entry row's data offset,
+    /// sizes, CRC, mode, and modification time. The old data block becomes
+    /// orphaned (reclaimed by compaction).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path of the entry to update
+    /// * `data` - New file contents
+    /// * `mode` - New Unix file permissions
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The entry does not exist (`EntryNotFound`)
+    /// - The entry is not a file (`NotAFile`)
+    /// - Writing the data block fails
+    fn replace_content(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError>;
+
     /// Flushes all changes to disk.
     ///
     /// Rewrites the entry table, directory table, and trailer. The file is

@@ -12,6 +12,7 @@ use nix::sys::stat::SFlag;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::SystemTime;
+use zerocopy::byteorder::little_endian::{I64, U32, U64};
 use zerocopy::{FromBytes, IntoBytes};
 
 /// Converts a `SystemTime` to Unix epoch milliseconds.
@@ -711,6 +712,182 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         true
     }
 
+    /// Creates a hard link to an existing entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target is not found, is a directory, the link
+    /// path already exists, or the link path exceeds path_size.
+    fn hard_link(&mut self, target: &str, link: &str) -> Result<(), BaleError> {
+        // Find the target entry and its ID.
+        let (entry_row, _, entry_id) = self
+            .find_entry_with_path(target)
+            .ok_or_else(|| BaleError::EntryNotFound(target.to_owned()))?;
+
+        // Directories cannot be hard linked.
+        if entry_row.kind() == EntryKind::Directory {
+            return Err(BaleError::NotAFile(target.to_owned()));
+        }
+
+        // Normalize the link path.
+        let normalized = ArchivePath::from_bytes(link.as_bytes()).normalize()?;
+        let normalized_str = normalized.as_str().ok_or(BaleError::InvalidPath)?;
+
+        // Verify link path doesn't already exist.
+        if self.find_entry(normalized_str).is_some() {
+            return Err(BaleError::PathExists(normalized_str.to_owned()));
+        }
+
+        // Pad and append the new directory entry.
+        let padded = self.pad_path(normalized_str)?;
+        self.dir_entries.push((padded, entry_id));
+        self.dirty = true;
+
+        Ok(())
+    }
+
+    /// Removes a single directory row for a path.
+    fn unlink(&mut self, path: &str) -> bool {
+        let path_size = self.trailer.path_size() as usize;
+        let padded = {
+            let mut buf = vec![0u8; path_size];
+            let len = path.len().min(path_size);
+            buf[..len].copy_from_slice(&path.as_bytes()[..len]);
+            buf
+        };
+
+        // Find and remove the first matching directory entry.
+        let pos = self.dir_entries.iter().position(|(p, _)| *p == padded);
+        let Some(pos) = pos else {
+            return false;
+        };
+        let (_, removed_id) = self.dir_entries.remove(pos);
+
+        // If no other directory entries reference this ID, remove the entry row.
+        let still_referenced = self.dir_entries.iter().any(|(_, id)| *id == removed_id);
+        if !still_referenced {
+            self.entry_rows.retain(|r| r.entry_id.get() != removed_id);
+        }
+
+        self.dirty = true;
+        true
+    }
+
+    /// Renames an entry by updating its directory path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source is not found, the destination already
+    /// exists, or any resulting path would exceed path_size.
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), BaleError> {
+        // Normalize both paths.
+        let from_norm = ArchivePath::from_bytes(from.as_bytes()).normalize()?;
+        let from_str = from_norm.as_str().ok_or(BaleError::InvalidPath)?;
+        let to_norm = ArchivePath::from_bytes(to.as_bytes()).normalize()?;
+        let to_str = to_norm.as_str().ok_or(BaleError::InvalidPath)?;
+
+        let path_size = self.trailer.path_size() as usize;
+
+        // Pad source to find it in dir_entries.
+        let from_padded = self.pad_path(from_str)?;
+
+        // Find the source entry.
+        let source_pos = self
+            .dir_entries
+            .iter()
+            .position(|(p, _)| *p == from_padded)
+            .ok_or_else(|| BaleError::EntryNotFound(from_str.to_owned()))?;
+
+        // Verify destination doesn't already exist.
+        let to_padded = self.pad_path(to_str)?;
+        if self.dir_entries.iter().any(|(p, _)| *p == to_padded) {
+            return Err(BaleError::PathExists(to_str.to_owned()));
+        }
+
+        // Check if the entry is a directory.
+        let entry_id = self.dir_entries[source_pos].1;
+        let is_directory = self
+            .find_entry_row_by_id(entry_id)
+            .is_some_and(|r| r.kind() == EntryKind::Directory);
+
+        if is_directory {
+            // Collect all descendant indices and compute new paths.
+            let from_prefix = format!("{from_str}/");
+            let to_prefix = format!("{to_str}/");
+
+            // First pass: validate all new paths fit within path_size.
+            let mut updates: Vec<(usize, Vec<u8>)> = Vec::new();
+            for (i, (path_bytes, _)) in self.dir_entries.iter().enumerate() {
+                let path = ArchivePath::from_null_padded_bytes(path_bytes);
+                let Some(path_str) = path.as_str() else {
+                    continue;
+                };
+                if path_str.starts_with(&from_prefix) {
+                    let suffix = &path_str[from_prefix.len()..];
+                    let new_path = format!("{to_prefix}{suffix}");
+                    if new_path.len() > path_size {
+                        return Err(BaleError::PathTooLong {
+                            path: new_path,
+                            max: path_size,
+                        });
+                    }
+                    let mut padded = vec![0u8; path_size];
+                    padded[..new_path.len()].copy_from_slice(new_path.as_bytes());
+                    updates.push((i, padded));
+                }
+            }
+
+            // Second pass: apply all descendant renames.
+            for (i, new_padded) in updates {
+                self.dir_entries[i].0 = new_padded;
+            }
+        }
+
+        // Update the entry's own path.
+        self.dir_entries[source_pos].0 = to_padded;
+        self.dirty = true;
+
+        Ok(())
+    }
+
+    /// Replaces the content of an existing file entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry is not found, is not a file, or writing
+    /// the new data block fails.
+    fn replace_content(&mut self, path: &str, data: &[u8], mode: u32) -> Result<(), BaleError> {
+        // Find the entry by path.
+        let (entry_row, _, entry_id) = self
+            .find_entry_with_path(path)
+            .ok_or_else(|| BaleError::EntryNotFound(path.to_owned()))?;
+
+        // Must be a file.
+        if entry_row.kind() != EntryKind::File {
+            return Err(BaleError::NotAFile(path.to_owned()));
+        }
+
+        // Write new data block.
+        let (data_offset, crc) = self.write_data_block(data)?;
+
+        // Find and update the entry row in-place.
+        let row = self
+            .entry_rows
+            .iter_mut()
+            .find(|r| r.entry_id.get() == entry_id)
+            .ok_or_else(|| BaleError::EntryNotFound(path.to_owned()))?;
+
+        row.data_offset = U64::new(data_offset);
+        row.file_size = U64::new(data.len() as u64);
+        row.block_size = U64::new(data.len() as u64);
+        row.crc32c = U32::new(crc.to_u32());
+        row.mode = U32::new(mode);
+        row.modified_time = I64::new(now_millis());
+
+        self.dirty = true;
+        Ok(())
+    }
+
     /// Flushes all changes to disk.
     ///
     /// # Errors
@@ -1205,5 +1382,219 @@ mod tests {
 
         let result = writer.add_entry("overflow.txt", b"data", 0o644);
         assert!(matches!(result, Err(BaleError::ArchiveFull)));
+    }
+
+    /// Hard link creates a second path to the same entry.
+    #[test]
+    fn hard_link_creates_second_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("original.txt", b"data", 0o100644).unwrap();
+            writer.hard_link("original.txt", "link.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        // Both paths exist and point to the same data.
+        let orig = reader.file("original.txt").unwrap();
+        let link = reader.file("link.txt").unwrap();
+        assert_eq!(orig.data, b"data");
+        assert_eq!(link.data, b"data");
+        // Same entry ID.
+        assert_eq!(orig.id, link.id);
+        // Only one entry row.
+        assert_eq!(reader.entry_count(), 1);
+    }
+
+    /// Hard link to a directory returns an error.
+    #[test]
+    fn hard_link_to_directory_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_folder("mydir", 0o755).unwrap();
+
+        let result = writer.hard_link("mydir", "link");
+        assert!(matches!(result, Err(BaleError::NotAFile(_))));
+    }
+
+    /// Hard link to an existing path returns an error.
+    #[test]
+    fn hard_link_to_existing_path_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_entry("a.txt", b"aaa", 0o100644).unwrap();
+        writer.add_entry("b.txt", b"bbb", 0o100644).unwrap();
+
+        let result = writer.hard_link("a.txt", "b.txt");
+        assert!(matches!(result, Err(BaleError::PathExists(_))));
+    }
+
+    /// Unlink removes one path but preserves the entry when other links remain.
+    #[test]
+    fn unlink_removes_single_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("original.txt", b"data", 0o100644).unwrap();
+            writer.hard_link("original.txt", "link.txt").unwrap();
+
+            assert!(writer.unlink("original.txt"));
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert!(reader.find_entry("original.txt").is_none());
+        assert_eq!(reader.file("link.txt").unwrap().data, b"data");
+        // Entry row still exists.
+        assert_eq!(reader.entry_count(), 1);
+    }
+
+    /// Unlink of the last reference removes the entry row too.
+    #[test]
+    fn unlink_last_ref_removes_entry() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("only.txt", b"data", 0o100644).unwrap();
+
+            assert!(writer.unlink("only.txt"));
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 0);
+        assert!(reader.find_entry("only.txt").is_none());
+    }
+
+    /// Unlink of a nonexistent path returns false.
+    #[test]
+    fn unlink_nonexistent_returns_false() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        assert!(!writer.unlink("nope.txt"));
+    }
+
+    /// Rename updates the path for an entry.
+    #[test]
+    fn rename_updates_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("old.txt", b"data", 0o100644).unwrap();
+            writer.rename("old.txt", "new.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert!(reader.find_entry("old.txt").is_none());
+        assert_eq!(reader.file("new.txt").unwrap().data, b"data");
+    }
+
+    /// Rename of a directory updates all descendant paths.
+    #[test]
+    fn rename_directory_updates_descendants() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_folder("src", 0o755).unwrap();
+            writer.add_entry("src/a.txt", b"aaa", 0o100644).unwrap();
+            writer.add_entry("src/b.txt", b"bbb", 0o100644).unwrap();
+            writer.rename("src", "dst").unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert!(reader.find_entry("src").is_none());
+        assert!(reader.find_entry("src/a.txt").is_none());
+        assert!(reader.find_entry("src/b.txt").is_none());
+        assert!(reader.folder("dst").is_ok());
+        assert_eq!(reader.file("dst/a.txt").unwrap().data, b"aaa");
+        assert_eq!(reader.file("dst/b.txt").unwrap().data, b"bbb");
+    }
+
+    /// Rename to an existing path returns an error.
+    #[test]
+    fn rename_to_existing_path_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_entry("a.txt", b"aaa", 0o100644).unwrap();
+        writer.add_entry("b.txt", b"bbb", 0o100644).unwrap();
+
+        let result = writer.rename("a.txt", "b.txt");
+        assert!(matches!(result, Err(BaleError::PathExists(_))));
+    }
+
+    /// Rename that would exceed path_size fails atomically.
+    #[test]
+    fn rename_exceeding_path_size_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with small path_size.
+        let mut writer = ArchiveWriter::create_with_options(&path, 4096, 16).unwrap();
+        writer.add_folder("a", 0o755).unwrap();
+        writer.add_entry("a/file.txt", b"data", 0o100644).unwrap();
+
+        // Renaming "a" to a long name would make "a/file.txt" exceed 16 bytes.
+        let result = writer.rename("a", "very_long_name");
+        assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
+
+        // Original paths are preserved (atomic rejection).
+        assert!(writer.find_entry("a").is_some());
+        assert!(writer.find_entry("a/file.txt").is_some());
+    }
+
+    /// replace_content updates the data for an existing file.
+    #[test]
+    fn replace_content_updates_data() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"old data", 0o100644).unwrap();
+            writer
+                .replace_content("file.txt", b"new data!", 0o100755)
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let file = reader.file("file.txt").unwrap();
+        assert_eq!(file.data, b"new data!");
+        assert_eq!(file.entry.mode.get(), 0o100755);
+        reader.verify_crc(file.entry).unwrap();
+    }
+
+    /// replace_content on a directory returns an error.
+    #[test]
+    fn replace_content_on_directory_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_folder("mydir", 0o755).unwrap();
+
+        let result = writer.replace_content("mydir", b"data", 0o100644);
+        assert!(matches!(result, Err(BaleError::NotAFile(_))));
     }
 }
