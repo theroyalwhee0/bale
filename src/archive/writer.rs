@@ -620,8 +620,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         // Check path fits within path_size.
         let padded = self.pad_path(normalized_str)?;
 
-        // Assign entry ID.
+        // Assign entry ID, checking for overflow.
         let entry_id = self.trailer.next_id();
+        if entry_id == u32::MAX {
+            return Err(BaleError::ArchiveFull);
+        }
         self.trailer.set_next_id(entry_id + 1);
 
         // Write data block (returns offset and CRC).
@@ -1189,5 +1192,18 @@ mod tests {
         assert!(writer.find_by_id(99).is_none());
 
         writer.sync().unwrap();
+    }
+
+    /// Adding an entry when next_id is u32::MAX returns ArchiveFull.
+    #[test]
+    fn archive_full_on_id_overflow() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.trailer.set_next_id(u32::MAX);
+
+        let result = writer.add_entry("overflow.txt", b"data", 0o644);
+        assert!(matches!(result, Err(BaleError::ArchiveFull)));
     }
 }

@@ -266,6 +266,7 @@ impl Trailer {
     /// - Magic bytes are `BALE` at offset 56
     /// - `alignment_power` is within valid range (≤ 16)
     /// - `path_size` is in range 1..=4096
+    /// - `next_id` is non-zero (entry IDs start at 1)
     ///
     /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
     /// silently ignored for forward compatibility with future format extensions.
@@ -276,6 +277,7 @@ impl Trailer {
             && self.alignment_power <= Self::MAX_ALIGNMENT_POWER
             && path_size >= Self::MIN_PATH_SIZE
             && path_size <= Self::MAX_PATH_SIZE
+            && self.next_id.get() > 0
     }
 
     /// Validates the trailer and returns a reference or an error.
@@ -577,6 +579,22 @@ mod tests {
         trailer.alignment_power = Trailer::MAX_ALIGNMENT_POWER + 1;
         assert!(!trailer.is_valid());
         assert!(trailer.alignment().is_err());
+    }
+
+    /// next_id = 0 fails is_valid().
+    #[test]
+    fn next_id_zero_fails_validation() {
+        let mut trailer = Trailer::new();
+        trailer.set_next_id(0);
+        assert!(!trailer.is_valid());
+    }
+
+    /// next_id = u32::MAX passes is_valid() (archive is full but valid).
+    #[test]
+    fn next_id_max_passes_validation() {
+        let mut trailer = Trailer::new();
+        trailer.set_next_id(u32::MAX);
+        assert!(trailer.is_valid());
     }
 
     /// path_size = 0 fails is_valid().
