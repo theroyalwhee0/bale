@@ -14,6 +14,7 @@
 !LICENSE.txt
 !.markdownlintrc
 !clippy.toml
+!deny.toml
 
 # Whitelist source files.
 !build.rs

@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use bale::{ArchiveWrite, ArchiveWriter, BaleEocd, Eocd, Zip64Eocd, Zip64EocdLocator};
+use bale::{ArchiveWrite, ArchiveWriter, FileHeader, Trailer};
 use zerocopy::IntoBytes;
 
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
@@ -29,36 +29,28 @@ fn generate_all_fixtures() {
     generate_bad_crc_bale();
 }
 
-/// Generates an empty bale archive with full 256-byte trailer.
-///
-/// The trailer consists of:
-/// - ZIP64 EOCD (56 bytes)
-/// - ZIP64 EOCD Locator (20 bytes)
-/// - EOCD (22 bytes)
-/// - BaleEocd (158 bytes)
+/// Generates an empty bale archive (FileHeader + Trailer = 72 bytes).
 fn generate_empty_bale() {
     let path = Path::new(VALID_FIXTURES_DIR).join("empty.bale");
     let mut file = File::create(&path).expect("failed to create empty.bale");
 
-    // ZIP64 EOCD at offset 0 (entry_count=0, cd_size=0, cd_offset=0).
-    let zip64_eocd = Zip64Eocd::new(0, 0, 0);
-    file.write_all(zip64_eocd.as_bytes())
-        .expect("failed to write ZIP64 EOCD");
+    // File header (8 bytes).
+    let header = FileHeader::new();
+    let header_bytes = header.as_bytes();
 
-    // ZIP64 EOCD Locator pointing to offset 0.
-    let zip64_locator = Zip64EocdLocator::new(0);
-    file.write_all(zip64_locator.as_bytes())
-        .expect("failed to write ZIP64 EOCD Locator");
+    // Trailer (64 bytes) with default settings.
+    let mut trailer = Trailer::new();
+    trailer.archive_size =
+        zerocopy::byteorder::little_endian::U64::new((FileHeader::SIZE + Trailer::SIZE) as u64);
 
-    // EOCD with comment length = BaleEocd::SIZE.
-    let eocd = Eocd::new_with_comment(0, 0, 0, BaleEocd::SIZE as u16);
-    file.write_all(eocd.as_bytes())
-        .expect("failed to write EOCD");
+    // Compute metadata CRC-32C.
+    let metadata_crc = Trailer::compute_metadata_crc(header_bytes, &[], &[], &trailer);
+    trailer.set_metadata_crc(metadata_crc);
 
-    // BaleEocd with default settings.
-    let bale_eocd = BaleEocd::new();
-    file.write_all(bale_eocd.as_bytes())
-        .expect("failed to write BaleEocd");
+    file.write_all(header_bytes)
+        .expect("failed to write FileHeader");
+    file.write_all(trailer.as_bytes())
+        .expect("failed to write Trailer");
 }
 
 /// Generates a bale archive containing a single "hello.txt" file.
@@ -229,34 +221,140 @@ fn generate_orphaned_data_bale() {
 // Invalid (repairable) fixtures
 // =============================================================================
 
-/// Generates a bale archive with an unsorted Central Directory.
+/// Generates a bale archive with an unsorted directory table.
 ///
-/// Entries are added in reverse alphabetical order (c, b, a) and the CD
-/// is not sorted, making binary search impossible.
+/// Entries are added in reverse alphabetical order (c, b, a) and the
+/// directory table is not sorted, making binary search impossible.
+///
+/// This writes raw bytes to bypass `ArchiveWriter::sync()` which sorts
+/// the directory table.
 fn generate_unsorted_cd_bale() {
+    use bale::{Crc, DirectoryRow, EntryRow};
+    use zerocopy::byteorder::little_endian::{U16, U32, U64};
+
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("unsorted_cd.bale");
 
     // Remove existing archive if present.
     let _ = std::fs::remove_file(&archive_path);
 
-    // Create archive with entries in reverse order.
-    // ArchiveWriter doesn't sort entries, so they stay in insertion order.
-    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
-    writer
-        .add_entry("c.txt", b"third", 0o644)
-        .expect("failed to add c.txt");
-    writer
-        .add_entry("b.txt", b"second", 0o644)
-        .expect("failed to add b.txt");
-    writer
-        .add_entry("a.txt", b"first", 0o644)
-        .expect("failed to add a.txt");
-    writer.sync().expect("failed to sync archive");
+    // Files in deliberately unsorted order (c, b, a).
+    let files: &[(&str, &[u8], u32)] = &[
+        ("c.txt", b"third", 1),
+        ("b.txt", b"second", 2),
+        ("a.txt", b"first", 3),
+    ];
+
+    let alignment: u32 = 4096;
+    let path_size: u16 = 256;
+    let mut buf = Vec::new();
+
+    // 1. File header (8 bytes).
+    let file_header = FileHeader::new();
+    buf.extend_from_slice(file_header.as_bytes());
+
+    // 2. Data blocks (aligned, raw bytes).
+    struct DataInfo {
+        /// Offset in the archive.
+        offset: u64,
+        /// CRC-32C of the data.
+        crc: Crc,
+    }
+    let mut data_infos = Vec::new();
+    for &(_, data, _) in files {
+        let current = buf.len();
+        let padding = (alignment as usize - (current % alignment as usize)) % alignment as usize;
+        buf.extend(std::iter::repeat_n(0u8, padding));
+        let data_offset = buf.len() as u64;
+        let crc = Crc::compute(data);
+        buf.extend_from_slice(data);
+        data_infos.push(DataInfo {
+            offset: data_offset,
+            crc,
+        });
+    }
+
+    // 3. Entry table (sorted by entry ID).
+    let mut entry_rows: Vec<(u32, EntryRow)> = files
+        .iter()
+        .zip(data_infos.iter())
+        .map(|(&(_, data, id), di)| {
+            let row = EntryRow::new_file(
+                id,
+                di.crc,
+                di.offset,
+                data.len() as u64,
+                data.len() as u64,
+                1_700_000_000_000,
+                1_700_000_001_000,
+                0o100644,
+            );
+            (id, row)
+        })
+        .collect();
+    entry_rows.sort_by_key(|(id, _)| *id);
+
+    let entry_table_offset = buf.len() as u64;
+    for (_, row) in &entry_rows {
+        buf.extend_from_slice(row.as_bytes());
+    }
+    let entry_count = entry_rows.len() as u32;
+
+    // 4. Directory table (deliberately UNSORTED: c, b, a).
+    let directory_table_offset = buf.len() as u64;
+    let stride = DirectoryRow::stride(path_size);
+    for &(path, _, id) in files {
+        let mut row_bytes = vec![0u8; stride];
+        let path_bytes = path.as_bytes();
+        row_bytes[..path_bytes.len()].copy_from_slice(path_bytes);
+        let id_offset = path_size as usize;
+        row_bytes[id_offset..id_offset + 4].copy_from_slice(&id.to_le_bytes());
+        buf.extend_from_slice(&row_bytes);
+    }
+    let directory_entry_count = files.len() as u32;
+
+    // 5. Trailer (64 bytes).
+    let next_id = files.iter().map(|&(_, _, id)| id).max().unwrap_or(0) + 1;
+    let mut trailer = Trailer::new();
+    trailer.entry_table_offset = U64::new(entry_table_offset);
+    trailer.entry_count = U32::new(entry_count);
+    trailer.directory_table_offset = U64::new(directory_table_offset);
+    trailer.directory_entry_count = U32::new(directory_entry_count);
+    trailer.next_id = U32::new(next_id);
+    trailer.alignment_power = alignment.trailing_zeros() as u8;
+    trailer.path_size = U16::new(path_size);
+    let archive_size = (buf.len() + Trailer::SIZE) as u64;
+    trailer.archive_size = U64::new(archive_size);
+
+    // Compute metadata CRC-32C.
+    let entry_table_bytes = {
+        let offset = entry_table_offset as usize;
+        let len = entry_count as usize * EntryRow::SIZE;
+        &buf[offset..offset + len]
+    };
+    let directory_table_bytes = {
+        let offset = directory_table_offset as usize;
+        let len = directory_entry_count as usize * stride;
+        &buf[offset..offset + len]
+    };
+    let metadata_crc = Trailer::compute_metadata_crc(
+        &buf[..FileHeader::SIZE],
+        entry_table_bytes,
+        directory_table_bytes,
+        &trailer,
+    );
+    trailer.set_metadata_crc(metadata_crc);
+
+    buf.extend_from_slice(trailer.as_bytes());
+
+    // Write to file.
+    let mut file = File::create(&archive_path).expect("failed to create unsorted_cd.bale");
+    file.write_all(&buf)
+        .expect("failed to write unsorted_cd.bale");
 }
 
 /// Generates a bale archive with duplicate paths.
 ///
-/// The same path appears multiple times in the Central Directory.
+/// The same path appears multiple times in the directory table.
 /// Only the last entry is accessible (shadowing).
 fn generate_duplicate_paths_bale() {
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("duplicate_paths.bale");
@@ -278,12 +376,15 @@ fn generate_duplicate_paths_bale() {
     writer.sync().expect("failed to sync archive");
 }
 
-/// Generates a bale archive with an incorrect CRC-32 checksum.
+/// Generates a bale archive with an incorrect per-entry CRC-32C checksum.
 ///
-/// The archive is structurally valid but the CRC in the Central Directory
-/// does not match the actual file data.
+/// The archive is structurally valid with a correct metadata CRC, but the
+/// per-entry CRC-32C in the entry row does not match the actual file data.
+/// After corrupting the entry CRC, the metadata CRC is recomputed so the
+/// archive opens successfully and `bale check` can report the per-entry error.
 fn generate_bad_crc_bale() {
-    use std::io::{Read, Seek, SeekFrom};
+    use bale::{Crc, DirectoryRow, EntryRow};
+    use zerocopy::FromBytes;
 
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("bad_crc.bale");
 
@@ -299,39 +400,39 @@ fn generate_bad_crc_bale() {
         writer.sync().expect("failed to sync archive");
     }
 
-    // Now corrupt the CRC in the Central Directory.
-    // The CD is located before the trailer (last 256 bytes).
-    // CRC32 is at offset 16 in the CentralDirectoryHeader.
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&archive_path)
-        .expect("failed to open archive");
+    // Read the entire archive into memory.
+    let mut buf = std::fs::read(&archive_path).expect("failed to read archive");
+    let file_len = buf.len();
 
-    let file_len = file.metadata().expect("failed to get metadata").len();
-    let trailer_size = 256u64; // ZIP64 EOCD (56) + Locator (20) + EOCD (22) + BaleEocd (158)
-    let cd_header_size = 46u64;
-    let path_size = 256u64;
-    let cd_entry_size = cd_header_size + path_size;
+    // Parse trailer to find entry table.
+    let trailer_start = file_len - Trailer::SIZE;
+    let trailer = *Trailer::ref_from_bytes(&buf[trailer_start..]).expect("failed to parse trailer");
+    let entry_table_offset = trailer.entry_table_offset.get() as usize;
 
-    // CD starts at file_len - trailer_size - cd_entry_size
-    let cd_offset = file_len - trailer_size - cd_entry_size;
+    // Corrupt the per-entry CRC-32C (at entry_table_offset + 4).
+    let crc_offset = entry_table_offset + 4;
+    buf[crc_offset] ^= 0xFF;
 
-    // CRC32 is at offset 16 in the CD header.
-    let crc_offset = cd_offset + 16;
+    // Recompute metadata CRC-32C so the archive still opens.
+    let mut new_trailer = trailer;
+    new_trailer.set_metadata_crc(Crc::NONE);
+    let entry_count = trailer.entry_count.get() as usize;
+    let entry_table_bytes =
+        &buf[entry_table_offset..entry_table_offset + entry_count * EntryRow::SIZE];
+    let dir_offset = trailer.directory_table_offset.get() as usize;
+    let dir_count = trailer.directory_entry_count.get() as usize;
+    let dir_stride = DirectoryRow::stride(trailer.path_size());
+    let directory_table_bytes = &buf[dir_offset..dir_offset + dir_count * dir_stride];
+    let metadata_crc = Trailer::compute_metadata_crc(
+        &buf[..FileHeader::SIZE],
+        entry_table_bytes,
+        directory_table_bytes,
+        &new_trailer,
+    );
+    new_trailer.set_metadata_crc(metadata_crc);
 
-    // Read current CRC.
-    file.seek(SeekFrom::Start(crc_offset))
-        .expect("failed to seek");
-    let mut crc_bytes = [0u8; 4];
-    file.read_exact(&mut crc_bytes).expect("failed to read CRC");
+    // Write updated trailer back.
+    buf[trailer_start..].copy_from_slice(new_trailer.as_bytes());
 
-    // Corrupt it by flipping bits.
-    crc_bytes[0] ^= 0xFF;
-
-    // Write corrupted CRC back.
-    file.seek(SeekFrom::Start(crc_offset))
-        .expect("failed to seek");
-    file.write_all(&crc_bytes)
-        .expect("failed to write corrupted CRC");
+    std::fs::write(&archive_path, &buf).expect("failed to write corrupted archive");
 }

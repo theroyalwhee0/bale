@@ -4,20 +4,33 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// The short version string with a `v` prefix.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
+/// The long version string with build information.
+const LONG_VERSION: &str = concat!(
+    "v",
+    env!("CARGO_PKG_VERSION"),
+    "\n\n",
+    "  Commit ",
+    env!("GIT_HASH_SHORT"),
+    "\n",
+    "  Target ",
+    env!("BUILD_TARGET"),
+    "\n",
+    " Runtime ",
+    env!("BUILD_LINKING"),
+    "\n",
+    " Profile ",
+    env!("EXPECT_PROFILE"),
+    "\n",
+    "   Built ",
+    env!("BUILD_DATETIME_ISO"),
+);
+
 /// Command-line interface for bale.
 #[derive(Parser)]
-#[command(
-    version = concat!(
-        env!("CARGO_PKG_VERSION"),
-        "\n",
-        "  Built:   ",
-        env!("BUILD_DATETIME_ISO"),
-        "\n",
-        "  Profile: ",
-        env!("EXPECT_PROFILE"),
-    ),
-    about
-)]
+#[command(version = VERSION, long_version = LONG_VERSION, about)]
 pub struct Cli {
     /// The subcommand to run.
     #[command(subcommand)]
