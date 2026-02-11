@@ -652,6 +652,10 @@ mod tests {
             trailer.clear_compacted();
         }
 
+        // Set archive_size to final file size.
+        let archive_size = (buf.len() + Trailer::SIZE) as u64;
+        trailer.set_archive_size(archive_size);
+
         buf.extend_from_slice(trailer.as_bytes());
 
         buf
