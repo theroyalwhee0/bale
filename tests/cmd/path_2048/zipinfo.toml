@@ -1,2 +1,0 @@
-bin.path = "/usr/bin/env"
-args = ["zipinfo", "tests/fixtures/valid/path_2048.bale"]
