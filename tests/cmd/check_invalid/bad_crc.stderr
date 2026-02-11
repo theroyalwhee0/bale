@@ -1,2 +1,2 @@
-error: 'test.txt': corrupted archive: CRC mismatch: expected 57f4675d, got abbcddda
+error: 'test.txt': corrupted archive: CRC-32 mismatch: stored 0x57f467a2, computed 0x57f4675d
 error: check failed: 1 issue(s) found

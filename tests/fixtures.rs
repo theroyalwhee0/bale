@@ -217,25 +217,109 @@ fn generate_orphaned_data_bale() {
 ///
 /// Entries are added in reverse alphabetical order (c, b, a) and the
 /// directory table is not sorted, making binary search impossible.
+///
+/// This writes raw bytes to bypass `ArchiveWriter::sync()` which sorts
+/// the directory table.
 fn generate_unsorted_cd_bale() {
+    use bale::{Crc, DirectoryRow, EntryRow};
+    use zerocopy::byteorder::little_endian::{U16, U32, U64};
+
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("unsorted_cd.bale");
 
     // Remove existing archive if present.
     let _ = std::fs::remove_file(&archive_path);
 
-    // Create archive with entries in reverse order.
-    // ArchiveWriter doesn't sort entries, so they stay in insertion order.
-    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
-    writer
-        .add_entry("c.txt", b"third", 0o644)
-        .expect("failed to add c.txt");
-    writer
-        .add_entry("b.txt", b"second", 0o644)
-        .expect("failed to add b.txt");
-    writer
-        .add_entry("a.txt", b"first", 0o644)
-        .expect("failed to add a.txt");
-    writer.sync().expect("failed to sync archive");
+    // Files in deliberately unsorted order (c, b, a).
+    let files: &[(&str, &[u8], u32)] = &[
+        ("c.txt", b"third", 1),
+        ("b.txt", b"second", 2),
+        ("a.txt", b"first", 3),
+    ];
+
+    let alignment: u32 = 4096;
+    let path_size: u16 = 256;
+    let mut buf = Vec::new();
+
+    // 1. File header (8 bytes).
+    let file_header = FileHeader::new();
+    buf.extend_from_slice(file_header.as_bytes());
+
+    // 2. Data blocks (aligned, raw bytes).
+    struct DataInfo {
+        /// Offset in the archive.
+        offset: u64,
+        /// CRC-32C of the data.
+        crc: Crc,
+    }
+    let mut data_infos = Vec::new();
+    for &(_, data, _) in files {
+        let current = buf.len();
+        let padding = (alignment as usize - (current % alignment as usize)) % alignment as usize;
+        buf.extend(std::iter::repeat_n(0u8, padding));
+        let data_offset = buf.len() as u64;
+        let crc = Crc::compute(data);
+        buf.extend_from_slice(data);
+        data_infos.push(DataInfo {
+            offset: data_offset,
+            crc,
+        });
+    }
+
+    // 3. Entry table (sorted by entry ID).
+    let mut entry_rows: Vec<(u32, EntryRow)> = files
+        .iter()
+        .zip(data_infos.iter())
+        .map(|(&(_, data, id), di)| {
+            let row = EntryRow::new_file(
+                id,
+                di.crc,
+                di.offset,
+                data.len() as u64,
+                data.len() as u64,
+                1_700_000_000_000,
+                1_700_000_001_000,
+                0o100644,
+            );
+            (id, row)
+        })
+        .collect();
+    entry_rows.sort_by_key(|(id, _)| *id);
+
+    let entry_table_offset = buf.len() as u64;
+    for (_, row) in &entry_rows {
+        buf.extend_from_slice(row.as_bytes());
+    }
+    let entry_count = entry_rows.len() as u32;
+
+    // 4. Directory table (deliberately UNSORTED: c, b, a).
+    let directory_table_offset = buf.len() as u64;
+    let stride = DirectoryRow::stride(path_size);
+    for &(path, _, id) in files {
+        let mut row_bytes = vec![0u8; stride];
+        let path_bytes = path.as_bytes();
+        row_bytes[..path_bytes.len()].copy_from_slice(path_bytes);
+        let id_offset = path_size as usize;
+        row_bytes[id_offset..id_offset + 4].copy_from_slice(&id.to_le_bytes());
+        buf.extend_from_slice(&row_bytes);
+    }
+    let directory_entry_count = files.len() as u32;
+
+    // 5. Trailer (64 bytes).
+    let next_id = files.iter().map(|&(_, _, id)| id).max().unwrap_or(0) + 1;
+    let mut trailer = Trailer::new();
+    trailer.entry_table_offset = U64::new(entry_table_offset);
+    trailer.entry_count = U32::new(entry_count);
+    trailer.directory_table_offset = U64::new(directory_table_offset);
+    trailer.directory_entry_count = U32::new(directory_entry_count);
+    trailer.next_id = U32::new(next_id);
+    trailer.alignment_power = alignment.trailing_zeros() as u8;
+    trailer.path_size = U16::new(path_size);
+    buf.extend_from_slice(trailer.as_bytes());
+
+    // Write to file.
+    let mut file = File::create(&archive_path).expect("failed to create unsorted_cd.bale");
+    file.write_all(&buf)
+        .expect("failed to write unsorted_cd.bale");
 }
 
 /// Generates a bale archive with duplicate paths.

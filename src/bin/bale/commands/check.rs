@@ -54,7 +54,7 @@ pub fn run(archive_path: impl AsRef<Path>, quiet: bool) -> Result<(), BaleCliErr
     // Check sorting.
     let is_sorted = reader.is_sorted();
     if !is_sorted {
-        errors.push("Central Directory is not sorted by path".to_string());
+        errors.push("directory table is not sorted by path".to_string());
     }
 
     // Check duplicates.
