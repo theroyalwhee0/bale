@@ -174,18 +174,27 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
             writer.add_folder(dir_str, SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM)?;
         }
 
-        for (entry_row, path_bytes) in &final_entries {
-            // Read the data from the original archive.
-            let data = reader.read_data(entry_row)?;
+        // Track which entry IDs have been written to preserve hard links.
+        // Maps old entry ID → first path written for that ID.
+        let mut written_ids: HashMap<u32, String> = HashMap::new();
 
+        for (entry_row, path_bytes) in &final_entries {
             // Get the path as a validated UTF-8 string.
             let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
             let path_str = archive_path.to_str_checked()?;
 
-            // Get mode from entry row.
-            let mode = entry_row.mode.get();
+            let old_id = entry_row.entry_id.get();
 
-            writer.add_entry(path_str, data, mode)?;
+            if let Some(first_path) = written_ids.get(&old_id) {
+                // Hard link: reuse existing entry.
+                writer.hard_link(first_path, path_str)?;
+            } else {
+                // First path for this entry ID: write data.
+                let data = reader.read_data(entry_row)?;
+                let mode = entry_row.mode.get();
+                writer.add_entry(path_str, data, mode)?;
+                written_ids.insert(old_id, path_str.to_owned());
+            }
         }
 
         writer.sync()?;
@@ -310,10 +319,23 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     {
         let mut writer = ArchiveWriter::create_with_options(&temp_path, alignment, path_size)?;
 
+        // Track which entry IDs have been written to preserve hard links.
+        // Maps old entry ID → first path written for that ID.
+        let mut written_ids: HashMap<u32, String> = HashMap::new();
+
         for (entry_row, new_path) in &entries {
-            let data = reader.read_data(entry_row)?;
-            let mode = entry_row.mode.get();
-            writer.add_entry(new_path, data, mode)?;
+            let old_id = entry_row.entry_id.get();
+
+            if let Some(first_path) = written_ids.get(&old_id) {
+                // Hard link: reuse existing entry.
+                writer.hard_link(first_path, new_path)?;
+            } else {
+                // First path for this entry ID: write data.
+                let data = reader.read_data(entry_row)?;
+                let mode = entry_row.mode.get();
+                writer.add_entry(new_path, data, mode)?;
+                written_ids.insert(old_id, new_path.clone());
+            }
         }
 
         writer.sync()?;
@@ -594,5 +616,149 @@ mod tests {
             .collect();
 
         assert_eq!(paths, vec!["a.txt", "z(1).txt", "z.txt"]);
+    }
+
+    /// Compacting preserves hard link relationships.
+    #[test]
+    fn compact_preserves_hard_links() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with a hard link.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_entry("original.txt", b"shared data", 0o644)
+                .unwrap();
+            writer.hard_link("original.txt", "link.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        // Verify both paths still exist and share the same entry ID.
+        let reader = ArchiveReader::open(&path).unwrap();
+        let original = reader.find_entry("original.txt").unwrap();
+        let link = reader.find_entry("link.txt").unwrap();
+
+        assert_eq!(original.entry_id.get(), link.entry_id.get());
+        assert_eq!(reader.read_data(original).unwrap(), b"shared data");
+        assert_eq!(reader.read_data(link).unwrap(), b"shared data");
+    }
+
+    /// Compacting renumbers entry IDs sequentially starting at 1.
+    #[test]
+    fn compact_renumbers_entry_ids() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with gaps in entry IDs by adding then shadowing entries.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            // Entry ID 1 — will be shadowed.
+            writer.add_entry("a.txt", b"old a", 0o644).unwrap();
+            // Entry ID 2.
+            writer.add_entry("b.txt", b"b data", 0o644).unwrap();
+            // Entry ID 3 — shadows entry ID 1.
+            writer.add_entry("a.txt", b"new a", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        // After compaction: 2 entries with IDs 1 and 2 (renumbered sequentially).
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 2);
+
+        let mut ids: Vec<u32> = reader
+            .iter_entries()
+            .map(|(entry_row, _)| entry_row.entry_id.get())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    /// Compacting adds implicit directory entries for nested files.
+    #[test]
+    fn compact_adds_implicit_directories() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with a nested file but no explicit directory entry.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("foo/bar.txt", b"data", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        // Verify the implicit directory was created.
+        let reader = ArchiveReader::open(&path).unwrap();
+        let dir_entry = reader.find_entry("foo");
+        assert!(dir_entry.is_some(), "implicit directory 'foo' should exist");
+
+        let dir_row = dir_entry.unwrap();
+        assert_eq!(dir_row.kind(), EntryKind::Directory);
+    }
+
+    /// Compacting resets next_id in the trailer to N+1.
+    #[test]
+    fn compact_resets_next_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with gaps from shadowing.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("a.txt", b"v1", 0o644).unwrap();
+            writer.add_entry("b.txt", b"v1", 0o644).unwrap();
+            writer.add_entry("a.txt", b"v2", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        // After compaction: 2 entries (IDs 1, 2), so next_id should be 3.
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 2);
+        assert_eq!(reader.trailer().next_id(), 3);
+    }
+
+    /// Renaming duplicates preserves hard link relationships.
+    #[test]
+    fn rename_duplicates_preserves_hard_links() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with hard links and a duplicate path.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_entry("file.txt", b"first version", 0o644)
+                .unwrap();
+            writer.hard_link("file.txt", "link.txt").unwrap();
+            writer
+                .add_entry("file.txt", b"second version", 0o644)
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let stats = rename_duplicates(&path).unwrap();
+        assert_eq!(stats.entries_renamed, 1);
+
+        // Verify the renamed entry and its hard link share the same entry ID.
+        let reader = ArchiveReader::open(&path).unwrap();
+
+        let renamed = reader.find_entry("file(1).txt").unwrap();
+        let link = reader.find_entry("link.txt").unwrap();
+        assert_eq!(renamed.entry_id.get(), link.entry_id.get());
+        assert_eq!(reader.read_data(renamed).unwrap(), b"first version");
+        assert_eq!(reader.read_data(link).unwrap(), b"first version");
+
+        // The last occurrence keeps the original name.
+        let original = reader.find_entry("file.txt").unwrap();
+        assert_eq!(reader.read_data(original).unwrap(), b"second version");
     }
 }
