@@ -77,4 +77,8 @@ pub enum BaleError {
     /// Path uses reserved prefix (`.bale`).
     #[error("reserved path: {0}")]
     ReservedPath(String),
+
+    /// Archive has exhausted its entry ID space (u32::MAX reached).
+    #[error("archive is full: entry ID space exhausted")]
+    ArchiveFull,
 }
