@@ -78,6 +78,10 @@ pub enum BaleError {
     #[error("reserved path: {0}")]
     ReservedPath(String),
 
+    /// Path already exists in the archive.
+    #[error("path already exists: {0}")]
+    PathExists(String),
+
     /// Archive has exhausted its entry ID space (u32::MAX reached).
     #[error("archive is full: entry ID space exhausted")]
     ArchiveFull,
