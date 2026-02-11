@@ -55,10 +55,10 @@ pub trait ArchiveRead {
     /// Returns a reference to the archive trailer.
     fn trailer(&self) -> &Trailer;
 
-    /// Verifies the CRC-32 checksum for an entry.
+    /// Verifies the CRC-32C checksum for an entry.
     ///
-    /// Reads the entry data and computes its CRC-32, comparing against the
-    /// stored value in the data block header.
+    /// Reads the entry data and computes its CRC-32C, comparing against the
+    /// stored value in the entry row.
     ///
     /// # Errors
     ///
@@ -66,6 +66,20 @@ pub trait ArchiveRead {
     /// - The entry data cannot be read
     /// - The computed CRC does not match the stored CRC
     fn verify_crc(&self, entry: &EntryRow) -> Result<(), BaleError>;
+
+    /// Verifies the metadata CRC-32C for the archive.
+    ///
+    /// Computes the CRC over file header, entry table, directory table,
+    /// and trailer bytes 0–59, then compares against the stored value.
+    ///
+    /// Note: This is also validated on [`open()`](crate::ArchiveReader::open),
+    /// so a successfully opened archive always has a valid metadata CRC.
+    /// This method is useful for explicit reporting in `bale check`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the computed CRC does not match the stored CRC.
+    fn verify_metadata_crc(&self) -> Result<(), BaleError>;
 
     /// Checks if the directory table is sorted by path bytes.
     ///

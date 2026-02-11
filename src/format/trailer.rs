@@ -1,5 +1,6 @@
 //! Archive trailer at the end of every bale archive.
 
+use super::Crc;
 use crate::BaleError;
 use bitflags::bitflags;
 use zerocopy::byteorder::little_endian::{U16, U32, U64};
@@ -288,6 +289,44 @@ impl Trailer {
         } else {
             Err(BaleError::Corrupted("invalid trailer".into()))
         }
+    }
+
+    /// Computes the metadata CRC-32C over the given archive regions.
+    ///
+    /// The CRC is computed over the logical concatenation of four
+    /// non-contiguous regions, fed sequentially into the CRC state machine:
+    ///
+    /// 1. The file header (8 bytes at offset 0)
+    /// 2. The entire entry table (all bytes)
+    /// 3. The entire directory table (all bytes)
+    /// 4. Trailer bytes 0–59 (all fields except the CRC itself)
+    ///
+    /// During computation, the CRC field (trailer bytes 60–63) is treated as
+    /// zero. Empty tables contribute zero bytes.
+    #[must_use]
+    pub fn compute_metadata_crc(
+        file_header: &[u8],
+        entry_table: &[u8],
+        directory_table: &[u8],
+        trailer: &Self,
+    ) -> Crc {
+        let trailer_bytes = trailer.as_bytes();
+        Crc::NONE
+            .append(file_header)
+            .append(entry_table)
+            .append(directory_table)
+            .append(&trailer_bytes[..60])
+    }
+
+    /// Sets the metadata CRC-32C field.
+    pub fn set_metadata_crc(&mut self, crc: Crc) {
+        self.metadata_crc32c = U32::new(crc.to_u32());
+    }
+
+    /// Returns the stored metadata CRC-32C value.
+    #[must_use]
+    pub fn metadata_crc(&self) -> Crc {
+        Crc::new(self.metadata_crc32c.get())
     }
 }
 
@@ -606,5 +645,43 @@ mod tests {
         assert_eq!(&bytes[56..60], b"BALE");
         // metadata_crc32c at offset 60 (4 bytes).
         assert_eq!(&bytes[60..64], &[0, 0, 0, 0]);
+    }
+
+    /// Metadata CRC is deterministic and non-zero for non-empty inputs.
+    #[test]
+    fn metadata_crc_deterministic() {
+        let header = [0x42, 0x41, 0x4C, 0x45, 0x00, 1, 0, 0]; // BALE\0 v1.0.0
+        let trailer = Trailer::new();
+
+        let crc1 = Trailer::compute_metadata_crc(&header, &[], &[], &trailer);
+        let crc2 = Trailer::compute_metadata_crc(&header, &[], &[], &trailer);
+        assert_eq!(crc1, crc2);
+        // Non-zero since input data is non-empty.
+        assert_ne!(crc1, Crc::NONE);
+    }
+
+    /// Metadata CRC changes when trailer fields change.
+    #[test]
+    fn metadata_crc_changes_with_trailer() {
+        let header = [0x42, 0x41, 0x4C, 0x45, 0x00, 1, 0, 0];
+        let trailer1 = Trailer::new();
+
+        let mut trailer2 = Trailer::new();
+        trailer2.set_archive_size(9999);
+
+        let crc1 = Trailer::compute_metadata_crc(&header, &[], &[], &trailer1);
+        let crc2 = Trailer::compute_metadata_crc(&header, &[], &[], &trailer2);
+        assert_ne!(crc1, crc2);
+    }
+
+    /// set_metadata_crc and metadata_crc round-trip.
+    #[test]
+    fn metadata_crc_accessors() {
+        let mut trailer = Trailer::new();
+        assert_eq!(trailer.metadata_crc(), Crc::NONE);
+
+        let crc = Crc::new(0xDEAD_BEEF);
+        trailer.set_metadata_crc(crc);
+        assert_eq!(trailer.metadata_crc(), crc);
     }
 }
