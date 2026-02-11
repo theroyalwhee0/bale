@@ -91,6 +91,7 @@ dependencies = [
 name = "bale"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "chrono",
  "clap",
  "crc32fast",

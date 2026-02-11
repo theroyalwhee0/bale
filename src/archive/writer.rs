@@ -690,6 +690,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
             self.mmap.extend(&entry_id.to_le_bytes())?;
         }
 
+        // Sync sorts and removes tombstones, so the result is compacted.
+        self.trailer.set_compacted();
+
         // Update trailer.
         self.trailer.entry_table_offset =
             zerocopy::byteorder::little_endian::U64::new(entry_table_offset);
