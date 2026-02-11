@@ -40,7 +40,9 @@ fn generate_empty_bale() {
         .expect("failed to write FileHeader");
 
     // Trailer (64 bytes) with default settings.
-    let trailer = Trailer::new();
+    let mut trailer = Trailer::new();
+    trailer.archive_size =
+        zerocopy::byteorder::little_endian::U64::new((FileHeader::SIZE + Trailer::SIZE) as u64);
     file.write_all(trailer.as_bytes())
         .expect("failed to write Trailer");
 }
@@ -314,6 +316,8 @@ fn generate_unsorted_cd_bale() {
     trailer.next_id = U32::new(next_id);
     trailer.alignment_power = alignment.trailing_zeros() as u8;
     trailer.path_size = U16::new(path_size);
+    let archive_size = (buf.len() + Trailer::SIZE) as u64;
+    trailer.archive_size = U64::new(archive_size);
     buf.extend_from_slice(trailer.as_bytes());
 
     // Write to file.
@@ -376,9 +380,9 @@ fn generate_bad_crc_bale() {
         .open(&archive_path)
         .expect("failed to open archive");
 
-    // Read entry_table_offset from the trailer (at file_len - 64 + 8).
+    // Read entry_table_offset from the trailer (at file_len - 64 + 0).
     let file_len = file.metadata().expect("failed to stat").len();
-    file.seek(SeekFrom::Start(file_len - Trailer::SIZE as u64 + 8))
+    file.seek(SeekFrom::Start(file_len - Trailer::SIZE as u64))
         .expect("failed to seek to trailer");
     let mut offset_bytes = [0u8; 8];
     file.read_exact(&mut offset_bytes)

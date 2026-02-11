@@ -703,6 +703,10 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         self.trailer.directory_entry_count =
             zerocopy::byteorder::little_endian::U32::new(self.dir_entries.len() as u32);
 
+        // Set archive_size: current mmap length + trailer size.
+        let archive_size = self.mmap.len() as u64 + Trailer::SIZE as u64;
+        self.trailer.set_archive_size(archive_size);
+
         // Write trailer.
         self.mmap.extend(self.trailer.as_bytes())?;
 

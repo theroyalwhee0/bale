@@ -28,67 +28,62 @@ bitflags! {
 ///
 /// # Layout
 ///
-/// | Offset | Size | Field                | Description                        |
-/// |--------|------|----------------------|------------------------------------|
-/// | 0      | 5    | Magic                | `"BALE\0"`                         |
-/// | 5      | 1    | Major version        | Format major version               |
-/// | 6      | 1    | Minor version        | Format minor version               |
-/// | 7      | 1    | Patch version        | Format patch version               |
-/// | 8      | 8    | Entry table offset   | LE, byte offset to entry table     |
-/// | 16     | 4    | Entry count          | LE, number of entry rows           |
-/// | 20     | 8    | Directory table offset | LE, byte offset to directory table |
-/// | 28     | 4    | Directory entry count | LE, number of directory rows       |
-/// | 32     | 4    | Next entry ID        | LE, next ID to assign              |
-/// | 36     | 1    | Alignment power      | Exponent N where alignment = 2^N   |
-/// | 37     | 2    | Path size            | LE, maximum path length (1-4096)   |
-/// | 39     | 1    | Flags                | Bitfield (see [`TrailerFlags`])    |
-/// | 40     | 24   | Reserved             | Must be zero                       |
+/// | Offset | Size | Field                  | Description                              |
+/// |--------|------|------------------------|------------------------------------------|
+/// | 0      | 8    | Entry table offset     | LE, byte offset to entry table           |
+/// | 8      | 8    | Directory table offset | LE, byte offset to directory table       |
+/// | 16     | 8    | Archive size           | LE, expected total file size in bytes    |
+/// | 24     | 4    | Entry count            | LE, number of entry rows                 |
+/// | 28     | 4    | Directory entry count  | LE, number of directory rows             |
+/// | 32     | 4    | Next entry ID          | LE, next ID to assign                    |
+/// | 36     | 2    | Path size              | LE, maximum path length (1-4096)         |
+/// | 38     | 1    | Alignment power        | Exponent N where alignment = 2^N (0-16)  |
+/// | 39     | 1    | Flags                  | Bitfield (see [`TrailerFlags`])           |
+/// | 40     | 16   | Reserved               | Must be zero                             |
+/// | 56     | 4    | Magic                  | `BALE` (0x42 0x41 0x4C 0x45)             |
+/// | 60     | 4    | Metadata CRC-32C       | CRC-32C over header + tables + trailer   |
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C)]
 pub struct Trailer {
-    /// Magic bytes: `"BALE\0"` (0x42 0x41 0x4C 0x45 0x00).
-    pub magic: [u8; Self::MAGIC_SIZE],
-    /// Format major version.
-    pub version_major: u8,
-    /// Format minor version.
-    pub version_minor: u8,
-    /// Format patch version.
-    pub version_patch: u8,
-    /// Byte offset to the entry table.
+    /// Byte offset to the entry table (0 = no table).
     pub entry_table_offset: U64,
-    /// Number of entry rows.
-    pub entry_count: U32,
-    /// Byte offset to the directory table.
+    /// Byte offset to the directory table (0 = no table).
     pub directory_table_offset: U64,
-    /// Number of directory rows.
+    /// Expected total archive file size in bytes.
+    pub archive_size: U64,
+    /// Number of entry rows (including tombstones).
+    pub entry_count: U32,
+    /// Number of directory rows (including tombstones).
     pub directory_entry_count: U32,
     /// Next entry ID to assign.
     pub next_id: U32,
-    /// Alignment as power of 2 (e.g., 12 means 2^12 = 4096 bytes).
-    pub alignment_power: u8,
     /// Maximum path length in bytes (1-4096).
     pub path_size: U16,
+    /// Alignment as power of 2 (e.g., 12 means 2^12 = 4096 bytes).
+    pub alignment_power: u8,
     /// Flags bitfield (see [`TrailerFlags`]).
     pub flags: u8,
     /// Reserved for future use. Must be zero.
     pub reserved: [u8; Self::RESERVED_SIZE],
+    /// Magic bytes: `BALE` (0x42 0x41 0x4C 0x45).
+    pub magic: [u8; Self::MAGIC_SIZE],
+    /// Metadata CRC-32C over file header + entry table + directory table +
+    /// trailer bytes 0-59.
+    pub metadata_crc32c: U32,
 }
 
 impl Trailer {
     /// Total size of the trailer in bytes.
     pub const SIZE: usize = 64;
 
-    /// Size of the magic field in bytes.
-    pub const MAGIC_SIZE: usize = 5;
+    /// Size of the magic field in bytes (`BALE`, no null terminator).
+    pub const MAGIC_SIZE: usize = 4;
 
     /// Size of the reserved field in bytes.
-    const RESERVED_SIZE: usize = 24;
+    const RESERVED_SIZE: usize = 16;
 
-    /// Expected magic bytes: `"BALE\0"`.
-    pub const MAGIC: [u8; Self::MAGIC_SIZE] = *b"BALE\0";
-
-    /// Current format version (1.0.0).
-    pub const CURRENT_VERSION: (u8, u8, u8) = (1, 0, 0);
+    /// Expected magic bytes: `BALE`.
+    pub const MAGIC: [u8; Self::MAGIC_SIZE] = *b"BALE";
 
     /// Minimum allowed path size.
     pub const MIN_PATH_SIZE: u16 = 1;
@@ -96,8 +91,8 @@ impl Trailer {
     /// Maximum allowed path size.
     pub const MAX_PATH_SIZE: u16 = 4096;
 
-    /// Maximum alignment power (2^24 = 16 MB).
-    pub const MAX_ALIGNMENT_POWER: u8 = 24;
+    /// Maximum alignment power (2^16 = 64 KB).
+    pub const MAX_ALIGNMENT_POWER: u8 = 16;
 
     /// Default alignment power (2^12 = 4096 bytes).
     pub const DEFAULT_ALIGNMENT_POWER: u8 = 12;
@@ -114,21 +109,19 @@ impl Trailer {
     /// Creates a new `Trailer` with default settings and empty tables.
     #[must_use]
     pub fn new() -> Self {
-        let (major, minor, patch) = Self::CURRENT_VERSION;
         Self {
-            magic: Self::MAGIC,
-            version_major: major,
-            version_minor: minor,
-            version_patch: patch,
             entry_table_offset: U64::new(0),
-            entry_count: U32::new(0),
             directory_table_offset: U64::new(0),
+            archive_size: U64::new(0),
+            entry_count: U32::new(0),
             directory_entry_count: U32::new(0),
             next_id: U32::new(1),
-            alignment_power: Self::DEFAULT_ALIGNMENT_POWER,
             path_size: U16::new(Self::DEFAULT_PATH_SIZE),
+            alignment_power: Self::DEFAULT_ALIGNMENT_POWER,
             flags: TrailerFlags::COMPACTED.bits(),
             reserved: [0u8; Self::RESERVED_SIZE],
+            magic: Self::MAGIC,
+            metadata_crc32c: U32::new(0),
         }
     }
 
@@ -136,13 +129,13 @@ impl Trailer {
     ///
     /// # Arguments
     ///
-    /// * `alignment` - Alignment in bytes (must be a power of 2, max 2^24)
+    /// * `alignment` - Alignment in bytes (must be a power of 2, max 2^16)
     /// * `path_size` - Maximum path size (1..=4096)
     ///
     /// # Errors
     ///
     /// - Returns `BaleError::InvalidAlignment` if `alignment` is not a power
-    ///   of 2, is zero, or exceeds 16 MB.
+    ///   of 2, is zero, or exceeds 64 KB.
     /// - Returns `BaleError::InvalidPathSize` if `path_size` is not in range
     ///   1..=4096.
     pub fn new_with_options(alignment: u32, path_size: u16) -> Result<Self, BaleError> {
@@ -164,21 +157,19 @@ impl Trailer {
             return Err(BaleError::InvalidPathSize(path_size));
         }
         let alignment_power = alignment.trailing_zeros() as u8;
-        let (major, minor, patch) = Self::CURRENT_VERSION;
         Ok(Self {
-            magic: Self::MAGIC,
-            version_major: major,
-            version_minor: minor,
-            version_patch: patch,
             entry_table_offset: U64::new(0),
-            entry_count: U32::new(0),
             directory_table_offset: U64::new(0),
+            archive_size: U64::new(0),
+            entry_count: U32::new(0),
             directory_entry_count: U32::new(0),
             next_id: U32::new(1),
-            alignment_power,
             path_size: U16::new(path_size),
+            alignment_power,
             flags: TrailerFlags::COMPACTED.bits(),
             reserved: [0u8; Self::RESERVED_SIZE],
+            magic: Self::MAGIC,
+            metadata_crc32c: U32::new(0),
         })
     }
 
@@ -203,6 +194,17 @@ impl Trailer {
     #[must_use]
     pub const fn path_size(&self) -> u16 {
         self.path_size.get()
+    }
+
+    /// Returns the expected total archive file size.
+    #[must_use]
+    pub const fn archive_size(&self) -> u64 {
+        self.archive_size.get()
+    }
+
+    /// Sets the expected total archive file size.
+    pub fn set_archive_size(&mut self, size: u64) {
+        self.archive_size = U64::new(size);
     }
 
     /// Returns the next entry ID to assign.
@@ -247,12 +249,6 @@ impl Trailer {
         self.flags = (self.flags() - TrailerFlags::COMPACTED).bits();
     }
 
-    /// Returns the version as a tuple (major, minor, patch).
-    #[must_use]
-    pub const fn version(&self) -> (u8, u8, u8) {
-        (self.version_major, self.version_minor, self.version_patch)
-    }
-
     /// Returns `true` if the magic bytes match the expected value.
     #[must_use]
     pub const fn has_valid_magic(&self) -> bool {
@@ -261,14 +257,13 @@ impl Trailer {
             && m[1] == Self::MAGIC[1]
             && m[2] == Self::MAGIC[2]
             && m[3] == Self::MAGIC[3]
-            && m[4] == Self::MAGIC[4]
     }
 
     /// Validates the trailer fields.
     ///
     /// Checks:
-    /// - Magic bytes are `"BALE\0"`
-    /// - `alignment_power` is within valid range (≤ 24)
+    /// - Magic bytes are `BALE` at offset 56
+    /// - `alignment_power` is within valid range (≤ 16)
     /// - `path_size` is in range 1..=4096
     ///
     /// Note: The `reserved` field is NOT checked. Non-zero reserved bytes are
@@ -331,22 +326,17 @@ mod tests {
         assert_eq!(trailer.next_id(), 1);
         assert_eq!(trailer.entry_count.get(), 0);
         assert_eq!(trailer.directory_entry_count.get(), 0);
+        assert_eq!(trailer.archive_size(), 0);
+        assert_eq!(trailer.metadata_crc32c.get(), 0);
         assert!(trailer.is_valid());
     }
 
-    /// Magic bytes spell "BALE\0".
+    /// Magic bytes spell "BALE" at offset 56.
     #[test]
     fn magic_bytes() {
         let trailer = Trailer::new();
-        assert_eq!(&trailer.magic, b"BALE\0");
+        assert_eq!(&trailer.magic, b"BALE");
         assert!(trailer.has_valid_magic());
-    }
-
-    /// Version is set to current version.
-    #[test]
-    fn version() {
-        let trailer = Trailer::new();
-        assert_eq!(trailer.version(), Trailer::CURRENT_VERSION);
     }
 
     /// Alignment is correctly encoded as power of 2.
@@ -454,6 +444,7 @@ mod tests {
         trailer.directory_table_offset = U64::new(4576);
         trailer.directory_entry_count = U32::new(15);
         trailer.set_next_id(11);
+        trailer.set_archive_size(9999);
 
         let bytes = trailer.as_bytes();
         assert_eq!(bytes.len(), Trailer::SIZE);
@@ -467,7 +458,17 @@ mod tests {
         assert_eq!(restored.directory_table_offset.get(), 4576);
         assert_eq!(restored.directory_entry_count.get(), 15);
         assert_eq!(restored.next_id(), 11);
-        assert_eq!(restored.version(), Trailer::CURRENT_VERSION);
+        assert_eq!(restored.archive_size(), 9999);
+    }
+
+    /// archive_size can be set and retrieved.
+    #[test]
+    fn archive_size_accessors() {
+        let mut trailer = Trailer::new();
+        assert_eq!(trailer.archive_size(), 0);
+
+        trailer.set_archive_size(12345);
+        assert_eq!(trailer.archive_size(), 12345);
     }
 
     /// Non-power-of-2 alignment returns an error.
@@ -506,15 +507,15 @@ mod tests {
         assert!(Trailer::new_with_options(4096, Trailer::MAX_PATH_SIZE).is_ok());
     }
 
-    /// Alignment exceeding 16 MB returns an error.
+    /// Alignment exceeding 64 KB returns an error.
     #[test]
     fn alignment_too_large_returns_error() {
-        let too_large = 1u32 << 25;
+        let too_large = 1u32 << 17;
         let result = Trailer::new_with_options(too_large, 256);
         assert!(matches!(result, Err(BaleError::InvalidAlignment(ref s)) if s.contains("exceeds")));
     }
 
-    /// Alignment at max (16 MB) is valid.
+    /// Alignment at max (64 KB) is valid.
     #[test]
     fn max_alignment_is_valid() {
         let max_align = 1u32 << Trailer::MAX_ALIGNMENT_POWER;
@@ -577,5 +578,33 @@ mod tests {
         let mut trailer = Trailer::new();
         trailer.magic[0] = b'X';
         assert!(trailer.validated().is_err());
+    }
+
+    /// Byte layout matches spec offsets.
+    #[test]
+    fn byte_layout_matches_spec() {
+        let mut trailer = Trailer::new();
+        trailer.entry_table_offset = U64::new(0x1122_3344_5566_7788);
+        trailer.directory_table_offset = U64::new(0xAABB_CCDD_EEFF_0011);
+        trailer.set_archive_size(0x0102_0304_0506_0708);
+
+        let bytes = trailer.as_bytes();
+
+        // entry_table_offset at offset 0 (8 bytes, LE).
+        assert_eq!(&bytes[0..8], 0x1122_3344_5566_7788_u64.to_le_bytes());
+        // directory_table_offset at offset 8 (8 bytes, LE).
+        assert_eq!(&bytes[8..16], 0xAABB_CCDD_EEFF_0011_u64.to_le_bytes());
+        // archive_size at offset 16 (8 bytes, LE).
+        assert_eq!(&bytes[16..24], 0x0102_0304_0506_0708_u64.to_le_bytes());
+        // path_size at offset 36 (2 bytes, LE).
+        assert_eq!(&bytes[36..38], 256_u16.to_le_bytes());
+        // alignment_power at offset 38 (1 byte).
+        assert_eq!(bytes[38], 12);
+        // flags at offset 39 (1 byte).
+        assert_eq!(bytes[39], TrailerFlags::COMPACTED.bits());
+        // magic at offset 56 (4 bytes).
+        assert_eq!(&bytes[56..60], b"BALE");
+        // metadata_crc32c at offset 60 (4 bytes).
+        assert_eq!(&bytes[60..64], &[0, 0, 0, 0]);
     }
 }
