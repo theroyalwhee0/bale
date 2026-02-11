@@ -1,2 +1,2 @@
-error: 'test.txt': corrupted archive: CRC-32 mismatch: stored 0x57f467a2, computed 0x57f4675d
+error: 'test.txt': corrupted archive: CRC-32C mismatch: stored 0x1930a7fa, computed 0x1930a705
 error: check failed: 1 issue(s) found

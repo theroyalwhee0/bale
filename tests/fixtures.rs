@@ -36,13 +36,19 @@ fn generate_empty_bale() {
 
     // File header (8 bytes).
     let header = FileHeader::new();
-    file.write_all(header.as_bytes())
-        .expect("failed to write FileHeader");
+    let header_bytes = header.as_bytes();
 
     // Trailer (64 bytes) with default settings.
     let mut trailer = Trailer::new();
     trailer.archive_size =
         zerocopy::byteorder::little_endian::U64::new((FileHeader::SIZE + Trailer::SIZE) as u64);
+
+    // Compute metadata CRC-32C.
+    let metadata_crc = Trailer::compute_metadata_crc(header_bytes, &[], &[], &trailer);
+    trailer.set_metadata_crc(metadata_crc);
+
+    file.write_all(header_bytes)
+        .expect("failed to write FileHeader");
     file.write_all(trailer.as_bytes())
         .expect("failed to write Trailer");
 }
@@ -318,6 +324,26 @@ fn generate_unsorted_cd_bale() {
     trailer.path_size = U16::new(path_size);
     let archive_size = (buf.len() + Trailer::SIZE) as u64;
     trailer.archive_size = U64::new(archive_size);
+
+    // Compute metadata CRC-32C.
+    let entry_table_bytes = {
+        let offset = entry_table_offset as usize;
+        let len = entry_count as usize * EntryRow::SIZE;
+        &buf[offset..offset + len]
+    };
+    let directory_table_bytes = {
+        let offset = directory_table_offset as usize;
+        let len = directory_entry_count as usize * stride;
+        &buf[offset..offset + len]
+    };
+    let metadata_crc = Trailer::compute_metadata_crc(
+        &buf[..FileHeader::SIZE],
+        entry_table_bytes,
+        directory_table_bytes,
+        &trailer,
+    );
+    trailer.set_metadata_crc(metadata_crc);
+
     buf.extend_from_slice(trailer.as_bytes());
 
     // Write to file.
@@ -350,12 +376,15 @@ fn generate_duplicate_paths_bale() {
     writer.sync().expect("failed to sync archive");
 }
 
-/// Generates a bale archive with an incorrect CRC-32C checksum.
+/// Generates a bale archive with an incorrect per-entry CRC-32C checksum.
 ///
-/// The archive is structurally valid but the CRC-32C in the entry row
-/// does not match the actual file data.
+/// The archive is structurally valid with a correct metadata CRC, but the
+/// per-entry CRC-32C in the entry row does not match the actual file data.
+/// After corrupting the entry CRC, the metadata CRC is recomputed so the
+/// archive opens successfully and `bale check` can report the per-entry error.
 fn generate_bad_crc_bale() {
-    use std::io::{Read, Seek, SeekFrom};
+    use bale::{Crc, DirectoryRow, EntryRow};
+    use zerocopy::FromBytes;
 
     let archive_path = Path::new(INVALID_FIXTURES_DIR).join("bad_crc.bale");
 
@@ -371,39 +400,39 @@ fn generate_bad_crc_bale() {
         writer.sync().expect("failed to sync archive");
     }
 
-    // Corrupt the CRC-32C in the first entry row.
-    // The entry table offset is read from the trailer. The CRC-32C field
-    // is at offset 4 within the 64-byte entry row (after the 4-byte entry_id).
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&archive_path)
-        .expect("failed to open archive");
+    // Read the entire archive into memory.
+    let mut buf = std::fs::read(&archive_path).expect("failed to read archive");
+    let file_len = buf.len();
 
-    // Read entry_table_offset from the trailer (at file_len - 64 + 0).
-    let file_len = file.metadata().expect("failed to stat").len();
-    file.seek(SeekFrom::Start(file_len - Trailer::SIZE as u64))
-        .expect("failed to seek to trailer");
-    let mut offset_bytes = [0u8; 8];
-    file.read_exact(&mut offset_bytes)
-        .expect("failed to read entry_table_offset");
-    let entry_table_offset = u64::from_le_bytes(offset_bytes);
+    // Parse trailer to find entry table.
+    let trailer_start = file_len - Trailer::SIZE;
+    let trailer = *Trailer::ref_from_bytes(&buf[trailer_start..]).expect("failed to parse trailer");
+    let entry_table_offset = trailer.entry_table_offset.get() as usize;
 
-    // CRC-32C is at entry_table_offset + 4.
+    // Corrupt the per-entry CRC-32C (at entry_table_offset + 4).
     let crc_offset = entry_table_offset + 4;
+    buf[crc_offset] ^= 0xFF;
 
-    // Read current CRC.
-    file.seek(SeekFrom::Start(crc_offset))
-        .expect("failed to seek");
-    let mut crc_bytes = [0u8; 4];
-    file.read_exact(&mut crc_bytes).expect("failed to read CRC");
+    // Recompute metadata CRC-32C so the archive still opens.
+    let mut new_trailer = trailer;
+    new_trailer.set_metadata_crc(Crc::NONE);
+    let entry_count = trailer.entry_count.get() as usize;
+    let entry_table_bytes =
+        &buf[entry_table_offset..entry_table_offset + entry_count * EntryRow::SIZE];
+    let dir_offset = trailer.directory_table_offset.get() as usize;
+    let dir_count = trailer.directory_entry_count.get() as usize;
+    let dir_stride = DirectoryRow::stride(trailer.path_size());
+    let directory_table_bytes = &buf[dir_offset..dir_offset + dir_count * dir_stride];
+    let metadata_crc = Trailer::compute_metadata_crc(
+        &buf[..FileHeader::SIZE],
+        entry_table_bytes,
+        directory_table_bytes,
+        &new_trailer,
+    );
+    new_trailer.set_metadata_crc(metadata_crc);
 
-    // Corrupt it by flipping bits.
-    crc_bytes[0] ^= 0xFF;
+    // Write updated trailer back.
+    buf[trailer_start..].copy_from_slice(new_trailer.as_bytes());
 
-    // Write corrupted CRC back.
-    file.seek(SeekFrom::Start(crc_offset))
-        .expect("failed to seek");
-    file.write_all(&crc_bytes)
-        .expect("failed to write corrupted CRC");
+    std::fs::write(&archive_path, &buf).expect("failed to write corrupted archive");
 }

@@ -1,10 +1,11 @@
-//! CRC-32 newtype for strong typing.
+//! CRC-32C (Castagnoli) newtype for strong typing.
 
-/// CRC-32 checksum with semantic zero handling.
+/// CRC-32C checksum with semantic zero handling.
 ///
-/// Wraps a raw `u32` CRC value. The value `0` represents "no CRC" (used by
-/// directories and empty entries), accessed via [`get()`](Self::get) which
-/// returns `None` for zero and `Some(value)` for non-zero.
+/// Wraps a raw `u32` CRC-32C (Castagnoli) value. The value `0` represents
+/// "no CRC" (used by directories and empty entries), accessed via
+/// [`get()`](Self::get) which returns `None` for zero and `Some(value)`
+/// for non-zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crc(u32);
 
@@ -18,7 +19,7 @@ impl Crc {
         Self(value)
     }
 
-    /// Computes the CRC-32 checksum of the given data.
+    /// Computes the CRC-32C (Castagnoli) checksum of the given data.
     ///
     /// Returns [`Crc::NONE`] for empty data.
     #[must_use]
@@ -26,7 +27,16 @@ impl Crc {
         if data.is_empty() {
             return Self::NONE;
         }
-        Self(crc32fast::hash(data))
+        Self(crc32c::crc32c(data))
+    }
+
+    /// Appends more data to an existing CRC, returning the updated checksum.
+    ///
+    /// This enables incremental CRC computation over non-contiguous regions
+    /// by feeding each region sequentially into the CRC state machine.
+    #[must_use]
+    pub fn append(self, data: &[u8]) -> Self {
+        Self(crc32c::crc32c_append(self.0, data))
     }
 
     /// Returns the CRC value, or `None` if absent (zero).
@@ -67,12 +77,31 @@ mod tests {
         assert_eq!(Crc::compute(b""), Crc::NONE);
     }
 
-    /// `Crc::compute` on non-empty data returns a non-zero CRC.
+    /// `Crc::compute` on non-empty data returns a non-zero CRC-32C.
     #[test]
     fn compute_non_empty() {
         let crc = Crc::compute(b"Hello, World!");
         assert!(crc.get().is_some());
-        assert_eq!(crc.to_u32(), crc32fast::hash(b"Hello, World!"));
+        assert_eq!(crc.to_u32(), crc32c::crc32c(b"Hello, World!"));
+    }
+
+    /// `Crc::append` produces the same result as computing over concatenated data.
+    #[test]
+    fn append_matches_concatenated() {
+        let a = b"Hello, ";
+        let b = b"World!";
+        let combined = [a.as_slice(), b.as_slice()].concat();
+
+        let incremental = Crc::compute(a).append(b);
+        let single_pass = Crc::compute(&combined);
+        assert_eq!(incremental, single_pass);
+    }
+
+    /// `Crc::append` with empty data is a no-op.
+    #[test]
+    fn append_empty_is_noop() {
+        let crc = Crc::compute(b"data");
+        assert_eq!(crc.append(b""), crc);
     }
 
     /// Equality compares inner values.

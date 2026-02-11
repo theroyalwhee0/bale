@@ -357,7 +357,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         &self.trailer
     }
 
-    /// Verifies the CRC-32 checksum for an entry.
+    /// Verifies the CRC-32C checksum for an entry.
     ///
     /// # Errors
     ///
@@ -368,11 +368,61 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
             return Ok(());
         };
         let data = self.read_data(entry)?;
-        let computed_crc = crc32fast::hash(data);
+        let computed = Crc::compute(data);
 
-        if stored_crc != computed_crc {
+        if stored_crc != computed.to_u32() {
             return Err(BaleError::Corrupted(format!(
-                "CRC-32 mismatch: stored {stored_crc:#010x}, computed {computed_crc:#010x}"
+                "CRC-32C mismatch: stored {stored_crc:#010x}, computed {:#010x}",
+                computed.to_u32()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Verifies the metadata CRC-32C for the archive.
+    ///
+    /// For writers, the metadata CRC is computed during [`sync()`](ArchiveWrite::sync).
+    /// This method recomputes and validates it against the on-disk trailer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the computed CRC does not match the stored CRC.
+    fn verify_metadata_crc(&self) -> Result<(), BaleError> {
+        let file_header = &self.mmap.as_bytes()[..FileHeader::SIZE];
+        let entry_table = {
+            let offset = self.trailer.entry_table_offset.get() as usize;
+            let len = self.entry_rows.len() * EntryRow::SIZE;
+            if len == 0 {
+                &[] as &[u8]
+            } else {
+                &self.mmap.as_bytes()[offset..offset + len]
+            }
+        };
+        let directory_table = {
+            let count = self.trailer.directory_entry_count.get() as usize;
+            if count == 0 {
+                &[] as &[u8]
+            } else {
+                let offset = self.trailer.directory_table_offset.get() as usize;
+                let stride = DirectoryRow::stride(self.trailer.path_size());
+                let len = count * stride;
+                &self.mmap.as_bytes()[offset..offset + len]
+            }
+        };
+        let mut trailer_for_crc = self.trailer;
+        trailer_for_crc.set_metadata_crc(Crc::NONE);
+        let computed = Trailer::compute_metadata_crc(
+            file_header,
+            entry_table,
+            directory_table,
+            &trailer_for_crc,
+        );
+        let stored = self.trailer.metadata_crc();
+        if stored != computed {
+            let stored_val = stored.to_u32();
+            let computed_val = computed.to_u32();
+            return Err(BaleError::Corrupted(format!(
+                "metadata CRC-32C mismatch: stored {stored_val:#010x}, computed {computed_val:#010x}"
             )));
         }
         Ok(())
@@ -706,6 +756,27 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         // Set archive_size: current mmap length + trailer size.
         let archive_size = self.mmap.len() as u64 + Trailer::SIZE as u64;
         self.trailer.set_archive_size(archive_size);
+
+        // Compute metadata CRC-32C over file header + entry table +
+        // directory table + trailer bytes 0–59 (CRC field zeroed).
+        self.trailer.set_metadata_crc(Crc::NONE);
+        let file_header_bytes = &self.mmap.as_bytes()[..FileHeader::SIZE];
+        let entry_table_bytes = {
+            let offset = entry_table_offset as usize;
+            let len = self.entry_rows.len() * EntryRow::SIZE;
+            &self.mmap.as_bytes()[offset..offset + len]
+        };
+        let directory_table_bytes = {
+            let offset = directory_table_offset as usize;
+            &self.mmap.as_bytes()[offset..self.mmap.len()]
+        };
+        let metadata_crc = Trailer::compute_metadata_crc(
+            file_header_bytes,
+            entry_table_bytes,
+            directory_table_bytes,
+            &self.trailer,
+        );
+        self.trailer.set_metadata_crc(metadata_crc);
 
         // Write trailer.
         self.mmap.extend(self.trailer.as_bytes())?;

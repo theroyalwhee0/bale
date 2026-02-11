@@ -3,7 +3,7 @@
 //! This module contains the on-disk layout structures that define the bale
 //! archive format. See `docs/bale-spec.md` for the full specification.
 
-/// CRC-32 newtype for strong typing.
+/// CRC-32C newtype for strong typing.
 mod crc;
 /// Directory table row mapping path to entry ID.
 mod directory_row;

@@ -4,7 +4,7 @@
 //! directly from the memory-mapped file via offsets stored in the trailer.
 
 use super::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
-use crate::format::{DirectoryRow, EntryRow, FileHeader, Trailer};
+use crate::format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchive};
 use std::collections::HashSet;
 use std::path::Path;
@@ -19,6 +19,7 @@ impl Archive<MappedArchive> {
     /// - The file cannot be opened or memory-mapped
     /// - The archive is too small to contain a valid trailer
     /// - The trailer magic or version is invalid
+    /// - The metadata CRC-32C does not match
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let mmap = MappedArchive::open(path)?;
         let bytes = mmap.as_bytes();
@@ -37,6 +38,9 @@ impl Archive<MappedArchive> {
             .map_err(|e| BaleError::Corrupted(format!("invalid trailer: {e}")))?;
         trailer.validated()?;
 
+        // Validate metadata CRC-32C.
+        Self::check_metadata_crc(bytes, &trailer)?;
+
         Ok(Self {
             mmap,
             trailer,
@@ -45,6 +49,61 @@ impl Archive<MappedArchive> {
             entry_rows: Vec::new(),
             dir_entries: Vec::new(),
         })
+    }
+
+    /// Verifies the metadata CRC-32C against the archive contents.
+    ///
+    /// Computes the CRC over file header, entry table, directory table,
+    /// and trailer bytes 0–59, then compares against the stored value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::Corrupted` if the CRC does not match.
+    fn check_metadata_crc(bytes: &[u8], trailer: &Trailer) -> Result<(), BaleError> {
+        let stored = trailer.metadata_crc();
+        let file_header = &bytes[..FileHeader::SIZE];
+        let entry_table = {
+            let count = trailer.entry_count.get() as usize;
+            if count == 0 {
+                &[] as &[u8]
+            } else {
+                let offset = trailer.entry_table_offset.get() as usize;
+                let len = count * EntryRow::SIZE;
+                &bytes[offset..offset + len]
+            }
+        };
+        let directory_table = {
+            let count = trailer.directory_entry_count.get() as usize;
+            if count == 0 {
+                &[] as &[u8]
+            } else {
+                let offset = trailer.directory_table_offset.get() as usize;
+                let stride = DirectoryRow::stride(trailer.path_size());
+                let len = count * stride;
+                &bytes[offset..offset + len]
+            }
+        };
+
+        // Compute with CRC field zeroed (use a copy of the trailer).
+        let computed = {
+            let mut trailer_for_crc = *trailer;
+            trailer_for_crc.set_metadata_crc(Crc::NONE);
+            Trailer::compute_metadata_crc(
+                file_header,
+                entry_table,
+                directory_table,
+                &trailer_for_crc,
+            )
+        };
+
+        if stored != computed {
+            let stored_val = stored.to_u32();
+            let computed_val = computed.to_u32();
+            return Err(BaleError::Corrupted(format!(
+                "metadata CRC-32C mismatch: stored {stored_val:#010x}, computed {computed_val:#010x}"
+            )));
+        }
+        Ok(())
     }
 
     /// Returns a zero-copy slice of the entry table from the mmap.
@@ -298,7 +357,7 @@ impl ArchiveRead for Archive<MappedArchive> {
         &self.trailer
     }
 
-    /// Verifies the CRC-32 checksum for an entry.
+    /// Verifies the CRC-32C checksum for an entry.
     ///
     /// # Errors
     ///
@@ -309,14 +368,24 @@ impl ArchiveRead for Archive<MappedArchive> {
             return Ok(());
         };
         let data = self.read_data(entry)?;
-        let computed_crc = crc32fast::hash(data);
+        let computed = Crc::compute(data);
 
-        if stored_crc != computed_crc {
+        if stored_crc != computed.to_u32() {
             return Err(BaleError::Corrupted(format!(
-                "CRC-32 mismatch: stored {stored_crc:#010x}, computed {computed_crc:#010x}"
+                "CRC-32C mismatch: stored {stored_crc:#010x}, computed {:#010x}",
+                computed.to_u32()
             )));
         }
         Ok(())
+    }
+
+    /// Verifies the metadata CRC-32C for the archive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the computed CRC does not match the stored CRC.
+    fn verify_metadata_crc(&self) -> Result<(), BaleError> {
+        Self::check_metadata_crc(self.mmap.as_bytes(), &self.trailer)
     }
 
     /// Checks if the directory table is sorted by raw path bytes.
@@ -656,6 +725,26 @@ mod tests {
         let archive_size = (buf.len() + Trailer::SIZE) as u64;
         trailer.set_archive_size(archive_size);
 
+        // Compute metadata CRC-32C.
+        let file_header_bytes = &buf[..FileHeader::SIZE];
+        let entry_table_bytes = {
+            let offset = entry_table_offset as usize;
+            let len = entry_count as usize * EntryRow::SIZE;
+            &buf[offset..offset + len]
+        };
+        let directory_table_bytes = {
+            let offset = directory_table_offset as usize;
+            let len = directory_entry_count as usize * stride;
+            &buf[offset..offset + len]
+        };
+        let metadata_crc = Trailer::compute_metadata_crc(
+            file_header_bytes,
+            entry_table_bytes,
+            directory_table_bytes,
+            &trailer,
+        );
+        trailer.set_metadata_crc(metadata_crc);
+
         buf.extend_from_slice(trailer.as_bytes());
 
         buf
@@ -958,7 +1047,7 @@ mod tests {
         let result = archive.verify_crc(entry);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("CRC-32 mismatch"), "error was: {err}");
+        assert!(err.contains("CRC-32C mismatch"), "error was: {err}");
     }
 
     /// verify_crc succeeds for a directory (no data block).
