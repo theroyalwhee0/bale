@@ -1082,6 +1082,79 @@ impl BaleFsState {
 
         Ok((ino, attr))
     }
+
+    /// Creates a hard link to an existing file.
+    ///
+    /// Returns the shared inode and updated attributes for the linked file.
+    pub(super) fn create_hard_link(
+        &mut self,
+        ino: u64,
+        new_parent_ino: u64,
+        new_name: &str,
+    ) -> Result<(u64, fuser::FileAttr), i32> {
+        // Check name validity.
+        Self::validate_name(new_name)?;
+
+        // Check the source inode exists and is a file (not a directory).
+        let source_path = match self.inode_to_path.get(&ino) {
+            Some(p) => p.clone(),
+            None => return Err(libc::ENOENT),
+        };
+
+        // Check parent exists.
+        if !self.dir_contents.contains_key(&new_parent_ino) {
+            return Err(libc::ENOENT);
+        }
+
+        // Build full path for the new link.
+        let parent_path = self.get_dir_path(new_parent_ino);
+        let full_path = if parent_path.is_empty() {
+            new_name.to_string()
+        } else {
+            format!("{}/{}", parent_path, new_name)
+        };
+
+        // Check path length and reserved prefix.
+        self.validate_path_length(&full_path)?;
+        Self::validate_archive_path(&full_path)?;
+
+        // Check destination doesn't already exist.
+        if self.path_to_inode.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+        if self.dir_inodes.contains_key(&full_path) {
+            return Err(libc::EEXIST);
+        }
+
+        // Create hard link in archive.
+        self.archive
+            .hard_link(&source_path, &full_path)
+            .map_err(|_| libc::EIO)?;
+
+        // Update path mappings — share the same inode.
+        self.path_to_inode.insert(full_path.clone(), ino);
+
+        // Update nlink count.
+        *self.nlink_counts.entry(ino).or_insert(1) += 1;
+        let nlink = self.nlink_counts.get(&ino).copied().unwrap_or(1);
+
+        // Add to parent directory contents.
+        if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
+            contents.push(FuseDirEntry::file(new_name, ino));
+        }
+
+        // Build attributes from archive entry.
+        let attr = if let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&full_path) {
+            let mut attr =
+                self.get_attr_for_file(ino, FileType::RegularFile, entry_row, &full_path);
+            attr.nlink = nlink;
+            attr
+        } else {
+            self.get_attr(ino, FileType::RegularFile)
+        };
+
+        Ok((ino, attr))
+    }
 }
 
 #[cfg(test)]
@@ -1154,6 +1227,52 @@ mod tests {
         // nlink count should be 2.
         let nlink = state.nlink_counts.get(&original_ino).copied().unwrap_or(1);
         assert_eq!(nlink, 2, "hard-linked file should have nlink=2");
+    }
+
+    /// Tests creating a hard link via `create_hard_link`.
+    #[test]
+    fn create_hard_link_via_fuse() {
+        let archive = create_test_archive(&[("file.txt", b"hello", 0o100644)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Get the inode for the existing file.
+        let file_ino = *state.path_to_inode.get("file.txt").unwrap();
+
+        // Create a hard link in the root directory.
+        let result = state.create_hard_link(file_ino, ROOT_INO, "link.txt");
+        assert!(result.is_ok(), "create_hard_link should succeed");
+
+        let (link_ino, attr) = result.unwrap();
+        assert_eq!(link_ino, file_ino, "hard link should share the same inode");
+        assert_eq!(attr.nlink, 2, "nlink should be 2 after creating hard link");
+
+        // Verify the new path is registered.
+        assert_eq!(
+            state.path_to_inode.get("link.txt").copied(),
+            Some(file_ino),
+            "new path should map to the same inode"
+        );
+
+        // Verify the new link appears in the root directory listing.
+        let root_contents = state.dir_contents.get(&ROOT_INO).unwrap();
+        assert!(
+            root_contents.iter().any(|e| e.name == "link.txt"),
+            "link.txt should appear in root directory"
+        );
+    }
+
+    /// Tests that creating a hard link to an existing path fails.
+    #[test]
+    fn create_hard_link_existing_path_fails() {
+        let archive = create_test_archive(&[
+            ("file.txt", b"hello", 0o100644),
+            ("other.txt", b"world", 0o100644),
+        ]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let file_ino = *state.path_to_inode.get("file.txt").unwrap();
+        let result = state.create_hard_link(file_ino, ROOT_INO, "other.txt");
+        assert_eq!(result.unwrap_err(), libc::EEXIST);
     }
 
     /// Tests that `get_parent_inode` returns the correct parent for nested directories.
