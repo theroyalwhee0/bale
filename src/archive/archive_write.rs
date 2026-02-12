@@ -181,7 +181,8 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Creates a symbolic link entry.
     ///
     /// Symlink entries store the target path as their data block content,
-    /// with symlink mode bits set.
+    /// with symlink mode bits set. The target is validated to prevent
+    /// absolute paths and paths that escape the archive root.
     ///
     /// # Arguments
     ///
@@ -195,6 +196,8 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
     /// - Writing to the archive fails
+    /// - The target is an absolute path ([`BaleError::InvalidPath`])
+    /// - The target escapes the archive root ([`BaleError::InvalidPath`])
     fn add_symlink(
         &mut self,
         path: impl AsRef<str>,

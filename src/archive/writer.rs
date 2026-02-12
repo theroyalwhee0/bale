@@ -986,9 +986,16 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
     /// Creates a symlink entry.
     ///
+    /// The target is validated to prevent absolute paths and paths that
+    /// escape the archive root when resolved against the symlink's parent
+    /// directory.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the path is invalid or writing fails.
+    /// Returns an error if:
+    /// - The path is invalid or writing fails
+    /// - The target is absolute (`InvalidPath`)
+    /// - The target escapes the archive root (`InvalidPath`)
     fn add_symlink(
         &mut self,
         path: impl AsRef<str>,
@@ -997,6 +1004,24 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     ) -> Result<(), BaleError> {
         let path = path.as_ref();
         let target = target.as_ref();
+
+        // Reject absolute symlink targets.
+        if target.starts_with('/') || target.starts_with('\\') {
+            return Err(BaleError::InvalidPath);
+        }
+
+        // Reject targets that escape the archive root when resolved
+        // against the symlink's parent directory.
+        let symlink_path = ArchivePath::try_from(path)?;
+        let parent = symlink_path.parent();
+        let joined = if parent.is_empty() {
+            target.to_string()
+        } else {
+            let parent_str = parent.to_str_checked()?;
+            format!("{parent_str}/{target}")
+        };
+        ArchivePath::try_from(joined.as_str())?;
+
         // Ensure symlink type bits are set.
         let mode = if mode & SFlag::S_IFMT.bits() == 0 {
             mode | SFlag::S_IFLNK.bits()
@@ -1583,6 +1608,46 @@ mod tests {
         assert_eq!(file.data, b"new data!");
         assert_eq!(file.entry.mode.get(), 0o100755);
         reader.verify_crc(file.entry).unwrap();
+    }
+
+    /// add_symlink rejects absolute targets starting with `/`.
+    #[test]
+    fn add_symlink_rejects_absolute_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.add_symlink("link", "/usr/share/data.txt", 0o777);
+        assert!(matches!(result, Err(BaleError::InvalidPath)));
+    }
+
+    /// add_symlink rejects targets that escape the archive root via `..`.
+    #[test]
+    fn add_symlink_rejects_escaping_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.add_symlink("link", "../../outside.txt", 0o777);
+        assert!(matches!(result, Err(BaleError::InvalidPath)));
+    }
+
+    /// add_symlink allows relative targets that stay within the archive.
+    #[test]
+    fn add_symlink_allows_relative_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            // dir/link -> ../sibling resolves to "sibling", which is valid.
+            writer.add_symlink("dir/link", "../sibling", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let symlink = reader.symlink("dir/link").unwrap();
+        assert_eq!(symlink.target(), Some("../sibling"));
     }
 
     /// replace_content on a directory returns an error.

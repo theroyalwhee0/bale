@@ -4,6 +4,37 @@ use crate::archive::{DirEntry, Entry, FileEntry, SymlinkEntry};
 use crate::format::{EntryRow, Trailer};
 use crate::{ArchivePath, BaleError};
 
+/// Maximum number of symlink resolutions before declaring a loop.
+const MAX_SYMLINK_DEPTH: u32 = 256;
+
+/// Resolves a symlink target path relative to the symlink's location.
+///
+/// Joins the symlink's parent directory with the target and normalizes
+/// the result via [`ArchivePath::try_from`].
+///
+/// # Errors
+///
+/// Returns [`BaleError::InvalidPath`] if the resolved path escapes the
+/// archive root or is otherwise invalid.
+/// Returns [`BaleError::InvalidUtf8`] if the symlink path is not valid UTF-8.
+fn resolve_target(symlink_path: &ArchivePath<'_>, target: &str) -> Result<String, BaleError> {
+    // Reject absolute symlink targets (defense against malicious archives).
+    if target.starts_with('/') || target.starts_with('\\') {
+        return Err(BaleError::InvalidPath);
+    }
+
+    let parent = symlink_path.parent();
+    let joined = if parent.is_empty() {
+        target.to_string()
+    } else {
+        let parent_str = parent.to_str_checked()?;
+        format!("{parent_str}/{target}")
+    };
+    let normalized = ArchivePath::try_from(joined.as_str())?;
+    // ArchivePath::try_from(&str) always produces valid UTF-8.
+    Ok(normalized.as_str().unwrap().to_string())
+}
+
 /// Read operations for archives.
 ///
 /// This trait is implemented for all `Archive<M>` where `M` provides byte access.
@@ -160,4 +191,90 @@ pub trait ArchiveRead {
     ///
     /// Returns `None` if no entry with the given ID exists.
     fn find_by_id(&self, id: u32) -> Option<Entry<'_>>;
+
+    /// Resolves a path, following symlinks transparently.
+    ///
+    /// Implements the high-level path-walking resolution algorithm from the
+    /// spec (§ Symlink Resolution). Symlinks are followed up to a depth of
+    /// 256 before returning [`BaleError::SymlinkLoop`]. Low-level methods
+    /// ([`entry`](Self::entry), [`file`](Self::file),
+    /// [`symlink`](Self::symlink)) are unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is not found ([`BaleError::EntryNotFound`])
+    /// - A non-directory component is used as a directory
+    ///   ([`BaleError::NotADirectory`])
+    /// - A symlink loop is detected ([`BaleError::SymlinkLoop`])
+    /// - The path is invalid ([`BaleError::InvalidPath`])
+    fn resolve(&self, path: impl AsRef<str>) -> Result<Entry<'_>, BaleError> {
+        let normalized = ArchivePath::try_from(path.as_ref())?;
+        // ArchivePath::try_from(&str) always produces valid UTF-8.
+        let mut current_path = normalized.as_str().unwrap().to_string();
+        let mut depth = 0u32;
+
+        'outer: loop {
+            // Fast path: look up the full path.
+            match self.entry(&current_path) {
+                Ok(Entry::Symlink(symlink)) => {
+                    depth += 1;
+                    if depth > MAX_SYMLINK_DEPTH {
+                        return Err(BaleError::SymlinkLoop(current_path));
+                    }
+                    let target = symlink.target().ok_or(BaleError::InvalidPath)?;
+                    current_path = resolve_target(symlink.path(), target)?;
+                    continue;
+                }
+                Ok(entry) => return Ok(entry),
+                Err(BaleError::EntryNotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+
+            // Component walk: split path and resolve front-to-back.
+            let components: Vec<&str> = current_path.split('/').collect();
+            let mut resolved = String::new();
+
+            for (i, component) in components.iter().enumerate() {
+                if resolved.is_empty() {
+                    resolved.push_str(component);
+                } else {
+                    resolved.push('/');
+                    resolved.push_str(component);
+                }
+
+                let remaining = &components[i + 1..];
+
+                match self.entry(&resolved) {
+                    Ok(Entry::Symlink(symlink)) => {
+                        depth += 1;
+                        if depth > MAX_SYMLINK_DEPTH {
+                            return Err(BaleError::SymlinkLoop(current_path));
+                        }
+                        let target = symlink.target().ok_or(BaleError::InvalidPath)?;
+                        let resolved_target = resolve_target(symlink.path(), target)?;
+                        current_path = if remaining.is_empty() {
+                            resolved_target
+                        } else {
+                            format!("{resolved_target}/{}", remaining.join("/"))
+                        };
+                        continue 'outer;
+                    }
+                    Ok(entry) if remaining.is_empty() => return Ok(entry),
+                    Ok(Entry::File(_)) => {
+                        return Err(BaleError::NotADirectory(resolved));
+                    }
+                    Ok(Entry::Directory(_)) => {
+                        // Continue to next component.
+                    }
+                    Err(BaleError::EntryNotFound(_)) => {
+                        return Err(BaleError::EntryNotFound(current_path));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            unreachable!("component walk exhausted without returning");
+        }
+    }
 }

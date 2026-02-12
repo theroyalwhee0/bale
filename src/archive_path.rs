@@ -116,6 +116,18 @@ impl<'a> ArchivePath<'a> {
         Ok(std::str::from_utf8(&self.0)?)
     }
 
+    /// Returns the parent directory path, or an empty path for top-level entries.
+    ///
+    /// For a path like `foo/bar/baz.txt`, returns `foo/bar`.
+    /// For a top-level path like `file.txt`, returns an empty path.
+    #[must_use]
+    pub fn parent(&self) -> ArchivePath<'_> {
+        match self.0.iter().rposition(|&b| b == b'/') {
+            Some(pos) => ArchivePath(Cow::Borrowed(&self.0[..pos])),
+            None => ArchivePath(Cow::Borrowed(&[])),
+        }
+    }
+
     /// Returns the filename component as bytes (after the last `/`).
     ///
     /// For a path like `foo/bar/baz.txt`, returns `baz.txt`.
@@ -804,6 +816,32 @@ mod tests {
         let path = ArchivePath::from_bytes(b"foo\\bar");
         let normalized = path.normalize().unwrap();
         assert_eq!(normalized.as_str(), Some("foo/bar"));
+    }
+
+    // ==================== Parent Tests ====================
+
+    /// parent() of a top-level path returns an empty path.
+    #[test]
+    fn parent_top_level() {
+        let path = ArchivePath::try_from("file.txt").unwrap();
+        let parent = path.parent();
+        assert!(parent.is_empty());
+    }
+
+    /// parent() of a nested path returns the parent directory.
+    #[test]
+    fn parent_nested() {
+        let path = ArchivePath::try_from("foo/bar.txt").unwrap();
+        let parent = path.parent();
+        assert_eq!(parent.as_str(), Some("foo"));
+    }
+
+    /// parent() of a deeply nested path returns the full parent.
+    #[test]
+    fn parent_deeply_nested() {
+        let path = ArchivePath::try_from("a/b/c/d.txt").unwrap();
+        let parent = path.parent();
+        assert_eq!(parent.as_str(), Some("a/b/c"));
     }
 
     // ==================== Safename Tests ====================

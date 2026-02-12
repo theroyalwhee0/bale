@@ -82,6 +82,10 @@ pub enum BaleError {
     #[error("path already exists: {0}")]
     PathExists(String),
 
+    /// Symlink resolution exceeded the maximum depth (cycle detected).
+    #[error("symlink loop: {0}")]
+    SymlinkLoop(String),
+
     /// Archive has exhausted its entry ID space (u32::MAX reached).
     #[error("archive is full: entry ID space exhausted")]
     ArchiveFull,
