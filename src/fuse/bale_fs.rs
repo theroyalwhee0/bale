@@ -474,21 +474,8 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        // chown not supported - return EPERM unless setting to current owner.
-        if let Some(new_uid) = uid
-            && new_uid != state.uid
-        {
-            reply.error(libc::EPERM);
-            return;
-        }
-        if let Some(new_gid) = gid
-            && new_gid != state.gid
-        {
-            reply.error(libc::EPERM);
-            return;
-        }
-
         // Check read-only for size, mode, or mtime changes.
+        // chown is allowed even on read-only mounts (transient only).
         if (size.is_some() || mode.is_some() || mtime.is_some()) && state.read_only {
             reply.error(libc::EROFS);
             return;
@@ -513,6 +500,15 @@ impl fuser::Filesystem for BaleFs {
                         };
                         state.set_dir_mtime(ino, time);
                     }
+                    // Handle directory chown (transient).
+                    if let Some(new_uid) = uid {
+                        let dir_path = state.get_dir_path(ino);
+                        state.modified_uids.insert(dir_path, new_uid);
+                    }
+                    if let Some(new_gid) = gid {
+                        let dir_path = state.get_dir_path(ino);
+                        state.modified_gids.insert(dir_path, new_gid);
+                    }
                     let attr = state.get_attr(ino, FileType::Directory);
                     reply.attr(&TTL, &attr);
                     return;
@@ -521,6 +517,14 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Handle file/symlink chown (transient).
+        if let Some(new_uid) = uid {
+            state.modified_uids.insert(path.clone(), new_uid);
+        }
+        if let Some(new_gid) = gid {
+            state.modified_gids.insert(path.clone(), new_gid);
+        }
 
         // Handle mode change (chmod).
         if let Some(new_mode) = mode {
@@ -614,8 +618,8 @@ impl fuser::Filesystem for BaleFs {
                 perm
             },
             nlink,
-            uid: state.uid,
-            gid: state.gid,
+            uid: state.get_uid(&path),
+            gid: state.get_gid(&path),
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -627,7 +631,7 @@ impl fuser::Filesystem for BaleFs {
     /// Creates a new directory.
     fn mkdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -657,7 +661,15 @@ impl fuser::Filesystem for BaleFs {
 
         let mode = Mode::from_bits_truncate(mode);
         match state.create_directory(parent, name, mode) {
-            Ok((ino, attr)) => reply.entry(&TTL, &attr, ino),
+            Ok((ino, mut attr)) => {
+                // Set ownership to the calling user.
+                let dir_path = state.get_dir_path(ino);
+                state.modified_uids.insert(dir_path.clone(), req.uid());
+                state.modified_gids.insert(dir_path, req.gid());
+                attr.uid = req.uid();
+                attr.gid = req.gid();
+                reply.entry(&TTL, &attr, ino);
+            }
             Err(e) => reply.error(e),
         }
     }
@@ -694,7 +706,7 @@ impl fuser::Filesystem for BaleFs {
     /// Creates a new file.
     fn create(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -725,7 +737,14 @@ impl fuser::Filesystem for BaleFs {
 
         let mode = Mode::from_bits_truncate(mode);
         match state.create_file(parent, name, mode) {
-            Ok((ino, attr)) => {
+            Ok((ino, mut attr)) => {
+                // Set ownership to the calling user.
+                if let Some(path) = state.inode_to_path.get(&ino).cloned() {
+                    state.modified_uids.insert(path.clone(), req.uid());
+                    state.modified_gids.insert(path, req.gid());
+                }
+                attr.uid = req.uid();
+                attr.gid = req.gid();
                 // Use inode as file handle for simplicity.
                 reply.created(&TTL, &attr, ino, ino, 0);
             }
@@ -736,7 +755,7 @@ impl fuser::Filesystem for BaleFs {
     /// Creates a symlink.
     fn symlink(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         link_name: &OsStr,
         target: &std::path::Path,
@@ -772,7 +791,16 @@ impl fuser::Filesystem for BaleFs {
         };
 
         match state.create_symlink(parent, link_name, target) {
-            Ok((_ino, attr)) => reply.entry(&TTL, &attr, 0),
+            Ok((ino, mut attr)) => {
+                // Set ownership to the calling user.
+                if let Some(path) = state.inode_to_path.get(&ino).cloned() {
+                    state.modified_uids.insert(path.clone(), req.uid());
+                    state.modified_gids.insert(path, req.gid());
+                }
+                attr.uid = req.uid();
+                attr.gid = req.gid();
+                reply.entry(&TTL, &attr, 0);
+            }
             Err(e) => reply.error(e),
         }
     }

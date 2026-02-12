@@ -1,11 +1,37 @@
 #!/bin/bash
 # Run pjdfstest against a fresh bale mount, grouped by support status.
+#
+# Build first (as non-root), then run with sudo:
+#   cargo build --release
+#   sudo tests/bin/run-pjdfstest.sh
 
 set -e
 
+# Require root for proper permission/ownership testing.
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: must run as root (sudo $0)" >&2
+    exit 1
+fi
+
+# Resolve the invoking user's home directory (not root's).
+if [[ -n "$SUDO_USER" ]]; then
+    USER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+else
+    USER_HOME="$HOME"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BALE="$PROJECT_DIR/target/release/bale"
+
+if [[ ! -x "$BALE" ]]; then
+    echo "Error: $BALE not found. Build first with: cargo build --release" >&2
+    exit 1
+fi
+
 ARCHIVE="/tmp/test-pjdfstest.bale"
-TESTS_DIR="$HOME/projects/ref/pjdfstest/tests"
-OUTPUT_DIR="$HOME/projects/pjdfstest-results"
+TESTS_DIR="$USER_HOME/projects/ref/pjdfstest/tests"
+OUTPUT_DIR="$USER_HOME/projects/pjdfstest-results"
 # Use 4096 path size to match POSIX PATH_MAX for pjdfstest compliance.
 PATH_SIZE=4096
 
@@ -80,8 +106,8 @@ run_tests() {
 
     echo "=== Running $name tests ==="
     rm -f "$ARCHIVE"
-    cargo run --quiet -- touch --path-size "$PATH_SIZE" "$ARCHIVE"
-    cargo run --quiet -- mount "$ARCHIVE" --shell \
+    "$BALE" touch --path-size "$PATH_SIZE" "$ARCHIVE"
+    "$BALE" mount --allow-other "$ARCHIVE" --shell \
         "prove -v $paths :: --failures > $output 2>&1 || true"
     echo "  -> $output"
 }
