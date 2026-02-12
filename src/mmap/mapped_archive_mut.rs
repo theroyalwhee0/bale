@@ -1,7 +1,6 @@
 //! Read-write memory-mapped archive.
 
 use crate::BaleError;
-use fs4::fs_std::FileExt;
 use std::fs::File;
 use std::path::Path;
 
@@ -83,7 +82,10 @@ impl MappedArchiveMut {
             .write(true)
             .create_new(true)
             .open(path.as_ref())?;
-        file.lock_exclusive()?;
+        file.try_lock().map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => BaleError::FileLocked,
+            std::fs::TryLockError::Error(io_err) => BaleError::Io(io_err),
+        })?;
         file.set_len(capacity as u64)?;
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
@@ -115,7 +117,10 @@ impl MappedArchiveMut {
             .read(true)
             .write(true)
             .open(path.as_ref())?;
-        file.lock_exclusive()?;
+        file.try_lock().map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => BaleError::FileLocked,
+            std::fs::TryLockError::Error(io_err) => BaleError::Io(io_err),
+        })?;
         let len = file.metadata()?.len() as usize;
         // SAFETY: We hold an exclusive lock on the file.
         #[allow(unsafe_code)]
@@ -355,5 +360,16 @@ mod tests {
         // Re-open and verify size.
         let metadata = std::fs::metadata(&path).unwrap();
         assert_eq!(metadata.len(), 9);
+    }
+
+    /// Opening a file that is exclusively locked returns `FileLocked`.
+    #[test]
+    fn open_while_exclusively_locked() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"test data").unwrap();
+        file.flush().unwrap();
+        let _first = MappedArchiveMut::open(file.path()).unwrap();
+        let result = MappedArchiveMut::open(file.path());
+        assert!(matches!(result, Err(BaleError::FileLocked)));
     }
 }
