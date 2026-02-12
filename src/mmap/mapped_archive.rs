@@ -40,7 +40,10 @@ impl MappedArchive {
     /// cooperative writers from modifying it during the mapping lifetime.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
         let file = File::open(path.as_ref())?;
-        file.lock_shared()?;
+        file.try_lock_shared().map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => BaleError::FileLocked,
+            std::fs::TryLockError::Error(io_err) => BaleError::Io(io_err),
+        })?;
         // SAFETY: We hold a shared lock on the file, preventing cooperative
         // writers from modifying it while mapped.
         #[allow(unsafe_code)]
@@ -103,5 +106,15 @@ mod tests {
         let mapped = MappedArchive::open(file.path()).unwrap();
         assert!(mapped.is_empty());
         assert_eq!(mapped.len(), 0);
+    }
+
+    /// Opening a file that is exclusively locked returns `FileLocked`.
+    #[test]
+    fn open_while_exclusively_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("locked.bale");
+        let _writer = crate::MappedArchiveMut::create(&path).unwrap();
+        let result = MappedArchive::open(&path);
+        assert!(matches!(result, Err(BaleError::FileLocked)));
     }
 }

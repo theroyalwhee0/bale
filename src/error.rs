@@ -89,4 +89,8 @@ pub enum BaleError {
     /// Archive has exhausted its entry ID space (u32::MAX reached).
     #[error("archive is full: entry ID space exhausted")]
     ArchiveFull,
+
+    /// The archive file is locked by another process.
+    #[error("file is locked by another process")]
+    FileLocked,
 }
