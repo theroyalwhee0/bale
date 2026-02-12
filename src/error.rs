@@ -29,8 +29,8 @@ pub enum BaleError {
     #[error("invalid alignment: {0}")]
     InvalidAlignment(String),
 
-    /// Path size is outside valid range (1-2048).
-    #[error("invalid path size: {0} is not in range 1..=2048")]
+    /// Path size is outside valid range (1-4096).
+    #[error("invalid path size: {0} is not in range 1..=4096")]
     InvalidPathSize(u16),
 
     /// Path is invalid (traversal, empty, or malformed).
@@ -74,15 +74,15 @@ pub enum BaleError {
     #[error("corrupted archive: {0}")]
     Corrupted(String),
 
-    /// Invalid DOS date/time value.
-    #[error("invalid DOS date/time: {0}")]
-    InvalidDosDateTime(String),
-
-    /// Size exceeds ZIP format limits.
-    #[error("size overflow: {0}")]
-    SizeOverflow(String),
-
     /// Path uses reserved prefix (`.bale`).
     #[error("reserved path: {0}")]
     ReservedPath(String),
+
+    /// Path already exists in the archive.
+    #[error("path already exists: {0}")]
+    PathExists(String),
+
+    /// Archive has exhausted its entry ID space (u32::MAX reached).
+    #[error("archive is full: entry ID space exhausted")]
+    ArchiveFull,
 }

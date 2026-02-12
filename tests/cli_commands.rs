@@ -23,6 +23,7 @@ fn run_bale(args: &[&str]) -> (bool, String, String) {
 
 /// Touch creates an empty archive.
 #[test]
+
 fn touch_creates_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -31,11 +32,12 @@ fn touch_creates_archive() {
     assert!(success, "touch should succeed");
 
     let meta = fs::metadata(&archive).unwrap();
-    assert_eq!(meta.len(), 256, "empty archive should be 256 bytes");
+    assert_eq!(meta.len(), 72, "empty archive should be 72 bytes");
 }
 
 /// Touch on existing archive updates modification time.
 #[test]
+
 fn touch_updates_mtime() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -54,6 +56,7 @@ fn touch_updates_mtime() {
 
 /// Add command adds files to archive.
 #[test]
+
 fn add_files_to_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -78,6 +81,7 @@ fn add_files_to_archive() {
 
 /// Add with prefix puts files under directory.
 #[test]
+
 fn add_with_prefix() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -104,6 +108,7 @@ fn add_with_prefix() {
 
 /// Delete removes files from archive.
 #[test]
+
 fn delete_files_from_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -129,6 +134,7 @@ fn delete_files_from_archive() {
 
 /// Extract extracts files from archive.
 #[test]
+
 fn extract_files_from_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -158,6 +164,7 @@ fn extract_files_from_archive() {
 
 /// Check reports valid archive.
 #[test]
+
 fn check_valid_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -175,6 +182,7 @@ fn check_valid_archive() {
 
 /// Compact removes orphaned data.
 #[test]
+
 fn compact_archive() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");

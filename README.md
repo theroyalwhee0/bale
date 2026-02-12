@@ -4,15 +4,16 @@
 > features, and the API will change. Use at your own risk.
 
 A Rust library and CLI for working with bale archives - a mmap-first, zero-copy
-zip-compatible archive format with fixed-stride entries for efficient random
-access.
+archive format with fixed-stride tables for efficient random access.
 
 ## Features
 
-- **Zip-compatible**: Archives can be read by standard zip tools (unzip, zipinfo, etc.)
 - **Memory-mapped**: Designed for efficient mmap-based access
-- **Zero-copy**: Fixed-stride entries enable direct access without parsing
-- **4K aligned**: File data aligned to 4096 bytes for optimal I/O
+- **Zero-copy**: Fixed-stride tables enable direct access without parsing
+- **4K aligned**: Data blocks aligned to 4096 bytes for optimal I/O
+- **Hard links**: Multiple paths can reference the same entry
+- **Symlinks**: Symbolic links with target paths stored as data
+- **Millisecond timestamps**: i64 created and modified times
 
 ## Installation
 
@@ -115,14 +116,17 @@ if let Some(entry) = reader.find_entry("hello.txt") {
 
 ## Format
 
-Bale extends the zip format with constraints that enable efficient random access:
+Bale is a native archive format designed for mmap-based random access.
+See [docs/bale-spec.md](docs/bale-spec.md) for the full specification.
 
-| Property        | Value                       |
-| --------------- | --------------------------- |
-| Alignment       | 4096 bytes                  |
-| Max path length | 256 bytes                   |
-| Byte order      | Little-endian               |
-| EOCD            | Standard 22-byte zip format |
+| Property        | Value                            |
+| --------------- | -------------------------------- |
+| File header     | 8 bytes (`BALE\0` + version)     |
+| Trailer         | 64 bytes                         |
+| Alignment       | 4096 bytes (configurable, 2^N)   |
+| Max path length | 256 bytes (configurable, 1-4096) |
+| Byte order      | Little-endian                    |
+| Timestamps      | i64 Unix epoch milliseconds      |
 
 ## Development
 

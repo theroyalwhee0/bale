@@ -1,23 +1,25 @@
 //! Symlink entry wrapper for ergonomic access.
 
-use crate::{ArchivePath, CentralDirectoryHeader, DosDateTime};
+use crate::ArchivePath;
+use crate::format::EntryRow;
 
 /// A symbolic link entry in the archive.
 ///
-/// This struct wraps a Central Directory header for a symlink entry and
-/// provides convenient access to the link metadata and target.
+/// This struct wraps an entry row for a symlink entry and provides convenient
+/// access to the link metadata and target. The target is stored as the data
+/// block content (raw UTF-8 bytes without a null terminator).
 ///
 /// # Lifetime
 ///
 /// The lifetime `'a` is tied to the archive that created this entry.
-/// All borrowed data (path, header, target) remains valid for this lifetime.
+/// All borrowed data (path, entry row, target) remains valid for this lifetime.
 #[derive(Debug)]
 pub struct SymlinkEntry<'a> {
-    /// The Central Directory header for this symlink.
-    pub(crate) header: &'a CentralDirectoryHeader,
+    /// The entry row for this symlink.
+    pub(crate) entry: &'a EntryRow,
     /// The symlink path (without null padding).
     pub(crate) path: ArchivePath<'a>,
-    /// The symlink target (stored as file data).
+    /// The symlink target (stored as data block content).
     pub(crate) target: &'a [u8],
     /// Stable entry ID.
     pub(crate) id: u32,
@@ -26,7 +28,7 @@ pub struct SymlinkEntry<'a> {
 impl<'a> SymlinkEntry<'a> {
     /// Returns the symlink target as bytes.
     ///
-    /// The target is stored as the file data of the symlink entry.
+    /// The target is stored as the data block content of the symlink entry.
     #[must_use]
     pub fn target_bytes(&self) -> &'a [u8] {
         self.target
@@ -47,23 +49,27 @@ impl<'a> SymlinkEntry<'a> {
     }
 
     /// Returns the Unix mode (file type and permissions).
-    ///
-    /// The mode is extracted from the upper 16 bits of `external_attrs`.
     #[must_use]
     pub fn mode(&self) -> u32 {
-        self.header.external_attrs.get() >> 16
+        self.entry.mode.get()
     }
 
-    /// Returns the modification time.
+    /// Returns the creation time as Unix epoch milliseconds.
     #[must_use]
-    pub fn mtime(&self) -> DosDateTime {
-        DosDateTime::from_date_time_parts(self.header.mod_date.get(), self.header.mod_time.get())
+    pub fn created_time(&self) -> i64 {
+        self.entry.created_time.get()
     }
 
-    /// Returns a reference to the Central Directory header.
+    /// Returns the modification time as Unix epoch milliseconds.
     #[must_use]
-    pub fn header(&self) -> &'a CentralDirectoryHeader {
-        self.header
+    pub fn modified_time(&self) -> i64 {
+        self.entry.modified_time.get()
+    }
+
+    /// Returns a reference to the entry row.
+    #[must_use]
+    pub fn entry(&self) -> &'a EntryRow {
+        self.entry
     }
 
     /// Returns the stable entry ID.

@@ -1,44 +1,51 @@
 //! Bale archive format library.
 //!
-//! A mmap-first, zero-copy zip-compatible archive format with fixed-stride
-//! entries for efficient random access.
+//! A mmap-first, zero-copy archive format with fixed-stride tables for
+//! efficient random access.
 //!
 //! # Features
 //!
-//! - `reader` - Enables [`ArchiveReader`] for reading archives
-//! - `writer` - Enables [`ArchiveWriter`] for writing archives
+//! - `reader` - Enables [`ArchiveReader`] for reading archives, plus
+//!   [`check`] and [`extract`] functions
+//! - `writer` - Enables [`ArchiveWriter`] for writing archives, plus
+//!   the [`add`] function
 //! - `compact` - Enables [`compact`] and [`rename_duplicates`] functions (requires `reader` + `writer`)
 //! - `bin` - Enables the CLI binary (requires `compact`)
 
+/// Adding files from disk into an archive.
+#[cfg(feature = "writer")]
+mod add;
 /// Unified archive access (reader and writer).
 #[cfg(any(feature = "reader", feature = "writer"))]
 mod archive;
 /// Validated, normalized paths within a bale archive.
 mod archive_path;
-/// Central Directory Header for ZIP entries.
-mod central_dir;
+/// Archive integrity checking.
+#[cfg(feature = "reader")]
+mod check;
 /// Archive compaction.
 #[cfg(feature = "compact")]
 mod compact;
-/// MS-DOS date/time format for ZIP archives.
-mod dos_time;
 /// Entry type classification.
 mod entry_kind;
 /// Error types for bale operations.
 mod error;
+/// Archive extraction to disk.
+#[cfg(feature = "reader")]
+mod extract;
+/// Binary format structures for the bale archive format v1.0.0.
+pub mod format;
 /// FUSE filesystem support.
 #[cfg(feature = "fuse")]
 pub mod fuse;
-/// Local File Header for ZIP entries.
-mod local_file;
 /// Memory-mapped file access.
 mod mmap;
 /// Proptest configuration (test-only).
 #[cfg(test)]
 mod proptest_config;
-/// Unified archive tail (trailer) structures.
-pub mod tail;
 
+#[cfg(feature = "writer")]
+pub use add::add;
 #[cfg(feature = "reader")]
 pub use archive::ArchiveReader;
 #[cfg(any(feature = "reader", feature = "writer"))]
@@ -46,12 +53,13 @@ pub use archive::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry
 #[cfg(feature = "writer")]
 pub use archive::{ArchiveWrite, ArchiveWriter};
 pub use archive_path::ArchivePath;
-pub use central_dir::CentralDirectoryHeader;
+#[cfg(feature = "reader")]
+pub use check::{CheckIssue, CheckReport, check};
 #[cfg(feature = "compact")]
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
-pub use dos_time::DosDateTime;
 pub use entry_kind::EntryKind;
 pub use error::BaleError;
-pub use local_file::LocalFileHeader;
+#[cfg(feature = "reader")]
+pub use extract::extract;
+pub use format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 pub use mmap::{MappedArchive, MappedArchiveMut};
-pub use tail::{BaleEocd, Eocd, Trailer, Zip64Eocd, Zip64EocdLocator};
