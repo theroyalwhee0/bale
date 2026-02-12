@@ -1281,4 +1281,215 @@ mod tests {
         let data = archive.read_data(entry).unwrap();
         assert_eq!(data, b"data");
     }
+
+    // ==================== resolve() Tests ====================
+
+    /// resolve() returns a non-symlink entry directly (fast path).
+    #[test]
+    fn resolve_direct_file() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "hello.txt",
+            data: b"Hello",
+            mode: 0o100644,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("hello.txt").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"Hello");
+    }
+
+    /// resolve() follows a simple symlink to a file.
+    #[test]
+    fn resolve_simple_symlink() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "link",
+                data: b"target.txt",
+                mode: 0o120777,
+                id: 1,
+            },
+            TestEntry {
+                path: "target.txt",
+                data: b"content",
+                mode: 0o100644,
+                id: 2,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("link").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"content");
+    }
+
+    /// resolve() follows a chain of symlinks (symlink → symlink → file).
+    #[test]
+    fn resolve_symlink_chain() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "a",
+                data: b"b",
+                mode: 0o120777,
+                id: 1,
+            },
+            TestEntry {
+                path: "b",
+                data: b"c",
+                mode: 0o120777,
+                id: 2,
+            },
+            TestEntry {
+                path: "c",
+                data: b"final",
+                mode: 0o100644,
+                id: 3,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("a").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"final");
+    }
+
+    /// resolve() follows an intermediate directory symlink.
+    #[test]
+    fn resolve_intermediate_symlink() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "dir",
+                data: b"",
+                mode: 0o040755,
+                id: 1,
+            },
+            TestEntry {
+                path: "dir/file.txt",
+                data: b"in dir",
+                mode: 0o100644,
+                id: 2,
+            },
+            TestEntry {
+                path: "link",
+                data: b"dir",
+                mode: 0o120777,
+                id: 3,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("link/file.txt").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"in dir");
+    }
+
+    /// resolve() handles symlink targets containing `..`.
+    #[test]
+    fn resolve_symlink_with_dotdot() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "a",
+                data: b"",
+                mode: 0o040755,
+                id: 1,
+            },
+            TestEntry {
+                path: "a/link",
+                data: b"../b/target.txt",
+                mode: 0o120777,
+                id: 2,
+            },
+            TestEntry {
+                path: "b",
+                data: b"",
+                mode: 0o040755,
+                id: 3,
+            },
+            TestEntry {
+                path: "b/target.txt",
+                data: b"found it",
+                mode: 0o100644,
+                id: 4,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("a/link").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"found it");
+    }
+
+    /// resolve() detects circular symlinks and returns SymlinkLoop.
+    #[test]
+    fn resolve_symlink_loop() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "x",
+                data: b"y",
+                mode: 0o120777,
+                id: 1,
+            },
+            TestEntry {
+                path: "y",
+                data: b"x",
+                mode: 0o120777,
+                id: 2,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("x");
+        assert!(matches!(result, Err(BaleError::SymlinkLoop(_))));
+    }
+
+    /// resolve() returns EntryNotFound for a dangling symlink.
+    #[test]
+    fn resolve_dangling_symlink() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "broken",
+            data: b"nonexistent",
+            mode: 0o120777,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("broken");
+        assert!(matches!(result, Err(BaleError::EntryNotFound(_))));
+    }
+
+    /// resolve() rejects symlinks with absolute targets in malicious archives.
+    #[test]
+    fn resolve_absolute_symlink_target() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "link",
+            data: b"/usr/share/data.txt",
+            mode: 0o120777,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("link");
+        assert!(matches!(result, Err(BaleError::InvalidPath)));
+    }
+
+    /// resolve() returns NotADirectory when a file is used as a directory.
+    #[test]
+    fn resolve_file_as_directory() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "file.txt",
+            data: b"data",
+            mode: 0o100644,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("file.txt/child");
+        assert!(matches!(result, Err(BaleError::NotADirectory(_))));
+    }
 }
