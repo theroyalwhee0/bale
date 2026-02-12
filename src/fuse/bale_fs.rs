@@ -574,6 +574,17 @@ impl fuser::Filesystem for BaleFs {
             .unwrap_or(0);
 
         let file_mtime = state.get_file_mtime(&path);
+        let nlink = state.nlink_counts.get(&ino).copied().unwrap_or(1);
+
+        // Use created_time from archive for ctime/crtime.
+        let ctime = state
+            .archive
+            .find_entry_with_path(&path)
+            .map(|(entry_row, _, _)| {
+                let ctime_ms = entry_row.created_time.get();
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ctime_ms.max(0) as u64)
+            })
+            .unwrap_or(file_mtime);
 
         let mode = state.get_file_mode(&path);
         let perm = (mode & PERM_MASK) as u16;
@@ -584,15 +595,15 @@ impl fuser::Filesystem for BaleFs {
             blocks: size.div_ceil(512),
             atime: file_mtime,
             mtime: file_mtime,
-            ctime: file_mtime,
-            crtime: file_mtime,
+            ctime,
+            crtime: ctime,
             kind: FileType::RegularFile,
             perm: if perm == 0 {
                 DEFAULT_FILE_PERM as u16
             } else {
                 perm
             },
-            nlink: 1,
+            nlink,
             uid: state.uid,
             gid: state.gid,
             rdev: 0,

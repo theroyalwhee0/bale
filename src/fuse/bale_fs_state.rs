@@ -66,6 +66,14 @@ pub(super) struct BaleFsState {
     /// For derived directories, this is the max mtime of contained files.
     dir_mtimes: HashMap<u64, SystemTime>,
 
+    /// Map from archive entry ID to file inode.
+    /// Used to share inodes across hard-linked paths.
+    entry_id_to_ino: HashMap<u32, u64>,
+
+    /// Hard link count per inode.
+    /// Tracks how many paths point to the same underlying entry.
+    pub(super) nlink_counts: HashMap<u64, u32>,
+
     /// Next available inode for files.
     next_file_ino: u64,
     /// Next available inode for directories.
@@ -89,6 +97,8 @@ impl BaleFsState {
             modified_modes: HashMap::new(),
             modified_times: HashMap::new(),
             dir_mtimes: HashMap::new(),
+            entry_id_to_ino: HashMap::new(),
+            nlink_counts: HashMap::new(),
             next_file_ino: FILE_INO_START,
             next_dir_ino: DIR_INO_START,
         };
@@ -148,7 +158,7 @@ impl BaleFsState {
 
         // Collect all paths first to avoid borrow issues.
         // Skip entries with invalid UTF-8 paths.
-        let entries: Vec<(String, EntryKind, SystemTime)> = self
+        let entries: Vec<(String, EntryKind, SystemTime, u32)> = self
             .archive
             .iter_entries()
             .filter_map(|(entry_row, path_bytes)| {
@@ -161,11 +171,12 @@ impl BaleFsState {
                 let mtime_ms = entry_row.modified_time.get();
                 let mtime = SystemTime::UNIX_EPOCH
                     + std::time::Duration::from_millis(mtime_ms.max(0) as u64);
-                Some((path, kind, mtime))
+                let entry_id = entry_row.entry_id.get();
+                Some((path, kind, mtime, entry_id))
             })
             .collect();
 
-        for (path, kind, mtime) in entries {
+        for (path, kind, mtime, entry_id) in entries {
             // Ensure all parent directories exist.
             self.ensure_parent_dirs(&path);
 
@@ -195,8 +206,19 @@ impl BaleFsState {
                     }
                 }
                 EntryKind::File | EntryKind::Symlink => {
-                    let ino = self.next_file_ino;
-                    self.next_file_ino += 1;
+                    // Check if this entry_id was already seen (hard link).
+                    let ino = if let Some(&existing_ino) = self.entry_id_to_ino.get(&entry_id) {
+                        // Hard link: reuse the existing inode.
+                        *self.nlink_counts.entry(existing_ino).or_insert(1) += 1;
+                        existing_ino
+                    } else {
+                        // New entry: allocate a fresh inode.
+                        let ino = self.next_file_ino;
+                        self.next_file_ino += 1;
+                        self.entry_id_to_ino.insert(entry_id, ino);
+                        self.nlink_counts.insert(ino, 1);
+                        ino
+                    };
 
                     self.inode_to_path.insert(ino, path.clone());
                     self.path_to_inode.insert(path.clone(), ino);
@@ -329,6 +351,7 @@ impl BaleFsState {
         let mode = entry_row.mode.get();
         let perm = (mode & PERM_MASK) as u16;
         let size = entry_row.file_size.get();
+        let nlink = self.nlink_counts.get(&ino).copied().unwrap_or(1);
 
         // Check modified_times first, fall back to archive mtime.
         let mtime = self.modified_times.get(path).copied().unwrap_or_else(|| {
@@ -336,21 +359,27 @@ impl BaleFsState {
             SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(mtime_ms.max(0) as u64)
         });
 
+        // Use created_time from entry row for crtime and ctime.
+        let ctime = {
+            let ctime_ms = entry_row.created_time.get();
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ctime_ms.max(0) as u64)
+        };
+
         fuser::FileAttr {
             ino,
             size,
             blocks: size.div_ceil(512),
             atime: mtime,
             mtime,
-            ctime: mtime,
-            crtime: mtime,
+            ctime,
+            crtime: ctime,
             kind,
             perm: if perm == 0 {
                 DEFAULT_FILE_PERM as u16
             } else {
                 perm
             },
-            nlink: 1,
+            nlink,
             uid: self.uid,
             gid: self.gid,
             rdev: 0,
@@ -406,13 +435,8 @@ impl BaleFsState {
         }
 
         // Check archive for explicit directory entry.
-        let dir_path_with_slash = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path)
-        };
-        if !dir_path_with_slash.is_empty()
-            && let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&dir_path_with_slash)
+        if !path.is_empty()
+            && let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&path)
         {
             let mode = entry_row.mode.get();
             if mode != 0 {
@@ -590,11 +614,10 @@ impl BaleFsState {
             contents.push(FuseDirEntry::directory(name, ino));
         }
 
-        // Add directory entry to archive (path ending with /).
-        let dir_path = format!("{}/", full_path);
+        // Add directory entry to archive.
         let archive_mode = SFlag::S_IFDIR.bits() | mode.bits();
         self.archive
-            .add_entry(&dir_path, &[], archive_mode)
+            .add_folder(&full_path, archive_mode)
             .map_err(|_| libc::EIO)?;
 
         let attr = self.get_attr(ino, FileType::Directory);
@@ -644,8 +667,7 @@ impl BaleFsState {
         }
 
         // Remove from archive.
-        let dir_path = format!("{}/", full_path);
-        let _ = self.archive.delete(&dir_path);
+        let _ = self.archive.delete(&full_path);
 
         Ok(())
     }
@@ -976,10 +998,8 @@ impl BaleFsState {
             }
 
             // Update archive: add new dir entry, remove old.
-            let old_dir_path = format!("{}/", old_path);
-            let new_dir_path = format!("{}/", new_path);
-            let _ = self.archive.add_entry(&new_dir_path, &[], DEFAULT_DIR_MODE);
-            let _ = self.archive.delete(&old_dir_path);
+            let _ = self.archive.add_folder(&new_path, DEFAULT_DIR_MODE);
+            let _ = self.archive.delete(&old_path);
         }
 
         Ok(())
@@ -1090,9 +1110,54 @@ mod tests {
         writer
     }
 
+    /// Creates a test archive with hard links.
+    fn create_test_archive_with_links(
+        entries: &[(&str, &[u8], u32)],
+        links: &[(&str, &str)],
+    ) -> ArchiveWriter {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        for (name, data, mode) in entries {
+            writer.add_entry(name, data, *mode).unwrap();
+        }
+        for (target, link) in links {
+            writer.hard_link(target, link).unwrap();
+        }
+        writer.sync().unwrap();
+        drop(writer);
+
+        let writer = ArchiveWriter::open(&path).unwrap();
+        std::mem::forget(dir);
+        writer
+    }
+
+    /// Tests that hard-linked paths share the same inode.
+    #[test]
+    fn hard_links_share_inodes() {
+        let archive = create_test_archive_with_links(
+            &[("original.txt", b"shared data", 0o100644)],
+            &[("original.txt", "link.txt")],
+        );
+
+        let state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Both paths should map to the same inode.
+        let original_ino = *state.path_to_inode.get("original.txt").unwrap();
+        let link_ino = *state.path_to_inode.get("link.txt").unwrap();
+        assert_eq!(
+            original_ino, link_ino,
+            "hard-linked paths should share an inode"
+        );
+
+        // nlink count should be 2.
+        let nlink = state.nlink_counts.get(&original_ino).copied().unwrap_or(1);
+        assert_eq!(nlink, 2, "hard-linked file should have nlink=2");
+    }
+
     /// Tests that `get_parent_inode` returns the correct parent for nested directories.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn parent_inode_lookup() {
         // Create archive with nested directories.
         let archive = create_test_archive(&[
@@ -1135,7 +1200,6 @@ mod tests {
 
     /// Tests that `mkdir` respects the mode parameter.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn mkdir_respects_mode() {
         let archive = create_test_archive(&[]);
         let mut state = BaleFsState::new(archive, false, 1000, 1000);
@@ -1151,7 +1215,7 @@ mod tests {
         let entries: Vec<_> = state.archive.iter_entries().collect();
         let (entry_row, _path) = entries
             .iter()
-            .find(|(_, p)| p.starts_with(b"private/"))
+            .find(|(_, p)| p.starts_with(b"private"))
             .unwrap();
 
         // Mode is stored directly in the entry row.
@@ -1163,7 +1227,6 @@ mod tests {
 
     /// Tests that `modified_data` is cleared after sync.
     #[test]
-    #[ignore = "requires writer (#129)"]
     fn modified_data_cleared_after_sync() {
         let archive = create_test_archive(&[("test.txt", b"original", 0o100644)]);
         let mut state = BaleFsState::new(archive, false, 1000, 1000);
