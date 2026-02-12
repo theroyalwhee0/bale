@@ -117,7 +117,7 @@ labels and milestone:
 ```bash
 gh issue create --title "Title" --body "..." \
   --label "🐛 bug" --label "🔴 P1" \
-  --milestone "v0.1.0"
+  --milestone "v0.2.0"
 ```
 
 **Available Labels:**
@@ -135,7 +135,7 @@ gh issue create --title "Title" --body "..." \
 | `🟡 P2`            | Medium priority - important but not urgent |
 | `🟢 P3`            | Low priority - nice to have                |
 
-**Milestones:** Use `v0.1.0` for current release work.
+**Milestones:** Use `v0.2.0` for current release work.
 
 ## Git Configuration
 

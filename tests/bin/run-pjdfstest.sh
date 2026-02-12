@@ -47,6 +47,7 @@ PERM_TESTS=(
 # (chown/mkfifo/mknod/link) in setup, or test permission enforcement.
 MIXED=(
     chmod
+    link
     mkdir
     open
     rename
@@ -59,7 +60,6 @@ MIXED=(
 # Tests for features we DON'T support (failures expected).
 UNSUPPORTED=(
     chown      # Returns EPERM - no Unix ownership in ZIP
-    link       # Hard links not supported
     mkfifo     # FIFOs not supported (ENOSYS)
     mknod      # Device nodes not supported (ENOSYS)
     chflags    # BSD-specific, skipped on Linux

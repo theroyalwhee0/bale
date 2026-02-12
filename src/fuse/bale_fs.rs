@@ -589,6 +589,16 @@ impl fuser::Filesystem for BaleFs {
         let mode = state.get_file_mode(&path);
         let perm = (mode & PERM_MASK) as u16;
 
+        // Determine correct file type from archive entry (same as getattr).
+        let kind = state
+            .archive
+            .find_entry_with_path(&path)
+            .map(|(entry_row, _, _)| match entry_row.kind() {
+                EntryKind::Symlink => FileType::Symlink,
+                _ => FileType::RegularFile,
+            })
+            .unwrap_or(FileType::RegularFile);
+
         let attr = fuser::FileAttr {
             ino,
             size,
@@ -597,7 +607,7 @@ impl fuser::Filesystem for BaleFs {
             mtime: file_mtime,
             ctime,
             crtime: ctime,
-            kind: FileType::RegularFile,
+            kind,
             perm: if perm == 0 {
                 DEFAULT_FILE_PERM as u16
             } else {

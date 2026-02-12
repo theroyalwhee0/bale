@@ -10,7 +10,9 @@ const MAX_SYMLINK_DEPTH: u32 = 256;
 /// Resolves a symlink target path relative to the symlink's location.
 ///
 /// Joins the symlink's parent directory with the target and normalizes
-/// the result via [`ArchivePath::try_from`].
+/// the result. Unlike [`ArchivePath::try_from`], this skips safename
+/// validation so that symlink targets with long components (valid per
+/// POSIX) are not rejected.
 ///
 /// # Errors
 ///
@@ -30,9 +32,30 @@ fn resolve_target(symlink_path: &ArchivePath<'_>, target: &str) -> Result<String
         let parent_str = parent.to_str_checked()?;
         format!("{parent_str}/{target}")
     };
-    let normalized = ArchivePath::try_from(joined.as_str())?;
-    // ArchivePath::try_from(&str) always produces valid UTF-8.
-    Ok(normalized.as_str().unwrap().to_string())
+
+    // Normalize the joined path: resolve `.`, `..`, collapse slashes,
+    // strip leading/trailing slashes. We intentionally skip safename
+    // validation because POSIX symlink targets can have long components.
+    let mut components: Vec<&str> = Vec::new();
+    for part in joined.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return Err(BaleError::InvalidPath);
+                }
+            }
+            component => {
+                components.push(component);
+            }
+        }
+    }
+
+    if components.is_empty() {
+        return Err(BaleError::InvalidPath);
+    }
+
+    Ok(components.join("/"))
 }
 
 /// Read operations for archives.
