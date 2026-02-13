@@ -61,6 +61,11 @@ pub(super) struct BaleFsState {
     /// Tracks utimensat operations until synced to archive.
     pub(super) modified_times: HashMap<String, SystemTime>,
 
+    /// Transient uid overrides (path -> uid). Session-only, not persisted.
+    pub(super) modified_uids: HashMap<String, u32>,
+    /// Transient gid overrides (path -> gid). Session-only, not persisted.
+    pub(super) modified_gids: HashMap<String, u32>,
+
     /// Directory mtimes by inode.
     /// For explicit directories, this is from the archive.
     /// For derived directories, this is the max mtime of contained files.
@@ -96,6 +101,8 @@ impl BaleFsState {
             modified_data: HashMap::new(),
             modified_modes: HashMap::new(),
             modified_times: HashMap::new(),
+            modified_uids: HashMap::new(),
+            modified_gids: HashMap::new(),
             dir_mtimes: HashMap::new(),
             entry_id_to_ino: HashMap::new(),
             nlink_counts: HashMap::new(),
@@ -332,8 +339,8 @@ impl BaleFsState {
             kind,
             perm,
             nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
+            uid: self.get_dir_uid(ino),
+            gid: self.get_dir_gid(ino),
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -380,8 +387,8 @@ impl BaleFsState {
                 perm
             },
             nlink,
-            uid: self.uid,
-            gid: self.gid,
+            uid: self.get_uid(path),
+            gid: self.get_gid(path),
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -451,6 +458,36 @@ impl BaleFsState {
     pub(super) fn set_dir_mode(&mut self, ino: u64, mode: u32) {
         let path = self.get_dir_path(ino);
         self.modified_modes.insert(path, mode);
+    }
+
+    /// Gets the uid for a file or symlink by path.
+    ///
+    /// Checks transient overrides first, then falls back to mounting user.
+    pub(super) fn get_uid(&self, path: &str) -> u32 {
+        self.modified_uids.get(path).copied().unwrap_or(self.uid)
+    }
+
+    /// Gets the gid for a file or symlink by path.
+    ///
+    /// Checks transient overrides first, then falls back to mounting group.
+    pub(super) fn get_gid(&self, path: &str) -> u32 {
+        self.modified_gids.get(path).copied().unwrap_or(self.gid)
+    }
+
+    /// Gets the uid for a directory by inode.
+    ///
+    /// Checks transient overrides first, then falls back to mounting user.
+    pub(super) fn get_dir_uid(&self, ino: u64) -> u32 {
+        let path = self.get_dir_path(ino);
+        self.modified_uids.get(&path).copied().unwrap_or(self.uid)
+    }
+
+    /// Gets the gid for a directory by inode.
+    ///
+    /// Checks transient overrides first, then falls back to mounting group.
+    pub(super) fn get_dir_gid(&self, ino: u64) -> u32 {
+        let path = self.get_dir_path(ino);
+        self.modified_gids.get(&path).copied().unwrap_or(self.gid)
     }
 
     /// Gets the mtime for a directory by inode.
@@ -673,7 +710,7 @@ impl BaleFsState {
     }
 
     /// Gets the path for a directory inode.
-    fn get_dir_path(&self, ino: u64) -> String {
+    pub(super) fn get_dir_path(&self, ino: u64) -> String {
         if ino == ROOT_INO {
             return String::new();
         }
@@ -788,8 +825,8 @@ impl BaleFsState {
                 perm
             },
             nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
+            uid: self.get_uid(&full_path),
+            gid: self.get_gid(&full_path),
             rdev: 0,
             blksize: 4096,
             flags: 0,
@@ -924,6 +961,14 @@ impl BaleFsState {
                 self.modified_data.insert(new_path.clone(), data);
             }
 
+            // Move transient ownership overrides if present.
+            if let Some(uid) = self.modified_uids.remove(&old_path) {
+                self.modified_uids.insert(new_path.clone(), uid);
+            }
+            if let Some(gid) = self.modified_gids.remove(&old_path) {
+                self.modified_gids.insert(new_path.clone(), gid);
+            }
+
             // Update parent directory contents.
             if let Some(contents) = self.dir_contents.get_mut(&old_parent_ino) {
                 contents.retain(|e| e.name != old_name);
@@ -977,7 +1022,13 @@ impl BaleFsState {
                 self.path_to_inode.insert(new_p.clone(), ino);
                 self.inode_to_path.insert(ino, new_p.clone());
                 if let Some(data) = self.modified_data.remove(&old_p) {
-                    self.modified_data.insert(new_p, data);
+                    self.modified_data.insert(new_p.clone(), data);
+                }
+                if let Some(uid) = self.modified_uids.remove(&old_p) {
+                    self.modified_uids.insert(new_p.clone(), uid);
+                }
+                if let Some(gid) = self.modified_gids.remove(&old_p) {
+                    self.modified_gids.insert(new_p, gid);
                 }
             }
 
@@ -994,7 +1045,21 @@ impl BaleFsState {
 
             for (ino, old_p, new_p) in dir_updates {
                 self.dir_inodes.remove(&old_p);
-                self.dir_inodes.insert(new_p, ino);
+                self.dir_inodes.insert(new_p.clone(), ino);
+                if let Some(uid) = self.modified_uids.remove(&old_p) {
+                    self.modified_uids.insert(new_p.clone(), uid);
+                }
+                if let Some(gid) = self.modified_gids.remove(&old_p) {
+                    self.modified_gids.insert(new_p, gid);
+                }
+            }
+
+            // Propagate the renamed directory's own ownership.
+            if let Some(uid) = self.modified_uids.remove(&old_path) {
+                self.modified_uids.insert(new_path.clone(), uid);
+            }
+            if let Some(gid) = self.modified_gids.remove(&old_path) {
+                self.modified_gids.insert(new_path.clone(), gid);
             }
 
             // Update archive: add new dir entry, remove old.
@@ -1073,8 +1138,8 @@ impl BaleFsState {
             kind: FileType::Symlink,
             perm: 0o777,
             nlink: 1,
-            uid: self.uid,
-            gid: self.gid,
+            uid: self.get_uid(&full_path),
+            gid: self.get_gid(&full_path),
             rdev: 0,
             blksize: 4096,
             flags: 0,

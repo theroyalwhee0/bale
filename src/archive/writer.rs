@@ -1011,16 +1011,30 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         }
 
         // Reject targets that escape the archive root when resolved
-        // against the symlink's parent directory.
+        // against the symlink's parent directory. We only check for escape
+        // via `..` components — we intentionally skip safename and length
+        // validation since POSIX allows long symlink targets.
         let symlink_path = ArchivePath::try_from(path)?;
         let parent = symlink_path.parent();
-        let joined = if parent.is_empty() {
-            target.to_string()
+        let mut depth: usize = if parent.is_empty() {
+            0
         } else {
-            let parent_str = parent.to_str_checked()?;
-            format!("{parent_str}/{target}")
+            parent.as_bytes().iter().filter(|&&b| b == b'/').count() + 1
         };
-        ArchivePath::try_from(joined.as_str())?;
+        for component in target.split('/') {
+            match component {
+                ".." => {
+                    if depth == 0 {
+                        return Err(BaleError::InvalidPath);
+                    }
+                    depth -= 1;
+                }
+                "" | "." => {}
+                _ => {
+                    depth += 1;
+                }
+            }
+        }
 
         // Ensure symlink type bits are set.
         let mode = if mode & SFlag::S_IFMT.bits() == 0 {
@@ -1648,6 +1662,30 @@ mod tests {
         let reader = ArchiveReader::open(&path).unwrap();
         let symlink = reader.symlink("dir/link").unwrap();
         assert_eq!(symlink.target(), Some("../sibling"));
+    }
+
+    /// add_symlink allows targets longer than the 255-byte component limit.
+    ///
+    /// POSIX permits symlink targets up to `PATH_MAX` (typically 4096 bytes),
+    /// so the archive should not reject them based on path component length.
+    #[test]
+    fn add_symlink_allows_long_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create a target with a 257-byte component (exceeds safename's 255 limit).
+        let long_component = "a".repeat(257);
+        let target = format!("{long_component}/file.txt");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_symlink("link", &target, 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let symlink = reader.symlink("link").unwrap();
+        assert_eq!(symlink.target(), Some(target.as_str()));
     }
 
     /// replace_content on a directory returns an error.
