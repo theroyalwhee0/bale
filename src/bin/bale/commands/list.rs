@@ -17,11 +17,31 @@ const EXEC_MASK: u32 = Mode::S_IXUSR.bits() | Mode::S_IXGRP.bits() | Mode::S_IXO
 
 /// Lists entries in an archive with ls -alF style output.
 ///
-/// Output format: `<permissions> <size> <date> <time> <path><indicator>`
+/// Prints a `size <bytes>` summary line followed by one line per entry.
 ///
-/// Example: `-rw-r--r--      1234 Jan  2 18:30 hello.txt`
+/// Output format:
+/// ```text
+/// size <total_bytes>
+/// <permissions> <size> <date> <time> <path><indicator>
+/// ```
+///
+/// Example:
+/// ```text
+/// size 1234
+/// -rw-r--r--      1234 Jan  2 18:30 hello.txt
+/// ```
 pub fn run(archive_path: impl AsRef<Path>) -> Result<(), BaleCliError> {
     let reader = ArchiveReader::open(archive_path)?;
+
+    let total_size: u64 = reader
+        .iter_entries()
+        .map(|(entry_row, _)| entry_row.file_size.get())
+        .sum();
+
+    #[allow(clippy::print_stdout)]
+    {
+        println!("size {total_size}");
+    }
 
     for (entry_row, path_bytes) in reader.iter_entries() {
         let path = ArchivePath::from_null_padded_bytes(path_bytes);
