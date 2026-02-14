@@ -30,6 +30,7 @@ mod symlink_entry;
 mod writer;
 
 pub use archive_read::ArchiveRead;
+pub(crate) use archive_read::resolve_target;
 pub use archive_write::ArchiveWrite;
 pub use core::{Archive, ArchiveReader, ArchiveWriter};
 pub use dir_entry::DirEntry;
