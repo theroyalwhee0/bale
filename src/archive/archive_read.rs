@@ -10,16 +10,21 @@ const MAX_SYMLINK_DEPTH: u32 = 256;
 /// Resolves a symlink target path relative to the symlink's location.
 ///
 /// Joins the symlink's parent directory with the target and normalizes
-/// the result. Unlike [`ArchivePath::try_from`], this skips safename
-/// validation so that symlink targets with long components (valid per
-/// POSIX) are not rejected.
+/// the result. Each path component is validated with
+/// [`safename::validate_file`] to reject control characters, leading
+/// dashes, and components exceeding `NAME_MAX` (255 bytes).
 ///
 /// # Errors
 ///
 /// Returns [`BaleError::InvalidPath`] if the resolved path escapes the
 /// archive root or is otherwise invalid.
+/// Returns [`BaleError::UnsafeFilename`] if any component violates safename
+/// rules.
 /// Returns [`BaleError::InvalidUtf8`] if the symlink path is not valid UTF-8.
-fn resolve_target(symlink_path: &ArchivePath<'_>, target: &str) -> Result<String, BaleError> {
+pub(crate) fn resolve_target(
+    symlink_path: &ArchivePath<'_>,
+    target: &str,
+) -> Result<String, BaleError> {
     // Reject absolute symlink targets (defense against malicious archives).
     if target.starts_with('/') || target.starts_with('\\') {
         return Err(BaleError::InvalidPath);
@@ -34,8 +39,9 @@ fn resolve_target(symlink_path: &ArchivePath<'_>, target: &str) -> Result<String
     };
 
     // Normalize the joined path: resolve `.`, `..`, collapse slashes,
-    // strip leading/trailing slashes. We intentionally skip safename
-    // validation because POSIX symlink targets can have long components.
+    // strip leading/trailing slashes. Each normal component is validated
+    // with safename to reject control chars, leading dashes, and
+    // components exceeding NAME_MAX (255 bytes).
     let mut components: Vec<&str> = Vec::new();
     for part in joined.split(['/', '\\']) {
         match part {
@@ -46,6 +52,7 @@ fn resolve_target(symlink_path: &ArchivePath<'_>, target: &str) -> Result<String
                 }
             }
             component => {
+                safename::validate_file(component)?;
                 components.push(component);
             }
         }
@@ -299,5 +306,52 @@ pub trait ArchiveRead {
 
             unreachable!("component walk exhausted without returning");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// resolve_target rejects targets containing control characters.
+    #[test]
+    fn resolve_target_rejects_control_chars() {
+        let symlink = ArchivePath::try_from("link").unwrap();
+        let result = resolve_target(&symlink, "foo\x01bar");
+        assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
+    }
+
+    /// resolve_target rejects targets with a leading-dash component.
+    #[test]
+    fn resolve_target_rejects_leading_dash() {
+        let symlink = ArchivePath::try_from("link").unwrap();
+        let result = resolve_target(&symlink, "-rf");
+        assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
+    }
+
+    /// resolve_target rejects targets with a component exceeding NAME_MAX (255).
+    #[test]
+    fn resolve_target_rejects_long_component() {
+        let symlink = ArchivePath::try_from("link").unwrap();
+        let long = "a".repeat(257);
+        let result = resolve_target(&symlink, &long);
+        assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
+    }
+
+    /// resolve_target allows components with dashes in the middle.
+    #[test]
+    fn resolve_target_allows_dash_in_middle() {
+        let symlink = ArchivePath::try_from("link").unwrap();
+        let result = resolve_target(&symlink, "foo/bar-baz");
+        assert_eq!(result.unwrap(), "foo/bar-baz");
+    }
+
+    /// resolve_target allows a component at the NAME_MAX (255) limit.
+    #[test]
+    fn resolve_target_allows_max_length_component() {
+        let symlink = ArchivePath::try_from("link").unwrap();
+        let component = "a".repeat(255);
+        let result = resolve_target(&symlink, &component);
+        assert_eq!(result.unwrap(), component);
     }
 }

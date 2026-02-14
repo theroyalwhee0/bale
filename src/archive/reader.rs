@@ -1492,4 +1492,104 @@ mod tests {
         let result = archive.resolve("file.txt/child");
         assert!(matches!(result, Err(BaleError::NotADirectory(_))));
     }
+
+    /// resolve() succeeds at exactly MAX_SYMLINK_DEPTH (256) hops.
+    #[test]
+    fn resolve_symlink_chain_at_max_depth() {
+        // Build 256 symlinks: s001 → s002 → ... → s256 → target.txt
+        let mut entries: Vec<TestEntry> = (1..=256u32)
+            .map(|i| {
+                let path: &'static str = Box::leak(format!("s{i:03}").into_boxed_str());
+                let target: &'static [u8] = if i < 256 {
+                    Box::leak(format!("s{:03}", i + 1).into_bytes().into_boxed_slice())
+                } else {
+                    b"target.txt"
+                };
+                TestEntry {
+                    path,
+                    data: target,
+                    mode: 0o120777,
+                    id: i,
+                }
+            })
+            .collect();
+        entries.push(TestEntry {
+            path: "target.txt",
+            data: b"reached",
+            mode: 0o100644,
+            id: 257,
+        });
+
+        let bytes = build_test_archive(&entries);
+        let archive = archive_from_bytes(&bytes);
+
+        let entry = archive.resolve("s001").unwrap();
+        assert!(entry.is_file());
+        let file = entry.into_file().unwrap();
+        assert_eq!(file.data(), b"reached");
+    }
+
+    /// resolve() returns SymlinkLoop when chain exceeds MAX_SYMLINK_DEPTH.
+    #[test]
+    fn resolve_symlink_chain_exceeds_max_depth() {
+        // Build 257 symlinks: s001 → s002 → ... → s257 → target.txt
+        let mut entries: Vec<TestEntry> = (1..=257u32)
+            .map(|i| {
+                let path: &'static str = Box::leak(format!("s{i:03}").into_boxed_str());
+                let target: &'static [u8] = if i < 257 {
+                    Box::leak(format!("s{:03}", i + 1).into_bytes().into_boxed_slice())
+                } else {
+                    b"target.txt"
+                };
+                TestEntry {
+                    path,
+                    data: target,
+                    mode: 0o120777,
+                    id: i,
+                }
+            })
+            .collect();
+        entries.push(TestEntry {
+            path: "target.txt",
+            data: b"unreachable",
+            mode: 0o100644,
+            id: 258,
+        });
+
+        let bytes = build_test_archive(&entries);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("s001");
+        assert!(matches!(result, Err(BaleError::SymlinkLoop(_))));
+    }
+
+    /// resolve() rejects backslash-prefixed absolute symlink targets.
+    #[test]
+    fn resolve_backslash_absolute_symlink_target() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "link",
+            data: b"\\foo\\bar",
+            mode: 0o120777,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("link");
+        assert!(matches!(result, Err(BaleError::InvalidPath)));
+    }
+
+    /// resolve() rejects root-escaping symlink targets like `../../outside.txt`.
+    #[test]
+    fn resolve_root_escaping_symlink_target() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "link",
+            data: b"../../outside.txt",
+            mode: 0o120777,
+            id: 1,
+        }]);
+        let archive = archive_from_bytes(&bytes);
+
+        let result = archive.resolve("link");
+        assert!(matches!(result, Err(BaleError::InvalidPath)));
+    }
 }

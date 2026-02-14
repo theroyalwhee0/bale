@@ -986,9 +986,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
     /// Creates a symlink entry.
     ///
-    /// The target is validated to prevent absolute paths and paths that
-    /// escape the archive root when resolved against the symlink's parent
-    /// directory.
+    /// The target is validated to prevent absolute paths, paths that
+    /// escape the archive root, and unsafe filename components (control
+    /// characters, leading dashes, components exceeding `NAME_MAX`).
+    /// Validation is performed by [`resolve_target`](crate::archive::resolve_target),
+    /// but the raw target string is stored as-is.
     ///
     /// # Errors
     ///
@@ -996,6 +998,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     /// - The path is invalid or writing fails
     /// - The target is absolute (`InvalidPath`)
     /// - The target escapes the archive root (`InvalidPath`)
+    /// - The target contains unsafe filename components (`UnsafeFilename`)
     fn add_symlink(
         &mut self,
         path: impl AsRef<str>,
@@ -1005,36 +1008,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         let path = path.as_ref();
         let target = target.as_ref();
 
-        // Reject absolute symlink targets.
-        if target.starts_with('/') || target.starts_with('\\') {
-            return Err(BaleError::InvalidPath);
-        }
-
-        // Reject targets that escape the archive root when resolved
-        // against the symlink's parent directory. We only check for escape
-        // via `..` components — we intentionally skip safename and length
-        // validation since POSIX allows long symlink targets.
+        // Validate the target: rejects absolute paths, archive-root escape,
+        // and unsafe filename components. The resolved path is discarded —
+        // the raw target is stored as-is.
         let symlink_path = ArchivePath::try_from(path)?;
-        let parent = symlink_path.parent();
-        let mut depth: usize = if parent.is_empty() {
-            0
-        } else {
-            parent.as_bytes().iter().filter(|&&b| b == b'/').count() + 1
-        };
-        for component in target.split('/') {
-            match component {
-                ".." => {
-                    if depth == 0 {
-                        return Err(BaleError::InvalidPath);
-                    }
-                    depth -= 1;
-                }
-                "" | "." => {}
-                _ => {
-                    depth += 1;
-                }
-            }
-        }
+        crate::archive::resolve_target(&symlink_path, target)?;
 
         // Ensure symlink type bits are set.
         let mode = if mode & SFlag::S_IFMT.bits() == 0 {
@@ -1664,12 +1642,12 @@ mod tests {
         assert_eq!(symlink.target(), Some("../sibling"));
     }
 
-    /// add_symlink allows targets longer than the 255-byte component limit.
+    /// add_symlink rejects targets with components exceeding NAME_MAX (255).
     ///
-    /// POSIX permits symlink targets up to `PATH_MAX` (typically 4096 bytes),
-    /// so the archive should not reject them based on path component length.
+    /// Symlink target components are validated with safename rules, which
+    /// enforce the standard NAME_MAX limit per component.
     #[test]
-    fn add_symlink_allows_long_target() {
+    fn add_symlink_rejects_long_component_in_target() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
 
@@ -1677,15 +1655,20 @@ mod tests {
         let long_component = "a".repeat(257);
         let target = format!("{long_component}/file.txt");
 
-        {
-            let mut writer = ArchiveWriter::create(&path).unwrap();
-            writer.add_symlink("link", &target, 0o777).unwrap();
-            writer.sync().unwrap();
-        }
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.add_symlink("link", &target, 0o777);
+        assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
+    }
 
-        let reader = ArchiveReader::open(&path).unwrap();
-        let symlink = reader.symlink("link").unwrap();
-        assert_eq!(symlink.target(), Some(target.as_str()));
+    /// add_symlink rejects targets with control characters in components.
+    #[test]
+    fn add_symlink_rejects_control_chars_in_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.add_symlink("link", "foo\x01bar", 0o777);
+        assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
     }
 
     /// replace_content on a directory returns an error.
