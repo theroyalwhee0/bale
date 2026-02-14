@@ -129,6 +129,11 @@ impl BaleFs {
             options.push(MountOption::AllowOther);
         }
 
+        let canonical = mount_point.as_ref().canonicalize()?;
+        if let Ok(mut state) = self.state.lock() {
+            state.set_mount_point(canonical);
+        }
+
         let session = fuser::spawn_mount2(self, mount_point, &options)?;
         Ok(session)
     }

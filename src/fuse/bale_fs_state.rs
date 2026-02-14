@@ -1,6 +1,7 @@
 //! Internal state for the BaleFs filesystem.
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 use fuser::FileType;
@@ -79,6 +80,10 @@ pub(super) struct BaleFsState {
     /// Tracks how many paths point to the same underlying entry.
     pub(super) nlink_counts: HashMap<u64, u32>,
 
+    /// Mount point for symlink target normalization.
+    /// Set at mount time, used to strip absolute targets to archive-relative paths.
+    mount_point: Option<PathBuf>,
+
     /// Next available inode for files.
     next_file_ino: u64,
     /// Next available inode for directories.
@@ -106,11 +111,17 @@ impl BaleFsState {
             dir_mtimes: HashMap::new(),
             entry_id_to_ino: HashMap::new(),
             nlink_counts: HashMap::new(),
+            mount_point: None,
             next_file_ino: FILE_INO_START,
             next_dir_ino: DIR_INO_START,
         };
         state.build_directory_tree();
         state
+    }
+
+    /// Sets the mount point for symlink target normalization.
+    pub(super) fn set_mount_point(&mut self, path: PathBuf) {
+        self.mount_point = Some(path);
     }
 
     /// Validates a filename component using safename rules.
@@ -1070,7 +1081,33 @@ impl BaleFsState {
         Ok(())
     }
 
+    /// Lexically normalizes a path without filesystem access.
+    ///
+    /// Resolves `.` (current dir), `..` (parent dir), and redundant
+    /// separators. Unlike `canonicalize`, this does not require the path
+    /// to exist on disk.
+    fn normalize_path(path: &Path) -> PathBuf {
+        let mut parts: Vec<Component<'_>> = Vec::new();
+        for c in path.components() {
+            match c {
+                Component::ParentDir => {
+                    if matches!(parts.last(), Some(Component::Normal(_))) {
+                        parts.pop();
+                    }
+                }
+                Component::CurDir => {}
+                _ => parts.push(c),
+            }
+        }
+        parts.iter().collect()
+    }
+
     /// Creates a new symlink.
+    ///
+    /// Absolute symlink targets are normalized to archive-relative paths
+    /// by stripping the mount prefix (when known). The writer rejects
+    /// absolute targets, so this normalization is required for tooling
+    /// that creates absolute symlinks pointing inside the mount.
     ///
     /// Returns the inode of the new symlink and its attributes.
     pub(super) fn create_symlink(
@@ -1109,6 +1146,24 @@ impl BaleFsState {
             return Err(libc::EEXIST);
         }
 
+        // Convert absolute symlink targets to archive-relative paths.
+        // Relative targets pass through unchanged — the writer validates them.
+        let target = {
+            let path = Path::new(target);
+            if path.has_root() {
+                let normalized = Self::normalize_path(path);
+                let mount = self.mount_point.as_deref().ok_or(libc::EINVAL)?;
+                let stripped = normalized.strip_prefix(mount).map_err(|_| libc::EINVAL)?;
+                let s = stripped.to_str().ok_or(libc::EINVAL)?;
+                if s.is_empty() {
+                    return Err(libc::EINVAL);
+                }
+                s.to_string()
+            } else {
+                target.to_string()
+            }
+        };
+
         // Allocate inode.
         let ino = self.next_file_ino;
         self.next_file_ino += 1;
@@ -1124,7 +1179,7 @@ impl BaleFsState {
 
         // Add symlink to archive.
         self.archive
-            .add_symlink(&full_path, target, 0o777)
+            .add_symlink(&full_path, &target, 0o777)
             .map_err(|_| libc::EIO)?;
 
         let attr = fuser::FileAttr {
@@ -1429,5 +1484,109 @@ mod tests {
             state.modified_data.is_empty(),
             "modified_data should be cleared after sync"
         );
+    }
+
+    // ==================== normalize_path Tests ====================
+
+    /// Tests that `.` and `..` components are resolved.
+    #[test]
+    fn normalize_path_resolves_dot_and_dotdot() {
+        let result = BaleFsState::normalize_path(Path::new("/a/b/../c/./d"));
+        assert_eq!(result, PathBuf::from("/a/c/d"));
+    }
+
+    /// Tests that multiple slashes are collapsed.
+    #[test]
+    fn normalize_path_collapses_slashes() {
+        let result = BaleFsState::normalize_path(Path::new("/a///b"));
+        assert_eq!(result, PathBuf::from("/a/b"));
+    }
+
+    /// Tests that relative paths pass through correctly.
+    #[test]
+    fn normalize_path_relative_passthrough() {
+        let result = BaleFsState::normalize_path(Path::new("a/b/c"));
+        assert_eq!(result, PathBuf::from("a/b/c"));
+    }
+
+    // ==================== create_symlink absolute target Tests ====================
+
+    /// Tests that an absolute target inside the mount is normalized to relative.
+    #[test]
+    fn create_symlink_normalizes_absolute_target() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        state.set_mount_point(PathBuf::from("/mnt/archive"));
+
+        let result = state.create_symlink(ROOT_INO, "link", "/mnt/archive/foo/bar.txt");
+        assert!(
+            result.is_ok(),
+            "should normalize absolute target inside mount"
+        );
+
+        // Verify stored target is relative.
+        let symlink = state.archive.symlink("link").unwrap();
+        assert_eq!(symlink.target(), Some("foo/bar.txt"));
+    }
+
+    /// Tests that an absolute target with `..` is normalized correctly.
+    #[test]
+    fn create_symlink_normalizes_absolute_with_dotdot() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        state.set_mount_point(PathBuf::from("/mnt/archive"));
+
+        let result = state.create_symlink(ROOT_INO, "link", "/mnt/archive/a/../b");
+        assert!(result.is_ok(), "should normalize absolute target with ..");
+
+        let symlink = state.archive.symlink("link").unwrap();
+        assert_eq!(symlink.target(), Some("b"));
+    }
+
+    /// Tests that an absolute target outside the mount is rejected.
+    #[test]
+    fn create_symlink_rejects_absolute_outside_mount() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        state.set_mount_point(PathBuf::from("/mnt/archive"));
+
+        let result = state.create_symlink(ROOT_INO, "link", "/usr/share/data.txt");
+        assert_eq!(result.unwrap_err(), libc::EINVAL);
+    }
+
+    /// Tests that an absolute target pointing to the mount root is rejected.
+    #[test]
+    fn create_symlink_rejects_mount_root_target() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        state.set_mount_point(PathBuf::from("/mnt/archive"));
+
+        let result = state.create_symlink(ROOT_INO, "link", "/mnt/archive");
+        assert_eq!(result.unwrap_err(), libc::EINVAL);
+    }
+
+    /// Tests that an absolute target without mount point set is rejected.
+    #[test]
+    fn create_symlink_rejects_absolute_without_mount_point() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        // mount_point is None by default.
+
+        let result = state.create_symlink(ROOT_INO, "link", "/foo");
+        assert_eq!(result.unwrap_err(), libc::EINVAL);
+    }
+
+    /// Tests that relative symlink targets still work unmodified.
+    #[test]
+    fn create_symlink_relative_target_unchanged() {
+        let archive = create_test_archive(&[]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+        state.set_mount_point(PathBuf::from("/mnt/archive"));
+
+        let result = state.create_symlink(ROOT_INO, "link", "foo/bar.txt");
+        assert!(result.is_ok(), "relative target should work as before");
+
+        let symlink = state.archive.symlink("link").unwrap();
+        assert_eq!(symlink.target(), Some("foo/bar.txt"));
     }
 }
