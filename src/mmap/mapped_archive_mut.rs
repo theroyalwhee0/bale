@@ -252,9 +252,7 @@ impl MappedArchiveMut {
             self.committed_len,
             self.capacity()
         );
-        // Use async flush to avoid blocking in FUSE daemon shutdown.
-        // The set_len() call will sync metadata.
-        self.mmap.flush_async_range(0, self.len)?;
+        self.mmap.flush_range(0, self.len)?;
         self.file.set_len(self.len as u64)?;
         self.committed_len = self.len;
         // Remap to match new file size so capacity() is accurate.

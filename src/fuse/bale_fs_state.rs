@@ -585,17 +585,33 @@ impl BaleFsState {
             // an initial entry, so we must remove it before re-adding with
             // the final content).
             self.archive.delete(path);
-            self.archive
+            log::trace!(
+                "sync_modified_to_archive: add_entry_with_mtime path={:?}, data_len={}, mode={:#o}, mtime={:?}",
+                path,
+                data.len(),
+                archive_mode,
+                mtime
+            );
+            if let Err(e) = self
+                .archive
                 .add_entry_with_mtime(path, &data, archive_mode, mtime)
-                .map_err(|_| libc::EIO)?;
+            {
+                log::error!("sync_modified_to_archive: add_entry_with_mtime failed: {e:?}");
+                return Err(libc::EIO);
+            }
         }
 
+        log::trace!("sync_modified_to_archive: data paths loop done");
+
         // Sync files with only mode or mtime changes (not data changes).
+        // Directory paths (from touch_dir_mtime) must be excluded since
+        // directories are not archive entries.
         let metadata_only_paths: Vec<String> = self
             .modified_modes
             .keys()
             .chain(self.modified_times.keys())
             .filter(|p| !self.modified_data.contains_key(*p))
+            .filter(|p| !self.dir_inodes.contains_key(*p))
             .cloned()
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -613,12 +629,20 @@ impl BaleFsState {
                 .data()
                 .to_vec();
             self.archive.delete(path);
+            log::trace!(
+                "sync_modified_to_archive: metadata-only path={path:?}, data_len={}, mode={archive_mode:#o}",
+                data.len()
+            );
             self.archive
                 .add_entry_with_mtime(path, &data, archive_mode, mtime)
                 .map_err(|_| libc::EIO)?;
         }
 
-        log::trace!("sync_modified_to_archive: calling archive.sync()");
+        log::trace!(
+            "sync_modified_to_archive: calling archive.sync() ({} data, {} metadata-only)",
+            data_paths.len(),
+            metadata_only_paths.len()
+        );
         self.archive.sync().map_err(|_| libc::EIO)?;
         self.modified_data.clear();
         self.modified_modes.clear();

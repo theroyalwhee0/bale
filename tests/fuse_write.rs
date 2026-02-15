@@ -15,7 +15,6 @@ use zerocopy::FromBytes;
 
 /// Create a file via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_create_file() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -47,7 +46,6 @@ fn fuse_create_file() {
 
 /// Create a directory via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_mkdir() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -74,7 +72,6 @@ fn fuse_mkdir() {
 
 /// Delete a file via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_unlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -127,7 +124,6 @@ fn fuse_rmdir() {
 
 /// Rename a file via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_rename() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -195,7 +191,6 @@ fn fuse_write_existing() {
 
 /// Create nested directories via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_mkdir_nested() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -222,7 +217,6 @@ fn fuse_mkdir_nested() {
 
 /// Symlink operations via FUSE mount.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_symlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -275,7 +269,6 @@ fn fuse_getattr_after_write() {
 /// Regression test: create() adds an initial entry, then sync_modified_to_archive()
 /// must delete before re-adding to avoid duplicates.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_no_duplicate_entries() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -354,7 +347,6 @@ fn dump_trailer(trailer: &Trailer, actual_len: usize) -> String {
 /// Diagnostic test: reads the raw trailer bytes after a FUSE write session
 /// and checks each validity condition individually.
 #[test]
-#[ignore = "FUSE write sync bug"]
 fn fuse_write_produces_valid_trailer() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");

@@ -894,6 +894,12 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     ///
     /// Returns an error if writing or syncing fails.
     fn sync(&mut self) -> Result<(), BaleError> {
+        log::trace!(
+            "ArchiveWriter::sync: dirty={}, write_offset={}, mmap_len={}",
+            self.dirty,
+            self.write_offset,
+            self.mmap.len()
+        );
         if !self.dirty {
             return Ok(());
         }
