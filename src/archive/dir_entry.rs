@@ -58,3 +58,73 @@ impl<'a> DirEntry<'a> {
         self.id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ArchivePath;
+
+    /// Creates a test directory `EntryRow` with known values.
+    fn test_entry_row() -> EntryRow {
+        EntryRow::new_directory(7, 1_700_000_000_000, 1_700_000_001_000, 0o040755)
+    }
+
+    /// Creates a `DirEntry` referencing the given row.
+    fn make_dir_entry(row: &EntryRow) -> DirEntry<'_> {
+        DirEntry {
+            entry: row,
+            path: ArchivePath::from_bytes(b"src/lib"),
+            id: 7,
+        }
+    }
+
+    /// `path()` returns the directory path.
+    #[test]
+    fn path_returns_archive_path() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        assert_eq!(dir.path().as_bytes(), b"src/lib");
+    }
+
+    /// `mode()` returns the Unix mode from the entry row.
+    #[test]
+    fn mode_returns_unix_mode() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        assert_eq!(dir.mode(), 0o040755);
+    }
+
+    /// `created_time()` returns the creation timestamp.
+    #[test]
+    fn created_time_returns_timestamp() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        assert_eq!(dir.created_time(), 1_700_000_000_000);
+    }
+
+    /// `modified_time()` returns the modification timestamp.
+    #[test]
+    fn modified_time_returns_timestamp() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        assert_eq!(dir.modified_time(), 1_700_000_001_000);
+    }
+
+    /// `entry()` returns a reference to the underlying entry row.
+    #[test]
+    fn entry_returns_row_reference() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        let returned = dir.entry();
+        assert_eq!(returned.entry_id.get(), 7);
+        assert_eq!(returned.mode.get(), 0o040755);
+    }
+
+    /// `id()` returns the stable entry ID.
+    #[test]
+    fn id_returns_entry_id() {
+        let row = test_entry_row();
+        let dir = make_dir_entry(&row);
+        assert_eq!(dir.id(), 7);
+    }
+}
