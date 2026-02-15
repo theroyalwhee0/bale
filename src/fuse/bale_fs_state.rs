@@ -9,6 +9,7 @@ use nix::libc;
 use nix::sys::stat::{Mode, SFlag};
 
 use crate::format::EntryRow;
+use crate::fuse::virtual_dir::VirtualDir;
 use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO};
 use crate::{ArchivePath, ArchiveRead, ArchiveWrite, ArchiveWriter, BaleError, EntryKind};
 
@@ -85,6 +86,9 @@ pub(super) struct BaleFsState {
     next_file_ino: u64,
     /// Next available inode for directories.
     next_dir_ino: u64,
+
+    /// Virtual `.bale/` metadata directory.
+    pub(super) virtual_dir: VirtualDir,
 }
 
 impl BaleFsState {
@@ -111,6 +115,7 @@ impl BaleFsState {
             mount_point: None,
             next_file_ino: FILE_INO_START,
             next_dir_ino: DIR_INO_START,
+            virtual_dir: VirtualDir::new(),
         };
         state.build_directory_tree();
         state
@@ -782,6 +787,20 @@ impl BaleFsState {
             .get(parent_path)
             .copied()
             .unwrap_or(ROOT_INO)
+    }
+
+    /// Returns the depth of a directory (number of path components).
+    ///
+    /// Root returns 0, `"a"` returns 1, `"a/b"` returns 2, etc.
+    pub(super) fn dir_depth(&self, ino: u64) -> usize {
+        if ino == ROOT_INO {
+            return 0;
+        }
+        let path = self.get_dir_path(ino);
+        if path.is_empty() {
+            return 0;
+        }
+        path.chars().filter(|&c| c == '/').count() + 1
     }
 
     /// Creates a new file.
@@ -2016,5 +2035,34 @@ mod tests {
             state.archive.file("link.txt").is_ok(),
             "data should still be accessible via remaining link"
         );
+    }
+
+    // ==================== dir_depth tests ====================
+
+    /// Tests that `dir_depth` returns 0 for the root directory.
+    #[test]
+    fn dir_depth_root_is_zero() {
+        let archive = create_test_archive(&[]);
+        let state = BaleFsState::new(archive, false, 1000, 1000);
+        assert_eq!(state.dir_depth(ROOT_INO), 0);
+    }
+
+    /// Tests that `dir_depth` returns correct values for nested directories.
+    #[test]
+    fn dir_depth_nested_directories() {
+        let archive = create_test_archive(&[
+            ("a/", &[], 0o40755),
+            ("a/b/", &[], 0o40755),
+            ("a/b/c/", &[], 0o40755),
+        ]);
+        let state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let a_ino = *state.dir_inodes.get("a").unwrap();
+        let ab_ino = *state.dir_inodes.get("a/b").unwrap();
+        let abc_ino = *state.dir_inodes.get("a/b/c").unwrap();
+
+        assert_eq!(state.dir_depth(a_ino), 1);
+        assert_eq!(state.dir_depth(ab_ino), 2);
+        assert_eq!(state.dir_depth(abc_ino), 3);
     }
 }

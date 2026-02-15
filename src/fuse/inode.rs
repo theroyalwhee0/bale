@@ -19,6 +19,12 @@ pub const FILE_INO_START: u64 = 0x1_0000_0000;
 /// them from file inodes in the inode space.
 pub const DIR_INO_START: u64 = 0x2_0000_0000;
 
+/// Starting inode number for virtual entries (`.bale/` directory and its contents).
+///
+/// Virtual inodes start at 0x3_0000_0000 to avoid collision with real
+/// file and directory inodes.
+pub const VIRTUAL_INO_START: u64 = 0x3_0000_0000;
+
 /// Time-to-live for cached attributes and entries.
 ///
 /// FUSE caches file attributes and directory entries for this duration

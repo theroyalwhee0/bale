@@ -1,3 +1,3 @@
 bin.name = "bale"
-args = ["mount", "tests/fixtures/valid/multi_file.bale", "--read-only", "--shell", "ls src"]
+args = ["mount", "tests/fixtures/fuse/fuse_ls_subdir.bale", "--read-only", "--shell", "ls src"]
 status.code = 0

@@ -4,28 +4,18 @@
 //!
 //! These tests require FUSE support and are gated behind the `integration-tests` feature.
 
+mod common;
+
 use std::fs;
-use std::process::Command;
 
+use bale::{FileHeader, Trailer};
+use common::run_bale;
 use tempfile::tempdir;
-
-/// Helper to run bale command and return (success, stdout, stderr).
-fn run_bale(args: &[&str]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_bale"))
-        .args(args)
-        .output()
-        .expect("failed to execute bale");
-
-    (
-        output.status.success(),
-        String::from_utf8(output.stdout).unwrap_or_default(),
-        String::from_utf8(output.stderr).unwrap_or_default(),
-    )
-}
+use zerocopy::FromBytes;
 
 /// Create a file via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_create_file() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -57,7 +47,7 @@ fn fuse_create_file() {
 
 /// Create a directory via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_mkdir() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -84,7 +74,7 @@ fn fuse_mkdir() {
 
 /// Delete a file via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_unlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -111,7 +101,6 @@ fn fuse_unlink() {
 
 /// Delete a directory via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
 fn fuse_rmdir() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -138,7 +127,7 @@ fn fuse_rmdir() {
 
 /// Rename a file via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_rename() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -169,7 +158,6 @@ fn fuse_rename() {
 
 /// Write to existing file via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
 fn fuse_write_existing() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -207,7 +195,7 @@ fn fuse_write_existing() {
 
 /// Create nested directories via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_mkdir_nested() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -234,7 +222,7 @@ fn fuse_mkdir_nested() {
 
 /// Symlink operations via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_symlink() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -265,7 +253,6 @@ fn fuse_symlink() {
 
 /// getattr returns correct file size after write.
 #[test]
-#[ignore = "v2 format refactor in progress"]
 fn fuse_getattr_after_write() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -288,7 +275,7 @@ fn fuse_getattr_after_write() {
 /// Regression test: create() adds an initial entry, then sync_modified_to_archive()
 /// must delete before re-adding to avoid duplicates.
 #[test]
-#[ignore = "v2 format refactor in progress"]
+#[ignore = "FUSE write sync bug"]
 fn fuse_no_duplicate_entries() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -320,7 +307,6 @@ fn fuse_no_duplicate_entries() {
 
 /// setattr (chmod) via FUSE mount.
 #[test]
-#[ignore = "v2 format refactor in progress"]
 fn fuse_setattr_chmod() {
     let dir = tempdir().unwrap();
     let archive = dir.path().join("test.bale");
@@ -339,4 +325,134 @@ fn fuse_setattr_chmod() {
     ]);
     assert!(success, "chmod should succeed");
     assert!(stdout.trim() == "755", "mode should be 755");
+}
+
+/// Formats a trailer dump for use in assert messages.
+fn dump_trailer(trailer: &Trailer, actual_len: usize) -> String {
+    format!(
+        "magic={:?} (expected {:?}), alignment_power={}, path_size={}, \
+         next_id={}, entry_count={}, directory_entry_count={}, \
+         entry_table_offset={}, directory_table_offset={}, \
+         archive_size={} (actual={}), is_valid={}",
+        trailer.magic,
+        Trailer::MAGIC,
+        trailer.alignment_power,
+        trailer.path_size.get(),
+        trailer.next_id.get(),
+        trailer.entry_count.get(),
+        trailer.directory_entry_count.get(),
+        trailer.entry_table_offset.get(),
+        trailer.directory_table_offset.get(),
+        trailer.archive_size.get(),
+        actual_len,
+        trailer.is_valid(),
+    )
+}
+
+/// Writing a file via FUSE must produce a valid trailer after unmount.
+///
+/// Diagnostic test: reads the raw trailer bytes after a FUSE write session
+/// and checks each validity condition individually.
+#[test]
+#[ignore = "FUSE write sync bug"]
+fn fuse_write_produces_valid_trailer() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+
+    // Verify archive is valid before mount.
+    let before = fs::read(&archive).unwrap();
+    let before_len = before.len();
+    assert!(
+        before_len >= Trailer::SIZE,
+        "archive too small before mount: {before_len}"
+    );
+    let before_trailer = Trailer::ref_from_bytes(&before[before_len - Trailer::SIZE..]).unwrap();
+    assert!(
+        before_trailer.is_valid(),
+        "trailer should be valid before mount"
+    );
+
+    // Mount and write a file.
+    let (success, _, _stderr) = run_bale(&[
+        "mount",
+        archive.to_str().unwrap(),
+        "--shell",
+        "echo 'hello' > newfile.txt",
+    ]);
+    assert!(success, "mount --shell should succeed");
+
+    // Read raw archive bytes after unmount.
+    let after = fs::read(&archive).unwrap();
+    let after_len = after.len();
+    assert!(
+        after_len >= FileHeader::SIZE + Trailer::SIZE,
+        "archive too small after mount: {after_len}"
+    );
+
+    // Parse trailer from last 64 bytes.
+    let trailer = Trailer::ref_from_bytes(&after[after_len - Trailer::SIZE..]).unwrap();
+    let dump = dump_trailer(trailer, after_len);
+
+    assert!(
+        trailer.is_valid(),
+        "invalid trailer after FUSE write: {dump}"
+    );
+    assert_eq!(
+        trailer.archive_size.get(),
+        after_len as u64,
+        "archive_size mismatch: {dump}"
+    );
+    assert!(
+        trailer.entry_count.get() >= 1,
+        "should have at least 1 entry: {dump}"
+    );
+}
+
+/// Adding a file via `bale add` must produce a valid trailer.
+///
+/// Control test: same checks as [`fuse_write_produces_valid_trailer`] but
+/// using the CLI `add` command to isolate whether the bug is in FUSE sync
+/// or in `ArchiveWriter` itself.
+#[test]
+fn cli_add_produces_valid_trailer() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+    let file = dir.path().join("newfile.txt");
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+
+    // Verify archive is valid before add.
+    let before = fs::read(&archive).unwrap();
+    let before_len = before.len();
+    let before_trailer = Trailer::ref_from_bytes(&before[before_len - Trailer::SIZE..]).unwrap();
+    assert!(
+        before_trailer.is_valid(),
+        "trailer should be valid before add"
+    );
+
+    // Write a file and add it.
+    fs::write(&file, "hello\n").unwrap();
+    let (success, _, _stderr) =
+        run_bale(&["add", archive.to_str().unwrap(), file.to_str().unwrap()]);
+    assert!(success, "bale add should succeed");
+
+    // Read raw archive bytes after add.
+    let after = fs::read(&archive).unwrap();
+    let after_len = after.len();
+
+    let trailer = Trailer::ref_from_bytes(&after[after_len - Trailer::SIZE..]).unwrap();
+    let dump = dump_trailer(trailer, after_len);
+
+    assert!(trailer.is_valid(), "invalid trailer after CLI add: {dump}");
+    assert_eq!(
+        trailer.archive_size.get(),
+        after_len as u64,
+        "archive_size mismatch: {dump}"
+    );
+    assert!(
+        trailer.entry_count.get() >= 1,
+        "should have at least 1 entry: {dump}"
+    );
 }
