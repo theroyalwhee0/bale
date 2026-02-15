@@ -54,6 +54,45 @@ fn touch_updates_mtime() {
     assert!(mtime2 > mtime1, "mtime should be updated");
 }
 
+/// List shows size 0 for empty archive.
+#[test]
+fn list_empty_archive_shows_size_zero() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+
+    let (success, stdout, _) = run_bale(&["ls", archive.to_str().unwrap()]);
+    assert!(success, "ls should succeed");
+    assert!(
+        stdout.starts_with("size 0\n"),
+        "empty archive should show size 0, got: {stdout}"
+    );
+}
+
+/// List shows size as sum of entry data sizes.
+#[test]
+fn list_shows_size_sum() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+    let file1 = dir.path().join("hello.txt");
+    let file2 = dir.path().join("empty.txt");
+
+    fs::write(&file1, "Hello, World!").unwrap(); // 13 bytes
+    fs::write(&file2, "").unwrap(); // 0 bytes
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+    run_bale(&["add", archive.to_str().unwrap(), file1.to_str().unwrap()]);
+    run_bale(&["add", archive.to_str().unwrap(), file2.to_str().unwrap()]);
+
+    let (success, stdout, _) = run_bale(&["ls", archive.to_str().unwrap()]);
+    assert!(success, "ls should succeed");
+    assert!(
+        stdout.starts_with("size 13\n"),
+        "size should be sum of file sizes (13), got: {stdout}"
+    );
+}
+
 /// Add command adds files to archive.
 #[test]
 
