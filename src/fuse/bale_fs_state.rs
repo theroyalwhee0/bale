@@ -549,6 +549,15 @@ impl BaleFsState {
         self.modified_times.insert(path.to_string(), mtime);
     }
 
+    /// Updates the mtime of a parent directory to the current time.
+    ///
+    /// Called when entries are created or removed in a directory,
+    /// matching POSIX behavior where directory mtime reflects the
+    /// last structural change.
+    fn touch_dir_mtime(&mut self, parent_ino: u64) {
+        self.set_dir_mtime(parent_ino, SystemTime::now());
+    }
+
     /// Syncs all modified files to the archive.
     pub(super) fn sync_modified_to_archive(&mut self) -> Result<(), i32> {
         // Collect paths to avoid borrow issues.
@@ -670,6 +679,9 @@ impl BaleFsState {
             .add_folder(&full_path, archive_mode)
             .map_err(|_| libc::EIO)?;
 
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
+
         let attr = self.get_attr(ino, FileType::Directory);
         Ok((ino, attr))
     }
@@ -726,6 +738,9 @@ impl BaleFsState {
 
         // Remove from archive.
         let _ = self.archive.delete(&full_path);
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         Ok(())
     }
@@ -829,6 +844,9 @@ impl BaleFsState {
         self.archive
             .add_entry(&full_path, &[], archive_mode)
             .map_err(|_| libc::EIO)?;
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         let perm = mode.bits() as u16;
         let attr = fuser::FileAttr {
@@ -973,6 +991,9 @@ impl BaleFsState {
             let _ = self.archive.unlink(&full_path);
         }
 
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
+
         Ok(())
     }
 
@@ -1040,11 +1061,16 @@ impl BaleFsState {
                 // Can't overwrite file with directory.
                 return Err(libc::ENOTDIR);
             }
-            // Remove destination file.
+            // Remove destination file and all associated metadata.
             let dest_ino = *self.path_to_inode.get(&new_path).unwrap();
             self.inode_to_path.remove(&dest_ino);
             self.path_to_inode.remove(&new_path);
             self.modified_data.remove(&new_path);
+            self.modified_modes.remove(&new_path);
+            self.modified_times.remove(&new_path);
+            self.modified_uids.remove(&new_path);
+            self.modified_gids.remove(&new_path);
+            self.nlink_counts.remove(&dest_ino);
             let _ = self.archive.delete(&new_path);
             if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
                 contents.retain(|e| e.name != new_name);
@@ -1072,17 +1098,44 @@ impl BaleFsState {
             if let Some(gid) = self.modified_gids.remove(&old_path) {
                 self.modified_gids.insert(new_path.clone(), gid);
             }
+            if let Some(mode) = self.modified_modes.remove(&old_path) {
+                self.modified_modes.insert(new_path.clone(), mode);
+            }
+            if let Some(time) = self.modified_times.remove(&old_path) {
+                self.modified_times.insert(new_path.clone(), time);
+            }
+
+            // Determine original file type (regular file vs symlink).
+            let is_symlink = self
+                .dir_contents
+                .get(&old_parent_ino)
+                .and_then(|c| c.iter().find(|e| e.name == old_name))
+                .is_some_and(|e| e.kind == FileType::Symlink);
 
             // Update parent directory contents.
             if let Some(contents) = self.dir_contents.get_mut(&old_parent_ino) {
                 contents.retain(|e| e.name != old_name);
             }
             if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
-                contents.push(FuseDirEntry::file(new_name, ino));
+                let entry = if is_symlink {
+                    FuseDirEntry::symlink(new_name, ino)
+                } else {
+                    FuseDirEntry::file(new_name, ino)
+                };
+                contents.push(entry);
             }
 
             // Update archive: copy data from old path to new, delete old.
-            if let Ok(file) = self.archive.file(&old_path) {
+            if is_symlink {
+                let target = self
+                    .archive
+                    .symlink(&old_path)
+                    .ok()
+                    .and_then(|link| link.target().map(String::from));
+                if let Some(target) = target {
+                    let _ = self.archive.add_symlink(&new_path, &target, 0o777);
+                }
+            } else if let Ok(file) = self.archive.file(&old_path) {
                 let data = file.data().to_vec();
                 let perm = self.get_file_mode(&old_path);
                 let archive_mode = SFlag::S_IFREG.bits() | perm.bits();
@@ -1133,7 +1186,13 @@ impl BaleFsState {
                     self.modified_uids.insert(new_p.clone(), uid);
                 }
                 if let Some(gid) = self.modified_gids.remove(&old_p) {
-                    self.modified_gids.insert(new_p, gid);
+                    self.modified_gids.insert(new_p.clone(), gid);
+                }
+                if let Some(mode) = self.modified_modes.remove(&old_p) {
+                    self.modified_modes.insert(new_p.clone(), mode);
+                }
+                if let Some(time) = self.modified_times.remove(&old_p) {
+                    self.modified_times.insert(new_p, time);
                 }
             }
 
@@ -1155,21 +1214,39 @@ impl BaleFsState {
                     self.modified_uids.insert(new_p.clone(), uid);
                 }
                 if let Some(gid) = self.modified_gids.remove(&old_p) {
-                    self.modified_gids.insert(new_p, gid);
+                    self.modified_gids.insert(new_p.clone(), gid);
+                }
+                if let Some(mode) = self.modified_modes.remove(&old_p) {
+                    self.modified_modes.insert(new_p.clone(), mode);
+                }
+                if let Some(time) = self.modified_times.remove(&old_p) {
+                    self.modified_times.insert(new_p, time);
                 }
             }
 
-            // Propagate the renamed directory's own ownership.
+            // Propagate the renamed directory's own metadata overrides.
             if let Some(uid) = self.modified_uids.remove(&old_path) {
                 self.modified_uids.insert(new_path.clone(), uid);
             }
             if let Some(gid) = self.modified_gids.remove(&old_path) {
                 self.modified_gids.insert(new_path.clone(), gid);
             }
+            if let Some(mode) = self.modified_modes.remove(&old_path) {
+                self.modified_modes.insert(new_path.clone(), mode);
+            }
+            if let Some(time) = self.modified_times.remove(&old_path) {
+                self.modified_times.insert(new_path.clone(), time);
+            }
 
             // Update archive: add new dir entry, remove old.
             let _ = self.archive.add_folder(&new_path, DEFAULT_DIR_MODE);
             let _ = self.archive.delete(&old_path);
+        }
+
+        // Update parent directory mtimes.
+        self.touch_dir_mtime(old_parent_ino);
+        if new_parent_ino != old_parent_ino {
+            self.touch_dir_mtime(new_parent_ino);
         }
 
         Ok(())
@@ -1274,7 +1351,14 @@ impl BaleFsState {
         // Add symlink to archive.
         self.archive
             .add_symlink(&full_path, &target, 0o777)
-            .map_err(|_| libc::EIO)?;
+            .map_err(|e| match e {
+                BaleError::UnsafeFilename(_) | BaleError::PathTooLong { .. } => libc::ENAMETOOLONG,
+                BaleError::PathExists(_) => libc::EEXIST,
+                _ => libc::EIO,
+            })?;
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         let attr = fuser::FileAttr {
             ino,
@@ -1356,6 +1440,9 @@ impl BaleFsState {
         if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
             contents.push(FuseDirEntry::file(new_name, ino));
         }
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(new_parent_ino);
 
         // Build attributes from archive entry.
         let attr = if let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&full_path) {
