@@ -14,6 +14,7 @@ use nix::libc;
 use nix::sys::stat::Mode;
 
 use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM};
+use crate::fuse::virtual_dir::VirtualDir;
 use crate::fuse::{ROOT_INO, TTL};
 use crate::{ArchiveRead, ArchiveWriter, BaleError, EntryKind};
 
@@ -139,10 +140,75 @@ impl BaleFs {
     }
 }
 
+impl BaleFs {
+    /// Creates file attributes for the virtual `.bale/` directory.
+    fn virtual_dir_attr(state: &BaleFsState) -> fuser::FileAttr {
+        fuser::FileAttr {
+            ino: state.virtual_dir.dir_ino(),
+            size: 0,
+            blocks: 0,
+            atime: state.mount_time,
+            mtime: state.mount_time,
+            ctime: state.mount_time,
+            crtime: state.mount_time,
+            kind: FileType::Directory,
+            perm: 0o555,
+            nlink: 2,
+            uid: state.uid,
+            gid: state.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+
+    /// Creates file attributes for a virtual metadata file.
+    fn virtual_file_attr(state: &BaleFsState, ino: u64, size: u64) -> fuser::FileAttr {
+        fuser::FileAttr {
+            ino,
+            size,
+            blocks: size.div_ceil(512),
+            atime: state.mount_time,
+            mtime: state.mount_time,
+            ctime: state.mount_time,
+            crtime: state.mount_time,
+            kind: FileType::RegularFile,
+            perm: 0o444,
+            nlink: 1,
+            uid: state.uid,
+            gid: state.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+
+    /// Creates file attributes for a virtual `.bale` symlink.
+    fn virtual_symlink_attr(state: &BaleFsState, ino: u64, target_len: u64) -> fuser::FileAttr {
+        fuser::FileAttr {
+            ino,
+            size: target_len,
+            blocks: 0,
+            atime: state.mount_time,
+            mtime: state.mount_time,
+            ctime: state.mount_time,
+            crtime: state.mount_time,
+            kind: FileType::Symlink,
+            perm: 0o777,
+            nlink: 1,
+            uid: state.uid,
+            gid: state.gid,
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        }
+    }
+}
+
 impl fuser::Filesystem for BaleFs {
     /// Looks up a directory entry by name.
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        let state = match self.state.lock() {
+        let mut state = match self.state.lock() {
             Ok(s) => s,
             Err(_) => {
                 reply.error(libc::EIO);
@@ -157,6 +223,38 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Handle ".bale" lookup in any directory (hidden — not in readdir).
+        if name_str == ".bale" && state.dir_contents.contains_key(&parent) {
+            if parent == ROOT_INO {
+                // Root: ".bale" is the virtual directory.
+                let attr = Self::virtual_dir_attr(&state);
+                reply.entry(&TTL, &attr, 0);
+            } else {
+                // Non-root: ".bale" is a symlink to the root .bale/.
+                let depth = state.dir_depth(parent);
+                let target = VirtualDir::symlink_target(depth);
+                let sym_ino = state.virtual_dir.symlink_ino_for(parent, depth);
+                let attr = Self::virtual_symlink_attr(&state, sym_ino, target.len() as u64);
+                reply.entry(&TTL, &attr, 0);
+            }
+            return;
+        }
+
+        // Handle lookup inside the .bale/ virtual directory.
+        if parent == state.virtual_dir.dir_ino() {
+            if let Some((ino, _kind)) = state.virtual_dir.lookup(name_str) {
+                let content = state
+                    .virtual_dir
+                    .file_content(ino, &state.archive)
+                    .unwrap_or_default();
+                let attr = Self::virtual_file_attr(&state, ino, content.len() as u64);
+                reply.entry(&TTL, &attr, 0);
+            } else {
+                reply.error(libc::ENOENT);
+            }
+            return;
+        }
 
         // Validate filename component using safename rules.
         if let Err(e) = BaleFsState::validate_name(name_str) {
@@ -214,6 +312,27 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Virtual inode handling.
+        if state.virtual_dir.is_virtual(ino) {
+            if ino == state.virtual_dir.dir_ino() {
+                let attr = Self::virtual_dir_attr(&state);
+                reply.attr(&TTL, &attr);
+            } else if let Some(depth) = state.virtual_dir.symlink_depth(ino) {
+                let target = VirtualDir::symlink_target(depth);
+                let attr = Self::virtual_symlink_attr(&state, ino, target.len() as u64);
+                reply.attr(&TTL, &attr);
+            } else {
+                // Virtual metadata file.
+                let content = state
+                    .virtual_dir
+                    .file_content(ino, &state.archive)
+                    .unwrap_or_default();
+                let attr = Self::virtual_file_attr(&state, ino, content.len() as u64);
+                reply.attr(&TTL, &attr);
+            }
+            return;
+        }
 
         // Root directory.
         if ino == ROOT_INO {
@@ -276,6 +395,25 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Handle readdir for the virtual .bale/ directory.
+        if ino == state.virtual_dir.dir_ino() {
+            let mut entries: Vec<(u64, FileType, &str)> = vec![
+                (ino, FileType::Directory, "."),
+                (ROOT_INO, FileType::Directory, ".."),
+            ];
+            for (vino, kind, name) in state.virtual_dir.readdir() {
+                entries.push((vino, kind, name));
+            }
+            for (i, (entry_ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
+                let buffer_full = reply.add(*entry_ino, (i + 1) as i64, *kind, name);
+                if buffer_full {
+                    break;
+                }
+            }
+            reply.ok();
+            return;
+        }
+
         let contents = match state.dir_contents.get(&ino) {
             Some(c) => c,
             None => {
@@ -285,6 +423,7 @@ impl fuser::Filesystem for BaleFs {
         };
 
         // Standard . and .. entries.
+        // Note: .bale is NOT listed in readdir — it's hidden, only accessible via lookup.
         let parent_ino = state.get_parent_inode(ino);
         let mut entries: Vec<(u64, FileType, &str)> = vec![
             (ino, FileType::Directory, "."),
@@ -324,6 +463,23 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Handle read for virtual metadata files.
+        if state.virtual_dir.is_virtual(ino) {
+            if let Some(content) = state.virtual_dir.file_content(ino, &state.archive) {
+                let bytes = content.as_bytes();
+                let start = offset as usize;
+                let end = (start + size as usize).min(bytes.len());
+                if start < bytes.len() {
+                    reply.data(&bytes[start..end]);
+                } else {
+                    reply.data(&[]);
+                }
+            } else {
+                reply.error(libc::ENOENT);
+            }
+            return;
+        }
 
         let path = match state.inode_to_path.get(&ino) {
             Some(p) => p,
@@ -373,6 +529,14 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Virtual symlink — each directory has its own symlink inode
+        // so we can return the correct depth-relative target.
+        if let Some(depth) = state.virtual_dir.symlink_depth(ino) {
+            let target = VirtualDir::symlink_target(depth);
+            reply.data(target.as_bytes());
+            return;
+        }
+
         let path = match state.inode_to_path.get(&ino) {
             Some(p) => p,
             None => {
@@ -407,6 +571,12 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Virtual entries are read-only.
+        if state.virtual_dir.is_virtual(ino) {
+            reply.error(libc::EACCES);
+            return;
+        }
 
         // Check read-only flag.
         if state.read_only {
@@ -478,6 +648,12 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Virtual entries are read-only.
+        if state.virtual_dir.is_virtual(ino) {
+            reply.error(libc::EACCES);
+            return;
+        }
 
         // Check read-only for size, mode, or mtime changes.
         // chown is allowed even on read-only mounts (transient only).
@@ -658,6 +834,12 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Reject creating a directory named ".bale" (conflicts with virtual entry).
+        if name == ".bale" {
+            reply.error(libc::EEXIST);
+            return;
+        }
+
         let mode = Mode::from_bits_truncate(mode);
         match state.create_directory(parent, name, mode) {
             Ok((ino, mut attr)) => {
@@ -696,6 +878,12 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Reject removing the virtual .bale directory.
+        if name == ".bale" {
+            reply.error(libc::EACCES);
+            return;
+        }
+
         match state.remove_directory(parent, name, req.uid()) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
@@ -733,6 +921,18 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Reject creating a file named ".bale" (conflicts with virtual entry).
+        if name == ".bale" {
+            reply.error(libc::EEXIST);
+            return;
+        }
+
+        // Reject creating files inside the virtual .bale/ directory.
+        if parent == state.virtual_dir.dir_ino() {
+            reply.error(libc::EACCES);
+            return;
+        }
 
         let mode = Mode::from_bits_truncate(mode);
         match state.create_file(parent, name, mode) {
@@ -780,6 +980,12 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Reject creating a symlink named ".bale" (conflicts with virtual entry).
+        if link_name == ".bale" {
+            reply.error(libc::EEXIST);
+            return;
+        }
 
         let target = match target.to_str() {
             Some(t) => t,
@@ -834,6 +1040,12 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
+        // Reject creating a hard link named ".bale" (conflicts with virtual entry).
+        if newname == ".bale" {
+            reply.error(libc::EEXIST);
+            return;
+        }
+
         match state.create_hard_link(ino, newparent, newname) {
             Ok((_ino, attr)) => reply.entry(&TTL, &attr, 0),
             Err(e) => reply.error(e),
@@ -862,6 +1074,12 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Reject unlinking the virtual .bale symlink.
+        if name == ".bale" {
+            reply.error(libc::EACCES);
+            return;
+        }
 
         match state.remove_file(parent, name, req.uid()) {
             Ok(()) => reply.ok(),
@@ -908,6 +1126,12 @@ impl fuser::Filesystem for BaleFs {
                 return;
             }
         };
+
+        // Reject renaming .bale entries.
+        if old_name == ".bale" || new_name == ".bale" {
+            reply.error(libc::EACCES);
+            return;
+        }
 
         match state.rename_entry(parent, old_name, newparent, new_name, req.uid()) {
             Ok(()) => reply.ok(),

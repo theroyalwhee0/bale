@@ -130,8 +130,9 @@ fn run_shell_mode(
 
     let status = cmd.status()?;
 
-    // Cleanup: drop session first (unmounts), then temp_dir cleans up.
-    drop(session);
+    // Cleanup: join session (unmounts + waits for destroy callback),
+    // then temp_dir cleans up.
+    session.join();
     drop(temp_dir);
 
     if !status.success()

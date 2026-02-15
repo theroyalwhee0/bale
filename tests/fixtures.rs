@@ -11,6 +11,7 @@ use zerocopy::IntoBytes;
 
 const VALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/valid");
 const INVALID_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/invalid");
+const FUSE_FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fuse");
 
 /// Regenerates all test fixtures.
 ///
@@ -27,6 +28,7 @@ fn generate_all_fixtures() {
     generate_unsorted_cd_bale();
     generate_duplicate_paths_bale();
     generate_bad_crc_bale();
+    generate_fuse_fixtures();
 }
 
 /// Generates an empty bale archive (FileHeader + Trailer = 72 bytes).
@@ -435,4 +437,110 @@ fn generate_bad_crc_bale() {
     buf[trailer_start..].copy_from_slice(new_trailer.as_bytes());
 
     std::fs::write(&archive_path, &buf).expect("failed to write corrupted archive");
+}
+
+// =============================================================================
+// FUSE test fixtures
+// =============================================================================
+
+/// Generates all FUSE test fixtures.
+///
+/// Each test gets its own archive file to avoid exclusive-lock contention
+/// when nextest runs tests in parallel.
+fn generate_fuse_fixtures() {
+    let dir = Path::new(FUSE_FIXTURES_DIR);
+
+    // Single-file archives (for ls and cat tests).
+    for name in ["fuse_ls", "fuse_cat"] {
+        generate_fuse_single_file(dir, name);
+    }
+
+    // Multi-file archives (for ls_multi, ls_subdir, cat_nested tests).
+    for name in ["fuse_ls_multi", "fuse_ls_subdir", "fuse_cat_nested"] {
+        generate_fuse_multi_file(dir, name);
+    }
+
+    // Archives for .bale/ virtual directory tests (one per trycmd case).
+    for name in [
+        "fuse_virtual_bale",
+        "fuse_dotbale_ls",
+        "fuse_dotbale_version",
+        "fuse_dotbale_entry_count",
+        "fuse_dotbale_alignment",
+    ] {
+        generate_fuse_virtual_bale(dir, name);
+    }
+}
+
+/// Generates a single-file archive named `{name}.bale` in `dir`.
+fn generate_fuse_single_file(dir: &Path, name: &str) {
+    let archive_path = dir.join(format!("{name}.bale"));
+    let _ = std::fs::remove_file(&archive_path);
+
+    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+    writer
+        .add_entry("hello.txt", b"Hello, World!", 0o100644)
+        .expect("failed to add hello.txt");
+    writer.sync().expect("failed to sync archive");
+}
+
+/// Generates a multi-file archive named `{name}.bale` in `dir`.
+fn generate_fuse_multi_file(dir: &Path, name: &str) {
+    let archive_path = dir.join(format!("{name}.bale"));
+    let _ = std::fs::remove_file(&archive_path);
+
+    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+    writer
+        .add_entry("docs/", b"", 0o040755)
+        .expect("failed to add docs/");
+    writer
+        .add_entry("src/", b"", 0o040755)
+        .expect("failed to add src/");
+    writer
+        .add_entry("src/bin/", b"", 0o040700)
+        .expect("failed to add src/bin/");
+    writer
+        .add_entry("README.md", b"# Project\n\nA sample project.\n", 0o100644)
+        .expect("failed to add README.md");
+    writer
+        .add_entry("docs/guide.txt", b"User guide content here.\n", 0o100644)
+        .expect("failed to add docs/guide.txt");
+    writer
+        .add_entry(
+            "src/main.rs",
+            b"fn main() { println!(\"Hello\"); }\n",
+            0o100644,
+        )
+        .expect("failed to add src/main.rs");
+    writer
+        .add_entry("build.sh", b"#!/bin/bash\ncargo build\n", 0o100755)
+        .expect("failed to add build.sh");
+    writer
+        .add_entry("src/bin/tool", b"ELF binary placeholder", 0o100755)
+        .expect("failed to add src/bin/tool");
+    writer
+        .add_entry("LICENSE", b"MIT License\n", 0o100444)
+        .expect("failed to add LICENSE");
+    writer.sync().expect("failed to sync archive");
+}
+
+/// Generates a multi-file archive for `.bale/` virtual directory tests.
+fn generate_fuse_virtual_bale(dir: &Path, name: &str) {
+    let archive_path = dir.join(format!("{name}.bale"));
+    let _ = std::fs::remove_file(&archive_path);
+
+    let mut writer = ArchiveWriter::create(&archive_path).expect("failed to create archive");
+    writer
+        .add_entry("hello.txt", b"Hello from bale!\n", 0o100644)
+        .expect("failed to add hello.txt");
+    writer
+        .add_entry("subdir/", b"", 0o040755)
+        .expect("failed to add subdir/");
+    writer
+        .add_entry("subdir/nested/", b"", 0o040755)
+        .expect("failed to add subdir/nested/");
+    writer
+        .add_entry("subdir/nested/deep.txt", b"deep\n", 0o100644)
+        .expect("failed to add deep.txt");
+    writer.sync().expect("failed to sync archive");
 }

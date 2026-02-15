@@ -1,0 +1,3 @@
+bin.name = "bale"
+args = ["mount", "tests/fixtures/fuse/fuse_dotbale_version.bale", "--read-only", "--shell", "cat .bale/version"]
+status.code = 0
