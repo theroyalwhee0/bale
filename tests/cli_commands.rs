@@ -180,6 +180,74 @@ fn check_valid_archive() {
     assert!(stdout.contains("Compacted") || stdout.contains("Working"));
 }
 
+/// Check --quiet suppresses output on valid archive.
+#[test]
+fn check_quiet_valid_no_output() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+    let file1 = dir.path().join("test.txt");
+
+    fs::write(&file1, "test").unwrap();
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+    run_bale(&["add", archive.to_str().unwrap(), file1.to_str().unwrap()]);
+
+    let (success, stdout, stderr) = run_bale(&["check", "--quiet", archive.to_str().unwrap()]);
+    assert!(success, "check --quiet should succeed for valid archive");
+    assert!(
+        stdout.is_empty(),
+        "stdout should be empty in quiet mode, got: {stdout}"
+    );
+    assert!(
+        stderr.is_empty(),
+        "stderr should be empty in quiet mode, got: {stderr}"
+    );
+}
+
+/// Check -q suppresses output on valid archive (short flag).
+#[test]
+fn check_quiet_short_flag() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+
+    run_bale(&["touch", archive.to_str().unwrap()]);
+
+    let (success, stdout, stderr) = run_bale(&["check", "-q", archive.to_str().unwrap()]);
+    assert!(success, "check -q should succeed for valid archive");
+    assert!(stdout.is_empty(), "stdout should be empty in quiet mode");
+    assert!(stderr.is_empty(), "stderr should be empty in quiet mode");
+}
+
+/// Check --quiet still fails with exit code on invalid archive.
+#[test]
+fn check_quiet_invalid_no_output() {
+    let dir = tempdir().unwrap();
+    let archive = dir.path().join("test.bale");
+    let file1 = dir.path().join("file.txt");
+
+    fs::write(&file1, "content").unwrap();
+
+    // Create archive with orphaned data (add then delete).
+    run_bale(&["touch", archive.to_str().unwrap()]);
+    run_bale(&["add", archive.to_str().unwrap(), file1.to_str().unwrap()]);
+    run_bale(&["delete", archive.to_str().unwrap(), "file.txt"]);
+
+    let (success, stdout, stderr) = run_bale(&["check", "--quiet", archive.to_str().unwrap()]);
+    assert!(
+        !success,
+        "check --quiet should fail for archive with issues"
+    );
+    assert!(
+        stdout.is_empty(),
+        "stdout should be empty in quiet mode, got: {stdout}"
+    );
+    // stderr may contain the error summary from BaleCliError but no diagnostic lines.
+    assert!(
+        !stderr.contains("error: orphaned"),
+        "stderr should not contain diagnostic output in quiet mode, got: {stderr}"
+    );
+}
+
 /// Compact removes orphaned data.
 #[test]
 
