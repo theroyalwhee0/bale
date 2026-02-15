@@ -1,6 +1,6 @@
 # pjdfstest Results
 
-Last run: **2025-02-15** (commit `cfd7b44`)
+Last run: **2026-02-15** (commit `82a0d79`)
 
 ## How to Run
 
@@ -16,11 +16,12 @@ Results are written to `~/projects/pjdfstest-results/`.
 
 The script splits pjdfstest into three groups:
 
-| Group | Files | Tests | Result |
-|-------|------:|------:|--------|
-| **PASS** (should all pass) | 134 | ~4010 | PASS |
-| **KNOWN FAILURES** (limitations) | 45 | ~2860 | FAIL |
-| **UNSUPPORTED** (not implemented) | 51 | 1818 | FAIL |
+| Group | Files | Tests | Pass | Fail | Result |
+|-------|------:|------:|-----:|-----:|--------|
+| **PASS** (should all pass) | 134 | 741 | 741 | 0 | PASS |
+| **KNOWN FAILURES** (limitations) | 45 | 6223 | 3567 | 2656 | FAIL |
+| **UNSUPPORTED** (not implemented) | 51 | 1818 | 771 | 1047 | FAIL |
+| **Total** | 230 | 8782 | 5079 | 3703 | **58%** |
 
 ### PASS Group (134 files)
 
@@ -87,18 +88,17 @@ Affected: symlink/02 (test 6)
 #### 6. Description-less test failures
 
 Some tests fail without printing what they tested (no "tried X, expected
-Y, got Z" output). Likely testing ctime/mtime updates on parent
-directories after operations.
+Y, got Z" output). Parent directory mtime updates (commit `82a0d79`)
+fixed many of these, but some remain.
 
-Affected: symlink/00 (tests 11-12) | rmdir/00 (tests 8-9)
+Affected: various tests across known-fail files (67 remaining)
 
-#### 7. Stale inode after rename
+#### 7. Directory-over-directory rename
 
-After renaming a file, lstat on the old path sometimes returns an inode
-number instead of ENOENT, suggesting the directory table retains a ghost
-entry.
+Renaming a directory over an existing empty directory should succeed
+(POSIX). Currently returns EEXIST instead.
 
-Affected: rename/10 (later tests, e.g. 413, 415, 421, 423)
+Affected: rename/09 (tests 2259, 2279, 2299, 2311 and cascading)
 
 ### UNSUPPORTED Group (51 files, 1818 tests)
 
@@ -119,15 +119,27 @@ Roughly ordered by impact (test count that would move to PASS):
 1. **atime tracking** -- Store atime separately from mtime. Would fix
    utimensat/00,02,04,05,08,09 (~6 files, ~32 tests).
 
-2. **ctime/mtime on parent after mutations** -- Update parent directory
-   ctime/mtime when creating/removing children. Would likely fix the
-   description-less failures in symlink/00, rmdir/00 and possibly others.
-
-3. **Open-unlink semantics** -- Keep inode alive while file handles are
+2. **Open-unlink semantics** -- Keep inode alive while file handles are
    open. Would fix unlink/14 (2 tests) and potentially others.
 
-4. **Stale inode after rename** -- Audit rename_entry to ensure old
-   directory entries are fully removed. Would fix rename/10 subset.
+3. **Directory-over-directory rename** -- Allow renaming a directory
+   over an existing empty directory. Would fix rename/09 subset.
 
-5. **Symlink target length** -- Investigate the 255-byte target failure
+4. **Symlink target length** -- Investigate the 255-byte target failure
    in symlink/02. May need path_size increase or safename adjustment.
+
+## Completed Improvements
+
+- **ctime/mtime on parent after mutations** -- Implemented in `82a0d79`.
+  Parent directory mtime is now updated on create/remove/rename.
+
+- **Rename metadata preservation** -- Implemented in `82a0d79`.
+  Modified modes, times, uids, gids, and nlink are now properly
+  transferred during rename and cleaned up on overwrite.
+
+- **Symlink type preservation in rename** -- Implemented in `82a0d79`.
+  Renamed symlinks retain their type in dir_contents and archive.
+
+- **Symlink ENAMETOOLONG mapping** -- Implemented in `82a0d79`.
+  UnsafeFilename/PathTooLong errors now return ENAMETOOLONG instead
+  of EIO.
