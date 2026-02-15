@@ -13,19 +13,16 @@ use crate::fuse::{DIR_INO_START, FILE_INO_START, FuseDirEntry, ROOT_INO};
 use crate::{ArchivePath, ArchiveRead, ArchiveWrite, ArchiveWriter, BaleError, EntryKind};
 
 /// Default permission bits for regular files (rw-r--r--).
-pub(super) const DEFAULT_FILE_PERM: u32 = 0o644;
+pub(super) const DEFAULT_FILE_PERM: Mode = Mode::from_bits_truncate(0o644);
 
 /// Default permission bits for directories (rwxr-xr-x).
-pub(super) const DEFAULT_DIR_PERM: u32 = 0o755;
-
-/// Bitmask to extract permission bits from a mode value.
-pub(super) const PERM_MASK: u32 = 0o777;
+pub(super) const DEFAULT_DIR_PERM: Mode = Mode::from_bits_truncate(0o755);
 
 /// Default file mode: regular file with default permissions.
-const DEFAULT_FILE_MODE: u32 = SFlag::S_IFREG.bits() | DEFAULT_FILE_PERM;
+const DEFAULT_FILE_MODE: u32 = SFlag::S_IFREG.bits() | DEFAULT_FILE_PERM.bits();
 
 /// Default directory mode: directory with default permissions.
-const DEFAULT_DIR_MODE: u32 = SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM;
+const DEFAULT_DIR_MODE: u32 = SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM.bits();
 
 /// Internal state for the BaleFs filesystem.
 pub(super) struct BaleFsState {
@@ -54,9 +51,9 @@ pub(super) struct BaleFsState {
     /// Used for write support when not read-only.
     pub(super) modified_data: HashMap<String, Vec<u8>>,
 
-    /// Modified modes for files (path -> new mode).
+    /// Modified permission bits for files (path -> new perms).
     /// Tracks chmod operations until synced to archive.
-    pub(super) modified_modes: HashMap<String, u32>,
+    pub(super) modified_modes: HashMap<String, Mode>,
 
     /// Modified timestamps for files (path -> new mtime).
     /// Tracks utimensat operations until synced to archive.
@@ -332,11 +329,11 @@ impl BaleFsState {
     pub(super) fn get_attr(&self, ino: u64, kind: FileType) -> fuser::FileAttr {
         let (perm, mtime) = if kind == FileType::Directory {
             (
-                (self.get_dir_mode(ino) & PERM_MASK) as u16,
+                self.get_dir_mode(ino).bits() as u16,
                 self.get_dir_mtime(ino),
             )
         } else {
-            (DEFAULT_FILE_PERM as u16, self.mount_time)
+            (DEFAULT_FILE_PERM.bits() as u16, self.mount_time)
         };
 
         fuser::FileAttr {
@@ -366,8 +363,7 @@ impl BaleFsState {
         entry_row: &EntryRow,
         path: &str,
     ) -> fuser::FileAttr {
-        let mode = entry_row.mode.get();
-        let perm = (mode & PERM_MASK) as u16;
+        let perm = Mode::from_bits_truncate(entry_row.mode.get());
         let size = entry_row.file_size.get();
         let nlink = self.nlink_counts.get(&ino).copied().unwrap_or(1);
 
@@ -392,10 +388,10 @@ impl BaleFsState {
             ctime,
             crtime: ctime,
             kind,
-            perm: if perm == 0 {
-                DEFAULT_FILE_PERM as u16
+            perm: if perm.is_empty() {
+                DEFAULT_FILE_PERM.bits() as u16
             } else {
-                perm
+                perm.bits() as u16
             },
             nlink,
             uid: self.get_uid(path),
@@ -422,29 +418,33 @@ impl BaleFsState {
         Ok(self.modified_data.get_mut(path).unwrap())
     }
 
-    /// Gets the mode (permissions) for a file.
+    /// Gets the permission bits for a file.
     ///
     /// Checks modified_modes first, then falls back to archive.
-    pub(super) fn get_file_mode(&self, path: &str) -> u32 {
+    pub(super) fn get_file_mode(&self, path: &str) -> Mode {
         // Check if mode was modified via chmod.
         if let Some(&mode) = self.modified_modes.get(path) {
             return mode;
         }
 
-        // Fall back to archive.
+        // Fall back to archive (type bits are automatically dropped).
         self.archive
             .find_entry_with_path(path)
             .map(|(entry_row, _, _)| {
-                let mode = entry_row.mode.get();
-                if mode == 0 { DEFAULT_FILE_MODE } else { mode }
+                let mode = Mode::from_bits_truncate(entry_row.mode.get());
+                if mode.is_empty() {
+                    DEFAULT_FILE_PERM
+                } else {
+                    mode
+                }
             })
-            .unwrap_or(DEFAULT_FILE_MODE)
+            .unwrap_or(DEFAULT_FILE_PERM)
     }
 
-    /// Gets the mode (permissions) for a directory by inode.
+    /// Gets the permission bits for a directory by inode.
     ///
     /// Checks modified_modes first, then falls back to archive or default.
-    pub(super) fn get_dir_mode(&self, ino: u64) -> u32 {
+    pub(super) fn get_dir_mode(&self, ino: u64) -> Mode {
         let path = self.get_dir_path(ino);
 
         // Check if mode was modified via chmod.
@@ -452,21 +452,21 @@ impl BaleFsState {
             return mode;
         }
 
-        // Check archive for explicit directory entry.
+        // Check archive for explicit directory entry (type bits are automatically dropped).
         if !path.is_empty()
             && let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&path)
         {
-            let mode = entry_row.mode.get();
-            if mode != 0 {
+            let mode = Mode::from_bits_truncate(entry_row.mode.get());
+            if !mode.is_empty() {
                 return mode;
             }
         }
 
-        DEFAULT_DIR_MODE
+        DEFAULT_DIR_PERM
     }
 
-    /// Sets the mode (permissions) for a directory by inode.
-    pub(super) fn set_dir_mode(&mut self, ino: u64, mode: u32) {
+    /// Sets the permission bits for a directory by inode.
+    pub(super) fn set_dir_mode(&mut self, ino: u64, mode: Mode) {
         let path = self.get_dir_path(ino);
         self.modified_modes.insert(path, mode);
     }
@@ -549,6 +549,15 @@ impl BaleFsState {
         self.modified_times.insert(path.to_string(), mtime);
     }
 
+    /// Updates the mtime of a parent directory to the current time.
+    ///
+    /// Called when entries are created or removed in a directory,
+    /// matching POSIX behavior where directory mtime reflects the
+    /// last structural change.
+    fn touch_dir_mtime(&mut self, parent_ino: u64) {
+        self.set_dir_mtime(parent_ino, SystemTime::now());
+    }
+
     /// Syncs all modified files to the archive.
     pub(super) fn sync_modified_to_archive(&mut self) -> Result<(), i32> {
         // Collect paths to avoid borrow issues.
@@ -563,7 +572,8 @@ impl BaleFsState {
 
         // Sync files with modified data.
         for path in &data_paths {
-            let mode = self.get_file_mode(path);
+            let perm = self.get_file_mode(path);
+            let archive_mode = SFlag::S_IFREG.bits() | perm.bits();
             let mtime = self.modified_times.get(path).copied();
             let data = self.modified_data.get(path).unwrap().clone();
             // Delete existing entry first to avoid duplicates (create() adds
@@ -571,7 +581,7 @@ impl BaleFsState {
             // the final content).
             self.archive.delete(path);
             self.archive
-                .add_entry_with_mtime(path, &data, mode, mtime)
+                .add_entry_with_mtime(path, &data, archive_mode, mtime)
                 .map_err(|_| libc::EIO)?;
         }
 
@@ -587,7 +597,8 @@ impl BaleFsState {
             .collect();
 
         for path in &metadata_only_paths {
-            let mode = self.get_file_mode(path);
+            let perm = self.get_file_mode(path);
+            let archive_mode = SFlag::S_IFREG.bits() | perm.bits();
             let mtime = self.modified_times.get(path).copied();
             // Read current data from archive.
             let data = self
@@ -598,7 +609,7 @@ impl BaleFsState {
                 .to_vec();
             self.archive.delete(path);
             self.archive
-                .add_entry_with_mtime(path, &data, mode, mtime)
+                .add_entry_with_mtime(path, &data, archive_mode, mtime)
                 .map_err(|_| libc::EIO)?;
         }
 
@@ -668,12 +679,20 @@ impl BaleFsState {
             .add_folder(&full_path, archive_mode)
             .map_err(|_| libc::EIO)?;
 
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
+
         let attr = self.get_attr(ino, FileType::Directory);
         Ok((ino, attr))
     }
 
     /// Removes an empty directory.
-    pub(super) fn remove_directory(&mut self, parent_ino: u64, name: &str) -> Result<(), i32> {
+    pub(super) fn remove_directory(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+        caller_uid: u32,
+    ) -> Result<(), i32> {
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
             return Err(libc::ENOENT);
@@ -705,6 +724,9 @@ impl BaleFsState {
             return Err(libc::ENOTEMPTY);
         }
 
+        // Enforce sticky-bit restriction.
+        self.check_sticky_bit(parent_ino, &full_path, caller_uid)?;
+
         // Remove from dir_inodes and dir_contents.
         self.dir_inodes.remove(&full_path);
         self.dir_contents.remove(&dir_ino);
@@ -716,6 +738,9 @@ impl BaleFsState {
 
         // Remove from archive.
         let _ = self.archive.delete(&full_path);
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         Ok(())
     }
@@ -820,6 +845,9 @@ impl BaleFsState {
             .add_entry(&full_path, &[], archive_mode)
             .map_err(|_| libc::EIO)?;
 
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
+
         let perm = mode.bits() as u16;
         let attr = fuser::FileAttr {
             ino,
@@ -831,7 +859,7 @@ impl BaleFsState {
             crtime: self.mount_time,
             kind: FileType::RegularFile,
             perm: if perm == 0 {
-                DEFAULT_FILE_PERM as u16
+                DEFAULT_FILE_PERM.bits() as u16
             } else {
                 perm
             },
@@ -846,8 +874,56 @@ impl BaleFsState {
         Ok((ino, attr))
     }
 
+    /// Checks whether a caller is allowed to modify an entry in a directory
+    /// that has the sticky bit set.
+    ///
+    /// When a directory has the sticky bit (01000), only root (uid 0), the
+    /// directory owner, or the entry owner may remove/rename entries.
+    ///
+    /// Returns `Ok(())` if permitted, `Err(EACCES)` if denied.
+    fn check_sticky_bit(
+        &self,
+        parent_ino: u64,
+        entry_path: &str,
+        caller_uid: u32,
+    ) -> Result<(), i32> {
+        let parent_mode = self.get_dir_mode(parent_ino);
+        if !parent_mode.contains(Mode::S_ISVTX) {
+            return Ok(());
+        }
+
+        // Root bypasses sticky-bit checks.
+        if caller_uid == 0 {
+            return Ok(());
+        }
+
+        // Check if caller owns the parent directory.
+        let parent_path = self.get_dir_path(parent_ino);
+        let dir_uid = self
+            .modified_uids
+            .get(&parent_path)
+            .copied()
+            .unwrap_or(self.uid);
+        if caller_uid == dir_uid {
+            return Ok(());
+        }
+
+        // Check if caller owns the entry.
+        let entry_uid = self.get_uid(entry_path);
+        if caller_uid == entry_uid {
+            return Ok(());
+        }
+
+        Err(libc::EACCES)
+    }
+
     /// Removes a file.
-    pub(super) fn remove_file(&mut self, parent_ino: u64, name: &str) -> Result<(), i32> {
+    pub(super) fn remove_file(
+        &mut self,
+        parent_ino: u64,
+        name: &str,
+        caller_uid: u32,
+    ) -> Result<(), i32> {
         // Check parent exists.
         if !self.dir_contents.contains_key(&parent_ino) {
             return Err(libc::ENOENT);
@@ -872,8 +948,10 @@ impl BaleFsState {
             return Err(libc::EISDIR);
         }
 
-        // Remove from path mappings.
-        self.inode_to_path.remove(&file_ino);
+        // Enforce sticky-bit restriction.
+        self.check_sticky_bit(parent_ino, &full_path, caller_uid)?;
+
+        // Remove this path from mappings.
         self.path_to_inode.remove(&full_path);
 
         // Remove from parent's contents.
@@ -881,11 +959,40 @@ impl BaleFsState {
             contents.retain(|e| e.name != name);
         }
 
-        // Remove from modified_data if present.
-        self.modified_data.remove(&full_path);
+        // Decrement nlink and handle hard-link-aware cleanup.
+        let nlink = self.nlink_counts.get(&file_ino).copied().unwrap_or(1);
+        if nlink > 1 {
+            // Other links remain — only remove this path.
+            self.nlink_counts.insert(file_ino, nlink - 1);
 
-        // Delete from archive.
-        let _ = self.archive.delete(&full_path);
+            // If inode_to_path pointed to the removed path, update it
+            // to point to another remaining path for this inode.
+            if self.inode_to_path.get(&file_ino).map(String::as_str) == Some(&full_path) {
+                let alt_path = self
+                    .path_to_inode
+                    .iter()
+                    .find(|&(_, &ino)| ino == file_ino)
+                    .map(|(p, _)| p.clone());
+                if let Some(alt) = alt_path {
+                    self.inode_to_path.insert(file_ino, alt);
+                } else {
+                    self.inode_to_path.remove(&file_ino);
+                }
+            }
+
+            // Use unlink (removes only the directory row; preserves
+            // the entry row while other links reference it).
+            let _ = self.archive.unlink(&full_path);
+        } else {
+            // Last link — full cleanup.
+            self.inode_to_path.remove(&file_ino);
+            self.nlink_counts.remove(&file_ino);
+            self.modified_data.remove(&full_path);
+            let _ = self.archive.unlink(&full_path);
+        }
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         Ok(())
     }
@@ -897,6 +1004,7 @@ impl BaleFsState {
         old_name: &str,
         new_parent_ino: u64,
         new_name: &str,
+        caller_uid: u32,
     ) -> Result<(), i32> {
         // Check new name length.
         Self::validate_name(new_name)?;
@@ -937,8 +1045,14 @@ impl BaleFsState {
             return Err(libc::ENOENT);
         }
 
+        // Enforce sticky-bit restriction on source directory.
+        self.check_sticky_bit(old_parent_ino, &old_path, caller_uid)?;
+
         // Check destination doesn't exist (or handle overwrite for files).
         if self.dir_inodes.contains_key(&new_path) {
+            if is_file {
+                return Err(libc::EISDIR);
+            }
             return Err(libc::EEXIST);
         }
         if self.path_to_inode.contains_key(&new_path) {
@@ -947,11 +1061,16 @@ impl BaleFsState {
                 // Can't overwrite file with directory.
                 return Err(libc::ENOTDIR);
             }
-            // Remove destination file.
+            // Remove destination file and all associated metadata.
             let dest_ino = *self.path_to_inode.get(&new_path).unwrap();
             self.inode_to_path.remove(&dest_ino);
             self.path_to_inode.remove(&new_path);
             self.modified_data.remove(&new_path);
+            self.modified_modes.remove(&new_path);
+            self.modified_times.remove(&new_path);
+            self.modified_uids.remove(&new_path);
+            self.modified_gids.remove(&new_path);
+            self.nlink_counts.remove(&dest_ino);
             let _ = self.archive.delete(&new_path);
             if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
                 contents.retain(|e| e.name != new_name);
@@ -979,20 +1098,48 @@ impl BaleFsState {
             if let Some(gid) = self.modified_gids.remove(&old_path) {
                 self.modified_gids.insert(new_path.clone(), gid);
             }
+            if let Some(mode) = self.modified_modes.remove(&old_path) {
+                self.modified_modes.insert(new_path.clone(), mode);
+            }
+            if let Some(time) = self.modified_times.remove(&old_path) {
+                self.modified_times.insert(new_path.clone(), time);
+            }
+
+            // Determine original file type (regular file vs symlink).
+            let is_symlink = self
+                .dir_contents
+                .get(&old_parent_ino)
+                .and_then(|c| c.iter().find(|e| e.name == old_name))
+                .is_some_and(|e| e.kind == FileType::Symlink);
 
             // Update parent directory contents.
             if let Some(contents) = self.dir_contents.get_mut(&old_parent_ino) {
                 contents.retain(|e| e.name != old_name);
             }
             if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
-                contents.push(FuseDirEntry::file(new_name, ino));
+                let entry = if is_symlink {
+                    FuseDirEntry::symlink(new_name, ino)
+                } else {
+                    FuseDirEntry::file(new_name, ino)
+                };
+                contents.push(entry);
             }
 
             // Update archive: copy data from old path to new, delete old.
-            if let Ok(file) = self.archive.file(&old_path) {
+            if is_symlink {
+                let target = self
+                    .archive
+                    .symlink(&old_path)
+                    .ok()
+                    .and_then(|link| link.target().map(String::from));
+                if let Some(target) = target {
+                    let _ = self.archive.add_symlink(&new_path, &target, 0o777);
+                }
+            } else if let Ok(file) = self.archive.file(&old_path) {
                 let data = file.data().to_vec();
-                let mode = self.get_file_mode(&old_path);
-                let _ = self.archive.add_entry(&new_path, &data, mode);
+                let perm = self.get_file_mode(&old_path);
+                let archive_mode = SFlag::S_IFREG.bits() | perm.bits();
+                let _ = self.archive.add_entry(&new_path, &data, archive_mode);
             } else if let Some(data) = self.modified_data.get(&new_path) {
                 let _ = self.archive.add_entry(&new_path, data, DEFAULT_FILE_MODE);
             }
@@ -1039,7 +1186,13 @@ impl BaleFsState {
                     self.modified_uids.insert(new_p.clone(), uid);
                 }
                 if let Some(gid) = self.modified_gids.remove(&old_p) {
-                    self.modified_gids.insert(new_p, gid);
+                    self.modified_gids.insert(new_p.clone(), gid);
+                }
+                if let Some(mode) = self.modified_modes.remove(&old_p) {
+                    self.modified_modes.insert(new_p.clone(), mode);
+                }
+                if let Some(time) = self.modified_times.remove(&old_p) {
+                    self.modified_times.insert(new_p, time);
                 }
             }
 
@@ -1061,21 +1214,39 @@ impl BaleFsState {
                     self.modified_uids.insert(new_p.clone(), uid);
                 }
                 if let Some(gid) = self.modified_gids.remove(&old_p) {
-                    self.modified_gids.insert(new_p, gid);
+                    self.modified_gids.insert(new_p.clone(), gid);
+                }
+                if let Some(mode) = self.modified_modes.remove(&old_p) {
+                    self.modified_modes.insert(new_p.clone(), mode);
+                }
+                if let Some(time) = self.modified_times.remove(&old_p) {
+                    self.modified_times.insert(new_p, time);
                 }
             }
 
-            // Propagate the renamed directory's own ownership.
+            // Propagate the renamed directory's own metadata overrides.
             if let Some(uid) = self.modified_uids.remove(&old_path) {
                 self.modified_uids.insert(new_path.clone(), uid);
             }
             if let Some(gid) = self.modified_gids.remove(&old_path) {
                 self.modified_gids.insert(new_path.clone(), gid);
             }
+            if let Some(mode) = self.modified_modes.remove(&old_path) {
+                self.modified_modes.insert(new_path.clone(), mode);
+            }
+            if let Some(time) = self.modified_times.remove(&old_path) {
+                self.modified_times.insert(new_path.clone(), time);
+            }
 
             // Update archive: add new dir entry, remove old.
             let _ = self.archive.add_folder(&new_path, DEFAULT_DIR_MODE);
             let _ = self.archive.delete(&old_path);
+        }
+
+        // Update parent directory mtimes.
+        self.touch_dir_mtime(old_parent_ino);
+        if new_parent_ino != old_parent_ino {
+            self.touch_dir_mtime(new_parent_ino);
         }
 
         Ok(())
@@ -1180,7 +1351,14 @@ impl BaleFsState {
         // Add symlink to archive.
         self.archive
             .add_symlink(&full_path, &target, 0o777)
-            .map_err(|_| libc::EIO)?;
+            .map_err(|e| match e {
+                BaleError::UnsafeFilename(_) | BaleError::PathTooLong { .. } => libc::ENAMETOOLONG,
+                BaleError::PathExists(_) => libc::EEXIST,
+                _ => libc::EIO,
+            })?;
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(parent_ino);
 
         let attr = fuser::FileAttr {
             ino,
@@ -1262,6 +1440,9 @@ impl BaleFsState {
         if let Some(contents) = self.dir_contents.get_mut(&new_parent_ino) {
             contents.push(FuseDirEntry::file(new_name, ino));
         }
+
+        // Update parent directory mtime.
+        self.touch_dir_mtime(new_parent_ino);
 
         // Build attributes from archive entry.
         let attr = if let Some((entry_row, _, _)) = self.archive.find_entry_with_path(&full_path) {
@@ -1588,5 +1769,252 @@ mod tests {
 
         let symlink = state.archive.symlink("link").unwrap();
         assert_eq!(symlink.target(), Some("foo/bar.txt"));
+    }
+
+    // ==================== Sticky / setuid / setgid bit tests ====================
+
+    /// Tests that chmod preserves the sticky bit (01755).
+    #[test]
+    fn chmod_preserves_sticky_bit() {
+        let archive = create_test_archive(&[("file.txt", b"data", 0o100644)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Simulate chmod to 01755 (sticky + rwxr-xr-x).
+        state
+            .modified_modes
+            .insert("file.txt".to_string(), Mode::from_bits_truncate(0o1755));
+
+        let mode = state.get_file_mode("file.txt");
+        // The sticky bit (0o1000) should be preserved.
+        assert_eq!(
+            mode.bits(),
+            0o1755,
+            "sticky bit should be preserved in mode"
+        );
+    }
+
+    /// Tests that chmod preserves setuid and setgid bits.
+    #[test]
+    fn chmod_preserves_setuid_setgid() {
+        let archive = create_test_archive(&[("file.txt", b"data", 0o100644)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Simulate chmod to 04755 (setuid).
+        state
+            .modified_modes
+            .insert("file.txt".to_string(), Mode::from_bits_truncate(0o4755));
+        let mode = state.get_file_mode("file.txt");
+        assert_eq!(
+            mode.bits(),
+            0o4755,
+            "setuid bit should be preserved in mode"
+        );
+
+        // Simulate chmod to 02755 (setgid).
+        state
+            .modified_modes
+            .insert("file.txt".to_string(), Mode::from_bits_truncate(0o2755));
+        let mode = state.get_file_mode("file.txt");
+        assert_eq!(
+            mode.bits(),
+            0o2755,
+            "setgid bit should be preserved in mode"
+        );
+    }
+
+    /// Tests that `get_attr_for_file` reports the sticky bit from archive entry.
+    #[test]
+    fn get_attr_reports_sticky_bit() {
+        // S_IFREG | sticky | 0o755.
+        let archive = create_test_archive(&[("file.txt", b"data", 0o101755)]);
+        let state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let ino = *state.path_to_inode.get("file.txt").unwrap();
+        let (entry_row, _, _) = state.archive.find_entry_with_path("file.txt").unwrap();
+        let attr = state.get_attr_for_file(ino, FileType::RegularFile, entry_row, "file.txt");
+
+        // perm should include sticky bit: 01755 not just 0755.
+        assert_eq!(attr.perm, 0o1755, "perm should include sticky bit");
+    }
+
+    // ==================== Rename type checking tests ====================
+
+    /// Tests that renaming a file over an existing directory returns EISDIR.
+    #[test]
+    fn rename_file_over_directory_returns_eisdir() {
+        let archive =
+            create_test_archive(&[("src.txt", b"data", 0o100644), ("dest/", &[], 0o40755)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let result = state.rename_entry(ROOT_INO, "src.txt", ROOT_INO, "dest", 0);
+        assert_eq!(
+            result.unwrap_err(),
+            libc::EISDIR,
+            "renaming file over directory should return EISDIR"
+        );
+    }
+
+    // ==================== Sticky-bit rename enforcement tests ====================
+
+    /// Tests that rename in a sticky directory by non-owner fails with EACCES.
+    #[test]
+    fn rename_in_sticky_dir_by_non_owner_fails() {
+        let archive = create_test_archive(&[
+            ("sticky/", &[], 0o41777),
+            ("sticky/file.txt", b"data", 0o100644),
+        ]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        // Directory owned by uid 1000, file owned by uid 1000.
+        let sticky_ino = *state.dir_inodes.get("sticky").unwrap();
+
+        // Rename as uid 2000 (not root, not file owner, not dir owner).
+        let result = state.rename_entry(sticky_ino, "file.txt", sticky_ino, "renamed.txt", 2000);
+        assert_eq!(
+            result.unwrap_err(),
+            libc::EACCES,
+            "non-owner rename in sticky dir should fail"
+        );
+    }
+
+    /// Tests that rename in a sticky directory by file owner succeeds.
+    #[test]
+    fn rename_in_sticky_dir_by_file_owner_succeeds() {
+        let archive = create_test_archive(&[
+            ("sticky/", &[], 0o41777),
+            ("sticky/file.txt", b"data", 0o100644),
+        ]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let sticky_ino = *state.dir_inodes.get("sticky").unwrap();
+
+        // Rename as uid 1000 (file owner = mount uid).
+        let result = state.rename_entry(sticky_ino, "file.txt", sticky_ino, "renamed.txt", 1000);
+        assert!(
+            result.is_ok(),
+            "file owner should be able to rename in sticky dir"
+        );
+    }
+
+    /// Tests that rename in a sticky directory by root succeeds.
+    #[test]
+    fn rename_in_sticky_dir_by_root_succeeds() {
+        let archive = create_test_archive(&[
+            ("sticky/", &[], 0o41777),
+            ("sticky/file.txt", b"data", 0o100644),
+        ]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let sticky_ino = *state.dir_inodes.get("sticky").unwrap();
+
+        // Rename as root (uid 0).
+        let result = state.rename_entry(sticky_ino, "file.txt", sticky_ino, "renamed.txt", 0);
+        assert!(
+            result.is_ok(),
+            "root should be able to rename in sticky dir"
+        );
+    }
+
+    /// Tests that unlink in a sticky directory by non-owner fails with EACCES.
+    #[test]
+    fn unlink_in_sticky_dir_by_non_owner_fails() {
+        let archive = create_test_archive(&[
+            ("sticky/", &[], 0o41777),
+            ("sticky/file.txt", b"data", 0o100644),
+        ]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let sticky_ino = *state.dir_inodes.get("sticky").unwrap();
+
+        // Unlink as uid 2000 (not root, not file owner, not dir owner).
+        let result = state.remove_file(sticky_ino, "file.txt", 2000);
+        assert_eq!(
+            result.unwrap_err(),
+            libc::EACCES,
+            "non-owner unlink in sticky dir should fail"
+        );
+    }
+
+    // ==================== nlink tracking on unlink tests ====================
+
+    /// Tests that unlinking one hard link decrements nlink.
+    #[test]
+    fn unlink_decrements_nlink() {
+        let archive = create_test_archive_with_links(
+            &[("file.txt", b"data", 0o100644)],
+            &[("file.txt", "link.txt")],
+        );
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let ino = *state.path_to_inode.get("file.txt").unwrap();
+        assert_eq!(state.nlink_counts.get(&ino).copied(), Some(2));
+
+        // Remove one link.
+        state.remove_file(ROOT_INO, "link.txt", 0).unwrap();
+
+        // nlink should now be 1.
+        assert_eq!(
+            state.nlink_counts.get(&ino).copied(),
+            Some(1),
+            "nlink should be 1 after removing one of two hard links"
+        );
+    }
+
+    /// Tests that unlinking the last link fully removes the inode.
+    #[test]
+    fn unlink_last_link_removes_entry() {
+        let archive = create_test_archive(&[("file.txt", b"data", 0o100644)]);
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let ino = *state.path_to_inode.get("file.txt").unwrap();
+
+        state.remove_file(ROOT_INO, "file.txt", 0).unwrap();
+
+        // Inode should be fully gone.
+        assert!(
+            !state.inode_to_path.contains_key(&ino),
+            "inode_to_path should not contain removed inode"
+        );
+        assert!(
+            !state.path_to_inode.contains_key("file.txt"),
+            "path_to_inode should not contain removed path"
+        );
+        assert!(
+            !state.nlink_counts.contains_key(&ino),
+            "nlink_counts should not contain removed inode"
+        );
+    }
+
+    /// Tests that unlinking one hard link preserves the other path.
+    #[test]
+    fn unlink_hard_link_preserves_other_path() {
+        let archive = create_test_archive_with_links(
+            &[("file.txt", b"data", 0o100644)],
+            &[("file.txt", "link.txt")],
+        );
+        let mut state = BaleFsState::new(archive, false, 1000, 1000);
+
+        let ino = *state.path_to_inode.get("file.txt").unwrap();
+
+        // Remove the original path, keeping the link.
+        state.remove_file(ROOT_INO, "file.txt", 0).unwrap();
+
+        // The link path should still exist.
+        assert_eq!(
+            state.path_to_inode.get("link.txt").copied(),
+            Some(ino),
+            "link.txt should still map to the same inode"
+        );
+        assert_eq!(
+            state.inode_to_path.get(&ino).map(String::as_str),
+            Some("link.txt"),
+            "inode should now point to the remaining path"
+        );
+
+        // Should still be able to read the data from archive.
+        assert!(
+            state.archive.file("link.txt").is_ok(),
+            "data should still be accessible via remaining link"
+        );
     }
 }

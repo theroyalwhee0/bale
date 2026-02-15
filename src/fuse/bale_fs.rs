@@ -11,9 +11,9 @@ use fuser::{
 };
 
 use nix::libc;
-use nix::sys::stat::{Mode, SFlag};
+use nix::sys::stat::Mode;
 
-use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM, PERM_MASK};
+use crate::fuse::bale_fs_state::{BaleFsState, DEFAULT_FILE_PERM};
 use crate::fuse::{ROOT_INO, TTL};
 use crate::{ArchiveRead, ArchiveWriter, BaleError, EntryKind};
 
@@ -248,7 +248,7 @@ impl fuser::Filesystem for BaleFs {
 
                 // Override mode if it has been changed via chmod.
                 if let Some(&mode) = state.modified_modes.get(path) {
-                    attr.perm = (mode & PERM_MASK) as u16;
+                    attr.perm = mode.bits() as u16;
                 }
 
                 reply.attr(&TTL, &attr);
@@ -494,8 +494,7 @@ impl fuser::Filesystem for BaleFs {
                 if state.dir_contents.contains_key(&ino) {
                     // Handle directory mode change.
                     if let Some(new_mode) = mode {
-                        let perm_bits = new_mode & PERM_MASK;
-                        state.set_dir_mode(ino, SFlag::S_IFDIR.bits() | perm_bits);
+                        state.set_dir_mode(ino, Mode::from_bits_truncate(new_mode));
                     }
                     // Handle directory mtime change.
                     if let Some(new_mtime) = mtime {
@@ -533,13 +532,9 @@ impl fuser::Filesystem for BaleFs {
 
         // Handle mode change (chmod).
         if let Some(new_mode) = mode {
-            // Preserve file type bits, update permission bits.
-            let current_mode = state.get_file_mode(&path);
-            let type_bits = current_mode & !PERM_MASK;
-            let perm_bits = new_mode & PERM_MASK;
             state
                 .modified_modes
-                .insert(path.clone(), type_bits | perm_bits);
+                .insert(path.clone(), Mode::from_bits_truncate(new_mode));
         }
 
         // Handle mtime change (utimensat).
@@ -595,8 +590,7 @@ impl fuser::Filesystem for BaleFs {
             })
             .unwrap_or(file_mtime);
 
-        let mode = state.get_file_mode(&path);
-        let perm = (mode & PERM_MASK) as u16;
+        let perm = state.get_file_mode(&path);
 
         // Determine correct file type from archive entry (same as getattr).
         let kind = state
@@ -617,10 +611,10 @@ impl fuser::Filesystem for BaleFs {
             ctime,
             crtime: ctime,
             kind,
-            perm: if perm == 0 {
-                DEFAULT_FILE_PERM as u16
+            perm: if perm.is_empty() {
+                DEFAULT_FILE_PERM.bits() as u16
             } else {
-                perm
+                perm.bits() as u16
             },
             nlink,
             uid: state.get_uid(&path),
@@ -680,7 +674,7 @@ impl fuser::Filesystem for BaleFs {
     }
 
     /// Removes an empty directory.
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let mut state = match self.state.lock() {
             Ok(s) => s,
             Err(_) => {
@@ -702,7 +696,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        match state.remove_directory(parent, name) {
+        match state.remove_directory(parent, name, req.uid()) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
@@ -847,7 +841,7 @@ impl fuser::Filesystem for BaleFs {
     }
 
     /// Removes a file.
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let mut state = match self.state.lock() {
             Ok(s) => s,
             Err(_) => {
@@ -869,7 +863,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        match state.remove_file(parent, name) {
+        match state.remove_file(parent, name, req.uid()) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
@@ -878,7 +872,7 @@ impl fuser::Filesystem for BaleFs {
     /// Renames/moves a file or directory.
     fn rename(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         newparent: u64,
@@ -915,7 +909,7 @@ impl fuser::Filesystem for BaleFs {
             }
         };
 
-        match state.rename_entry(parent, old_name, newparent, new_name) {
+        match state.rename_entry(parent, old_name, newparent, new_name, req.uid()) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
         }
