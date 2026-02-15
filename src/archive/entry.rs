@@ -119,3 +119,209 @@ impl<'a> From<SymlinkEntry<'a>> for Entry<'a> {
         Self::Symlink(entry)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ArchivePath;
+    use crate::format::{Crc, EntryRow};
+
+    /// Creates a test `FileEntry`.
+    fn make_file_entry(row: &EntryRow) -> FileEntry<'_> {
+        FileEntry {
+            entry: row,
+            path: ArchivePath::from_bytes(b"test.txt"),
+            data: b"hello",
+            id: 1,
+        }
+    }
+
+    /// Creates a test `DirEntry`.
+    fn make_dir_entry(row: &EntryRow) -> DirEntry<'_> {
+        DirEntry {
+            entry: row,
+            path: ArchivePath::from_bytes(b"src"),
+            id: 2,
+        }
+    }
+
+    /// Creates a test `SymlinkEntry`.
+    fn make_symlink_entry(row: &EntryRow) -> SymlinkEntry<'_> {
+        SymlinkEntry {
+            entry: row,
+            path: ArchivePath::from_bytes(b"link"),
+            target: b"target",
+            id: 3,
+        }
+    }
+
+    // ==================== is_* predicates ====================
+
+    /// `is_file()` returns true only for `Entry::File`.
+    #[test]
+    fn is_file_predicate() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(file.is_file());
+        assert!(!dir.is_file());
+        assert!(!sym.is_file());
+    }
+
+    /// `is_directory()` returns true only for `Entry::Directory`.
+    #[test]
+    fn is_directory_predicate() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(!file.is_directory());
+        assert!(dir.is_directory());
+        assert!(!sym.is_directory());
+    }
+
+    /// `is_symlink()` returns true only for `Entry::Symlink`.
+    #[test]
+    fn is_symlink_predicate() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(!file.is_symlink());
+        assert!(!dir.is_symlink());
+        assert!(sym.is_symlink());
+    }
+
+    // ==================== as_* borrow conversions ====================
+
+    /// `as_file()` returns `Some` for file entries and `None` for others.
+    #[test]
+    fn as_file_conversion() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(file.as_file().is_some());
+        assert_eq!(file.as_file().unwrap().id(), 1);
+        assert!(dir.as_file().is_none());
+        assert!(sym.as_file().is_none());
+    }
+
+    /// `as_directory()` returns `Some` for directory entries and `None` for others.
+    #[test]
+    fn as_directory_conversion() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(file.as_directory().is_none());
+        assert!(dir.as_directory().is_some());
+        assert_eq!(dir.as_directory().unwrap().id(), 2);
+        assert!(sym.as_directory().is_none());
+    }
+
+    /// `as_symlink()` returns `Some` for symlink entries and `None` for others.
+    #[test]
+    fn as_symlink_conversion() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+
+        assert!(file.as_symlink().is_none());
+        assert!(dir.as_symlink().is_none());
+        assert!(sym.as_symlink().is_some());
+        assert_eq!(sym.as_symlink().unwrap().id(), 3);
+    }
+
+    // ==================== into_* owned conversions ====================
+
+    /// `into_file()` returns `Some` for file entries and `None` for others.
+    #[test]
+    fn into_file_conversion() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        assert_eq!(file.into_file().unwrap().id(), 1);
+
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        assert!(dir.into_file().is_none());
+    }
+
+    /// `into_directory()` returns `Some` for directory entries and `None` for others.
+    #[test]
+    fn into_directory_conversion() {
+        let dir_row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let dir = Entry::Directory(make_dir_entry(&dir_row));
+        assert_eq!(dir.into_directory().unwrap().id(), 2);
+
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+        assert!(sym.into_directory().is_none());
+    }
+
+    /// `into_symlink()` returns `Some` for symlink entries and `None` for others.
+    #[test]
+    fn into_symlink_conversion() {
+        let file_row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let sym_row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+        let sym = Entry::Symlink(make_symlink_entry(&sym_row));
+        assert_eq!(sym.into_symlink().unwrap().id(), 3);
+
+        let file = Entry::File(make_file_entry(&file_row));
+        assert!(file.into_symlink().is_none());
+    }
+
+    // ==================== From impls ====================
+
+    /// `From<FileEntry>` produces `Entry::File`.
+    #[test]
+    fn from_file_entry() {
+        let row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let entry: Entry<'_> = make_file_entry(&row).into();
+        assert!(entry.is_file());
+    }
+
+    /// `From<DirEntry>` produces `Entry::Directory`.
+    #[test]
+    fn from_dir_entry() {
+        let row = EntryRow::new_directory(2, 0, 0, 0o040755);
+        let entry: Entry<'_> = make_dir_entry(&row).into();
+        assert!(entry.is_directory());
+    }
+
+    /// `From<SymlinkEntry>` produces `Entry::Symlink`.
+    #[test]
+    fn from_symlink_entry() {
+        let row = EntryRow::new_file(3, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+        let entry: Entry<'_> = make_symlink_entry(&row).into();
+        assert!(entry.is_symlink());
+    }
+}

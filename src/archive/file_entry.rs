@@ -73,3 +73,100 @@ impl<'a> FileEntry<'a> {
         self.id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ArchivePath;
+    use crate::format::Crc;
+
+    /// Creates a test file `EntryRow` with known values.
+    fn test_entry_row() -> EntryRow {
+        EntryRow::new_file(
+            3,
+            Crc::new(0xDEAD_BEEF),
+            4096,
+            1024,
+            1024,
+            1_700_000_000_000,
+            1_700_000_001_000,
+            0o100644,
+        )
+    }
+
+    /// Creates a `FileEntry` referencing the given row.
+    fn make_file_entry(row: &EntryRow) -> FileEntry<'_> {
+        FileEntry {
+            entry: row,
+            path: ArchivePath::from_bytes(b"src/main.rs"),
+            data: b"fn main() {}",
+            id: 3,
+        }
+    }
+
+    /// `data()` returns the file content bytes.
+    #[test]
+    fn data_returns_file_content() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.data(), b"fn main() {}");
+    }
+
+    /// `size()` returns the uncompressed file size from the entry row.
+    #[test]
+    fn size_returns_file_size() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.size(), 1024);
+    }
+
+    /// `path()` returns the file path.
+    #[test]
+    fn path_returns_archive_path() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.path().as_bytes(), b"src/main.rs");
+    }
+
+    /// `mode()` returns the Unix mode from the entry row.
+    #[test]
+    fn mode_returns_unix_mode() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.mode(), 0o100644);
+    }
+
+    /// `created_time()` returns the creation timestamp.
+    #[test]
+    fn created_time_returns_timestamp() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.created_time(), 1_700_000_000_000);
+    }
+
+    /// `modified_time()` returns the modification timestamp.
+    #[test]
+    fn modified_time_returns_timestamp() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.modified_time(), 1_700_000_001_000);
+    }
+
+    /// `entry()` returns a reference to the underlying entry row.
+    #[test]
+    fn entry_returns_row_reference() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        let returned = file.entry();
+        assert_eq!(returned.entry_id.get(), 3);
+        assert_eq!(returned.mode.get(), 0o100644);
+    }
+
+    /// `id()` returns the stable entry ID.
+    #[test]
+    fn id_returns_entry_id() {
+        let row = test_entry_row();
+        let file = make_file_entry(&row);
+        assert_eq!(file.id(), 3);
+    }
+}
