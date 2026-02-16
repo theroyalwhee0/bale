@@ -127,4 +127,35 @@ mod tests {
         let dir = make_dir_entry(&row);
         assert_eq!(dir.id(), 7);
     }
+
+    // ==================== Property Tests ====================
+
+    use proptest::prelude::*;
+
+    use crate::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// All accessors round-trip arbitrary values from the entry row.
+        #[test]
+        fn accessors_round_trip(
+            id in 1..=u32::MAX,
+            created in any::<i64>(),
+            modified in any::<i64>(),
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_directory(id, created, modified, mode);
+            let dir = DirEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"test"),
+                id,
+            };
+            prop_assert_eq!(dir.id(), id);
+            prop_assert_eq!(dir.mode(), mode);
+            prop_assert_eq!(dir.created_time(), created);
+            prop_assert_eq!(dir.modified_time(), modified);
+            prop_assert_eq!(dir.entry().entry_id.get(), id);
+        }
+    }
 }

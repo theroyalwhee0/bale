@@ -324,4 +324,108 @@ mod tests {
         let entry: Entry<'_> = make_symlink_entry(&row).into();
         assert!(entry.is_symlink());
     }
+
+    // ==================== Property Tests ====================
+
+    use proptest::prelude::*;
+
+    use crate::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// `Entry::File` satisfies all file predicates and conversions.
+        #[test]
+        fn file_variant_properties(
+            id in 1..=u32::MAX,
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_file(id, Crc::NONE, 0, 0, 0, 0, 0, mode);
+            let entry = Entry::File(FileEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"f"),
+                data: b"",
+                id,
+            });
+            prop_assert!(entry.is_file());
+            prop_assert!(!entry.is_directory());
+            prop_assert!(!entry.is_symlink());
+            prop_assert!(entry.as_file().is_some());
+            prop_assert_eq!(entry.as_file().unwrap().id(), id);
+            prop_assert!(entry.as_directory().is_none());
+            prop_assert!(entry.as_symlink().is_none());
+        }
+
+        /// `Entry::Directory` satisfies all directory predicates and conversions.
+        #[test]
+        fn directory_variant_properties(
+            id in 1..=u32::MAX,
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_directory(id, 0, 0, mode);
+            let entry = Entry::Directory(DirEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"d"),
+                id,
+            });
+            prop_assert!(!entry.is_file());
+            prop_assert!(entry.is_directory());
+            prop_assert!(!entry.is_symlink());
+            prop_assert!(entry.as_file().is_none());
+            prop_assert!(entry.as_directory().is_some());
+            prop_assert_eq!(entry.as_directory().unwrap().id(), id);
+            prop_assert!(entry.as_symlink().is_none());
+        }
+
+        /// `Entry::Symlink` satisfies all symlink predicates and conversions.
+        #[test]
+        fn symlink_variant_properties(
+            id in 1..=u32::MAX,
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_file(id, Crc::NONE, 0, 0, 0, 0, 0, mode);
+            let entry = Entry::Symlink(SymlinkEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"s"),
+                target: b"t",
+                id,
+            });
+            prop_assert!(!entry.is_file());
+            prop_assert!(!entry.is_directory());
+            prop_assert!(entry.is_symlink());
+            prop_assert!(entry.as_file().is_none());
+            prop_assert!(entry.as_directory().is_none());
+            prop_assert!(entry.as_symlink().is_some());
+            prop_assert_eq!(entry.as_symlink().unwrap().id(), id);
+        }
+
+        /// `From` conversion preserves the entry ID through `into_*`.
+        #[test]
+        fn from_into_round_trip(id in 1..=u32::MAX) {
+            let file_row = EntryRow::new_file(id, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+            let dir_row = EntryRow::new_directory(id, 0, 0, 0o040755);
+            let sym_row = EntryRow::new_file(id, Crc::NONE, 0, 0, 0, 0, 0, 0o120777);
+
+            let file_entry = FileEntry {
+                entry: &file_row, path: ArchivePath::from_bytes(b"f"),
+                data: b"", id,
+            };
+            let dir_entry_val = DirEntry {
+                entry: &dir_row, path: ArchivePath::from_bytes(b"d"), id,
+            };
+            let sym_entry = SymlinkEntry {
+                entry: &sym_row, path: ArchivePath::from_bytes(b"s"),
+                target: b"t", id,
+            };
+
+            let e: Entry<'_> = file_entry.into();
+            prop_assert_eq!(e.into_file().unwrap().id(), id);
+
+            let e: Entry<'_> = dir_entry_val.into();
+            prop_assert_eq!(e.into_directory().unwrap().id(), id);
+
+            let e: Entry<'_> = sym_entry.into();
+            prop_assert_eq!(e.into_symlink().unwrap().id(), id);
+        }
+    }
 }
