@@ -169,4 +169,46 @@ mod tests {
         let file = make_file_entry(&row);
         assert_eq!(file.id(), 3);
     }
+
+    // ==================== Property Tests ====================
+
+    use proptest::prelude::*;
+
+    use crate::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// All accessors round-trip arbitrary values from the entry row.
+        #[test]
+        fn accessors_round_trip(
+            id in 1..=u32::MAX,
+            crc_val in any::<u32>(),
+            offset in any::<u64>(),
+            file_size in any::<u64>(),
+            block_size in any::<u64>(),
+            created in any::<i64>(),
+            modified in any::<i64>(),
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_file(
+                id, Crc::new(crc_val), offset,
+                file_size, block_size, created, modified, mode,
+            );
+            let data = b"proptest data";
+            let file = FileEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"test"),
+                data: data.as_slice(),
+                id,
+            };
+            prop_assert_eq!(file.id(), id);
+            prop_assert_eq!(file.size(), file_size);
+            prop_assert_eq!(file.mode(), mode);
+            prop_assert_eq!(file.created_time(), created);
+            prop_assert_eq!(file.modified_time(), modified);
+            prop_assert_eq!(file.data(), data.as_slice());
+            prop_assert_eq!(file.entry().entry_id.get(), id);
+        }
+    }
 }

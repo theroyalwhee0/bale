@@ -187,4 +187,81 @@ mod tests {
         let sym = make_symlink_entry(&row);
         assert_eq!(sym.id(), 5);
     }
+
+    // ==================== Property Tests ====================
+
+    use proptest::prelude::*;
+
+    use crate::proptest_config;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// All accessors round-trip arbitrary values from the entry row.
+        #[test]
+        fn accessors_round_trip(
+            id in 1..=u32::MAX,
+            created in any::<i64>(),
+            modified in any::<i64>(),
+            mode in any::<u32>(),
+        ) {
+            let row = EntryRow::new_file(
+                id, Crc::NONE, 4096, 10, 10, created, modified, mode,
+            );
+            let sym = SymlinkEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"test"),
+                target: b"target",
+                id,
+            };
+            prop_assert_eq!(sym.id(), id);
+            prop_assert_eq!(sym.mode(), mode);
+            prop_assert_eq!(sym.created_time(), created);
+            prop_assert_eq!(sym.modified_time(), modified);
+            prop_assert_eq!(sym.entry().entry_id.get(), id);
+        }
+
+        /// `target()` returns `Some` for valid UTF-8 strings.
+        #[test]
+        fn target_valid_utf8(target in "[a-zA-Z0-9/_.-]{1,50}") {
+            let row = EntryRow::new_file(
+                1, Crc::NONE, 4096, target.len() as u64,
+                target.len() as u64, 0, 0, 0o120777,
+            );
+            let target_bytes = target.as_bytes();
+            let sym = SymlinkEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"link"),
+                target: target_bytes,
+                id: 1,
+            };
+            prop_assert_eq!(sym.target(), Some(target.as_str()));
+            prop_assert_eq!(sym.target_bytes(), target_bytes);
+        }
+
+        /// `target()` returns `None` for invalid UTF-8 bytes.
+        ///
+        /// Uses lone continuation bytes (0x80..=0xBF) which are always
+        /// invalid without a preceding multi-byte start byte.
+        #[test]
+        fn target_invalid_utf8(
+            byte in 0x80u8..=0xBFu8,
+            padding in prop::collection::vec(0x80u8..=0xBFu8, 0..=4),
+        ) {
+            let mut target = vec![byte];
+            target.extend_from_slice(&padding);
+            let row = EntryRow::new_file(
+                1, Crc::NONE, 4096, target.len() as u64,
+                target.len() as u64, 0, 0, 0o120777,
+            );
+            let sym = SymlinkEntry {
+                entry: &row,
+                path: ArchivePath::from_bytes(b"link"),
+                target: &target,
+                id: 1,
+            };
+            prop_assert!(sym.target().is_none());
+            prop_assert_eq!(sym.target_bytes(), target.as_slice());
+        }
+    }
 }
