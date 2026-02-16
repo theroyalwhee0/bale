@@ -157,7 +157,7 @@ impl BaleFsState {
         ArchivePath::try_from(path).map_err(|e| match e {
             BaleError::UnsafeFilename(_) => libc::EINVAL,
             BaleError::ReservedPath(_) => libc::EINVAL,
-            BaleError::InvalidPath => libc::EINVAL,
+            BaleError::InvalidPath(_) => libc::EINVAL,
             _ => libc::EIO,
         })?;
         Ok(())

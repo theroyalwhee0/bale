@@ -1475,7 +1475,7 @@ mod tests {
         let archive = archive_from_bytes(&bytes);
 
         let result = archive.resolve("link");
-        assert!(matches!(result, Err(BaleError::InvalidPath)));
+        assert!(matches!(result, Err(BaleError::InvalidPath(_))));
     }
 
     /// resolve() returns NotADirectory when a file is used as a directory.
@@ -1575,7 +1575,7 @@ mod tests {
         let archive = archive_from_bytes(&bytes);
 
         let result = archive.resolve("link");
-        assert!(matches!(result, Err(BaleError::InvalidPath)));
+        assert!(matches!(result, Err(BaleError::InvalidPath(_))));
     }
 
     /// resolve() rejects root-escaping symlink targets like `../../outside.txt`.
@@ -1590,6 +1590,6 @@ mod tests {
         let archive = archive_from_bytes(&bytes);
 
         let result = archive.resolve("link");
-        assert!(matches!(result, Err(BaleError::InvalidPath)));
+        assert!(matches!(result, Err(BaleError::InvalidPath(_))));
     }
 }

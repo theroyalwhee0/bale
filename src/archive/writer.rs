@@ -616,7 +616,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     ) -> Result<(), BaleError> {
         // Validate and normalize path.
         let normalized = ArchivePath::from_bytes(path.as_bytes()).normalize()?;
-        let normalized_str = normalized.as_str().ok_or(BaleError::InvalidPath)?;
+        let normalized_str = normalized
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(path.to_string()))?;
 
         // Check path fits within path_size.
         let padded = self.pad_path(normalized_str)?;
@@ -731,7 +733,9 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
 
         // Normalize the link path.
         let normalized = ArchivePath::from_bytes(link.as_bytes()).normalize()?;
-        let normalized_str = normalized.as_str().ok_or(BaleError::InvalidPath)?;
+        let normalized_str = normalized
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(link.to_string()))?;
 
         // Verify link path doesn't already exist.
         if self.find_entry(normalized_str).is_some() {
@@ -782,9 +786,13 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     fn rename(&mut self, from: &str, to: &str) -> Result<(), BaleError> {
         // Normalize both paths.
         let from_norm = ArchivePath::from_bytes(from.as_bytes()).normalize()?;
-        let from_str = from_norm.as_str().ok_or(BaleError::InvalidPath)?;
+        let from_str = from_norm
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(from.to_string()))?;
         let to_norm = ArchivePath::from_bytes(to.as_bytes()).normalize()?;
-        let to_str = to_norm.as_str().ok_or(BaleError::InvalidPath)?;
+        let to_str = to_norm
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(to.to_string()))?;
 
         let path_size = self.trailer.path_size() as usize;
 
@@ -1616,7 +1624,7 @@ mod tests {
 
         let mut writer = ArchiveWriter::create(&path).unwrap();
         let result = writer.add_symlink("link", "/usr/share/data.txt", 0o777);
-        assert!(matches!(result, Err(BaleError::InvalidPath)));
+        assert!(matches!(result, Err(BaleError::InvalidPath(_))));
     }
 
     /// add_symlink rejects targets that escape the archive root via `..`.
@@ -1627,7 +1635,7 @@ mod tests {
 
         let mut writer = ArchiveWriter::create(&path).unwrap();
         let result = writer.add_symlink("link", "../../outside.txt", 0o777);
-        assert!(matches!(result, Err(BaleError::InvalidPath)));
+        assert!(matches!(result, Err(BaleError::InvalidPath(_))));
     }
 
     /// add_symlink allows relative targets that stay within the archive.

@@ -34,8 +34,8 @@ pub enum BaleError {
     InvalidPathSize(u16),
 
     /// Path is invalid (traversal, empty, or malformed).
-    #[error("invalid path")]
-    InvalidPath,
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
 
     /// Filename contains unsafe characters or patterns.
     #[error("unsafe filename: {0}")]
