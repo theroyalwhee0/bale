@@ -70,7 +70,9 @@ fn extract_entry(
     // Normalize path: validates UTF-8, rejects `..` traversal, removes
     // leading slashes. The result is a safe relative path.
     let normalized = archive_path.normalize()?;
-    let path_str = normalized.as_str().ok_or(BaleError::InvalidPath)?;
+    let path_str = normalized
+        .as_str()
+        .ok_or_else(|| BaleError::InvalidPath(format!("{path_bytes:?}")))?;
 
     let dest_path = output_dir.join(path_str);
 

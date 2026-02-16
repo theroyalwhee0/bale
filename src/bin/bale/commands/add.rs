@@ -21,9 +21,12 @@ pub fn run(
         let name = file.file_name().unwrap_or(file.as_os_str());
         let dest = Path::new(prefix).join(name);
         let entry_path = ArchivePath::try_from(dest)?;
-        let entry_str = entry_path
-            .as_str()
-            .ok_or(BaleCliError::Bale(bale::BaleError::InvalidPath))?;
+        let entry_str = entry_path.as_str().ok_or_else(|| {
+            BaleCliError::Bale(bale::BaleError::InvalidPath(format!(
+                "{:?}",
+                entry_path.as_bytes()
+            )))
+        })?;
 
         writer.add_file(file, entry_str)?;
         added_count += 1;

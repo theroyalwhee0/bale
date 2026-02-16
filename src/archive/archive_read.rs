@@ -27,7 +27,7 @@ pub(crate) fn resolve_target(
 ) -> Result<String, BaleError> {
     // Reject absolute symlink targets (defense against malicious archives).
     if target.starts_with('/') || target.starts_with('\\') {
-        return Err(BaleError::InvalidPath);
+        return Err(BaleError::InvalidPath(target.to_string()));
     }
 
     let parent = symlink_path.parent();
@@ -48,7 +48,7 @@ pub(crate) fn resolve_target(
             "" | "." => {}
             ".." => {
                 if components.pop().is_none() {
-                    return Err(BaleError::InvalidPath);
+                    return Err(BaleError::InvalidPath(target.to_string()));
                 }
             }
             component => {
@@ -59,7 +59,7 @@ pub(crate) fn resolve_target(
     }
 
     if components.is_empty() {
-        return Err(BaleError::InvalidPath);
+        return Err(BaleError::InvalidPath(target.to_string()));
     }
 
     Ok(components.join("/"))
@@ -252,7 +252,9 @@ pub trait ArchiveRead {
                     if depth > MAX_SYMLINK_DEPTH {
                         return Err(BaleError::SymlinkLoop(current_path));
                     }
-                    let target = symlink.target().ok_or(BaleError::InvalidPath)?;
+                    let target = symlink
+                        .target()
+                        .ok_or_else(|| BaleError::InvalidPath(current_path.clone()))?;
                     current_path = resolve_target(symlink.path(), target)?;
                     continue;
                 }
@@ -281,7 +283,9 @@ pub trait ArchiveRead {
                         if depth > MAX_SYMLINK_DEPTH {
                             return Err(BaleError::SymlinkLoop(current_path));
                         }
-                        let target = symlink.target().ok_or(BaleError::InvalidPath)?;
+                        let target = symlink
+                            .target()
+                            .ok_or_else(|| BaleError::InvalidPath(resolved.clone()))?;
                         let resolved_target = resolve_target(symlink.path(), target)?;
                         current_path = if remaining.is_empty() {
                             resolved_target

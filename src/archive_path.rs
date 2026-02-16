@@ -223,7 +223,9 @@ impl<'a> ArchivePath<'a> {
     /// - The path attempts to escape the archive root (e.g., `../etc/passwd`)
     /// - The path is empty after normalization
     pub fn normalize(&self) -> Result<ArchivePath<'static>, BaleError> {
-        let s = self.as_str().ok_or(BaleError::InvalidPath)?;
+        let s = self
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(format!("{:?}", self.as_bytes())))?;
         Ok(ArchivePath(Cow::Owned(
             Self::normalize_bytes(s)?.into_owned(),
         )))
@@ -287,12 +289,12 @@ impl<'a> ArchivePath<'a> {
                 ".." => {
                     if components.pop().is_none() {
                         // Attempted to go above root - path traversal attack
-                        return Err(BaleError::InvalidPath);
+                        return Err(BaleError::InvalidPath(path.to_string()));
                     }
                 }
                 component if component.trim().is_empty() => {
                     // Whitespace-only component - reject
-                    return Err(BaleError::InvalidPath);
+                    return Err(BaleError::InvalidPath(path.to_string()));
                 }
                 component => {
                     components.push(component);
@@ -301,7 +303,7 @@ impl<'a> ArchivePath<'a> {
         }
 
         if components.is_empty() {
-            return Err(BaleError::InvalidPath);
+            return Err(BaleError::InvalidPath(path.to_string()));
         }
 
         // Validate each component against safename rules and reserved prefixes.
@@ -470,7 +472,9 @@ impl TryFrom<&Path> for ArchivePath<'static> {
     type Error = BaleError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let s = path.to_str().ok_or(BaleError::InvalidPath)?;
+        let s = path
+            .to_str()
+            .ok_or_else(|| BaleError::InvalidPath(format!("{path:?}")))?;
         Ok(Self(Cow::Owned(Self::normalize_bytes(s)?.into_owned())))
     }
 }
