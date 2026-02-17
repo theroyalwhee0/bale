@@ -138,4 +138,24 @@ mod tests {
         assert_eq!(bytes[6], 0); // minor
         assert_eq!(bytes[7], 0); // patch
     }
+
+    // ==================== Property Tests ====================
+
+    use crate::proptest_config;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// Arbitrary 8-byte input never panics when interpreted as a FileHeader.
+        ///
+        /// Exercises `ref_from_bytes`, `has_valid_magic`, and `version` on
+        /// random byte patterns.
+        #[test]
+        fn fuzz_file_header_parsing(data in prop::collection::vec(any::<u8>(), 8..=8)) {
+            let header = FileHeader::ref_from_bytes(&data).unwrap();
+            let _ = header.has_valid_magic();
+            let _ = header.version();
+        }
+    }
 }

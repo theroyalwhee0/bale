@@ -158,4 +158,45 @@ mod tests {
         let row = DirectoryRow::from_bytes(&data, path_size).unwrap();
         assert!(row.path().is_err());
     }
+
+    // ==================== Property Tests ====================
+
+    use crate::proptest_config;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// Arbitrary bytes with correct stride never panic when parsed as a
+        /// DirectoryRow.
+        ///
+        /// Exercises `from_bytes`, `path_bytes`, `path_bytes_raw`, `path`,
+        /// and `entry_id` on random byte patterns with valid path sizes.
+        #[test]
+        fn fuzz_directory_row_correct_stride(
+            path_size in 1u16..=512,
+            data in prop::collection::vec(any::<u8>(), 0..=4100),
+        ) {
+            let stride = DirectoryRow::stride(path_size);
+            if data.len() >= stride {
+                let row = DirectoryRow::from_bytes(&data[..stride], path_size).unwrap();
+                let _ = row.path_bytes_raw();
+                let _ = row.path_bytes();
+                let _ = row.path();
+                let _ = row.entry_id();
+            }
+        }
+
+        /// Wrong-sized slices always return `Err`, never panic.
+        #[test]
+        fn fuzz_directory_row_wrong_size(
+            path_size in 1u16..=512,
+            data in prop::collection::vec(any::<u8>(), 0..=4100),
+        ) {
+            let stride = DirectoryRow::stride(path_size);
+            if data.len() != stride {
+                assert!(DirectoryRow::from_bytes(&data, path_size).is_err());
+            }
+        }
+    }
 }
