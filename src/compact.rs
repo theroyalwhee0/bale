@@ -171,7 +171,7 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
         for dir_bytes in &missing_dirs_sorted {
             let dir_str = std::str::from_utf8(dir_bytes)?;
             // Use default directory mode (rwxr-xr-x).
-            writer.add_folder(dir_str, SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM)?;
+            writer.add_directory(dir_str, SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM)?;
         }
 
         for (entry_row, path_bytes) in &final_entries {

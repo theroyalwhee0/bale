@@ -705,7 +705,7 @@ impl BaleFsState {
         // Add directory entry to archive.
         let archive_mode = SFlag::S_IFDIR.bits() | mode.bits();
         self.archive
-            .add_folder(&full_path, archive_mode)
+            .add_directory(&full_path, archive_mode)
             .map_err(|_| libc::EIO)?;
 
         // Update parent directory mtime.
@@ -1282,7 +1282,7 @@ impl BaleFsState {
             }
 
             // Update archive: add new dir entry, remove old.
-            let _ = self.archive.add_folder(&new_path, DEFAULT_DIR_MODE);
+            let _ = self.archive.add_directory(&new_path, DEFAULT_DIR_MODE);
             let _ = self.archive.delete(&old_path);
         }
 
