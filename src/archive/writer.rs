@@ -5,7 +5,9 @@
 //! tables (`entry_rows`, `dir_entries`) to accumulate entries before flushing
 //! to disk via [`sync()`](ArchiveWrite::sync).
 
-use super::{Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry};
+use super::{
+    AddEntryOptions, Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry,
+};
 use crate::format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchiveMut};
 use nix::sys::stat::SFlag;
@@ -153,6 +155,72 @@ impl Archive<MappedArchiveMut> {
             entry_rows,
             dir_entries,
         })
+    }
+
+    /// Adds an entry with configurable options.
+    ///
+    /// This is the most flexible entry-addition method. It accepts
+    /// [`AddEntryOptions`] to control timestamp behavior:
+    ///
+    /// - `created_time: None` → uses the current time
+    /// - `modified_time: None` → uses the current time
+    /// - `Some(millis)` → uses the provided Unix epoch millisecond value
+    ///
+    /// This is useful for compaction and other operations that need to
+    /// preserve original timestamps when re-writing entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is invalid or writing fails.
+    pub fn add_entry_with_options(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        mode: u32,
+        options: AddEntryOptions,
+    ) -> Result<(), BaleError> {
+        // Validate and normalize path.
+        let normalized = ArchivePath::from_bytes(path.as_bytes()).normalize()?;
+        let normalized_str = normalized
+            .as_str()
+            .ok_or_else(|| BaleError::InvalidPath(path.to_string()))?;
+
+        // Check path fits within path_size.
+        let padded = self.pad_path(normalized_str)?;
+
+        // Assign entry ID, checking for overflow.
+        let entry_id = self.trailer.next_id();
+        if entry_id == u32::MAX {
+            return Err(BaleError::ArchiveFull);
+        }
+        self.trailer.set_next_id(entry_id + 1);
+
+        // Write data block (returns offset and CRC).
+        let (data_offset, crc) = self.write_data_block(data)?;
+
+        // Resolve timestamps, defaulting to now.
+        let now = now_millis();
+        let created_time = options.created_time.unwrap_or(now);
+        let modified_time = options.modified_time.unwrap_or(now);
+
+        // Create entry row with resolved timestamps.
+        let entry_row = EntryRow::new_file(
+            entry_id,
+            crc,
+            data_offset,
+            data.len() as u64,
+            data.len() as u64,
+            created_time,
+            modified_time,
+            mode,
+        );
+
+        // Add to in-memory tables.
+        self.entry_rows.push(entry_row);
+        self.dir_entries.push((padded, entry_id));
+        self.dirty = true;
+
+        Ok(())
     }
 
     /// Null-pads a path to the configured path_size.
@@ -614,45 +682,16 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         mode: u32,
         mtime: Option<SystemTime>,
     ) -> Result<(), BaleError> {
-        // Validate and normalize path.
-        let normalized = ArchivePath::from_bytes(path.as_bytes()).normalize()?;
-        let normalized_str = normalized
-            .as_str()
-            .ok_or_else(|| BaleError::InvalidPath(path.to_string()))?;
-
-        // Check path fits within path_size.
-        let padded = self.pad_path(normalized_str)?;
-
-        // Assign entry ID, checking for overflow.
-        let entry_id = self.trailer.next_id();
-        if entry_id == u32::MAX {
-            return Err(BaleError::ArchiveFull);
-        }
-        self.trailer.set_next_id(entry_id + 1);
-
-        // Write data block (returns offset and CRC).
-        let (data_offset, crc) = self.write_data_block(data)?;
-
-        // Create entry row with timestamps.
         let now = now_millis();
-        let modified_time = mtime.map_or(now, system_time_to_millis);
-        let entry_row = EntryRow::new_file(
-            entry_id,
-            crc,
-            data_offset,
-            data.len() as u64,
-            data.len() as u64,
-            now,
-            modified_time,
+        self.add_entry_with_options(
+            path,
+            data,
             mode,
-        );
-
-        // Add to in-memory tables.
-        self.entry_rows.push(entry_row);
-        self.dir_entries.push((padded, entry_id));
-        self.dirty = true;
-
-        Ok(())
+            AddEntryOptions {
+                created_time: Some(now),
+                modified_time: Some(mtime.map_or(now, system_time_to_millis)),
+            },
+        )
     }
 
     /// Adds a file from the filesystem.

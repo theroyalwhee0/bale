@@ -35,10 +35,10 @@ mod proptest_config;
 
 #[cfg(feature = "reader")]
 pub use archive::ArchiveReader;
+#[cfg(feature = "writer")]
+pub use archive::{AddEntryOptions, ArchiveWrite, ArchiveWriter};
 #[cfg(any(feature = "reader", feature = "writer"))]
 pub use archive::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
-#[cfg(feature = "writer")]
-pub use archive::{ArchiveWrite, ArchiveWriter};
 pub use archive_path::ArchivePath;
 #[cfg(feature = "compact")]
 pub use compact::{CompactStats, RenameStats, compact, rename_duplicates};
