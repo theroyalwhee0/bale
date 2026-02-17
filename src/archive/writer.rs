@@ -20,10 +20,13 @@ use zerocopy::{FromBytes, IntoBytes};
 /// Converts a `SystemTime` to Unix epoch milliseconds.
 ///
 /// Returns a negative value for times before the Unix epoch.
+/// Saturates at `i64::MAX` / `i64::MIN` for extreme values.
 fn system_time_to_millis(time: SystemTime) -> i64 {
     match time.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => d.as_millis() as i64,
-        Err(e) => -(e.duration().as_millis() as i64),
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        Err(e) => i64::try_from(e.duration().as_millis())
+            .unwrap_or(i64::MAX)
+            .saturating_neg(),
     }
 }
 

@@ -247,7 +247,9 @@ impl Trailer {
     /// or containing tombstones (e.g., insertion or deletion without full
     /// re-sort).
     pub fn clear_compacted(&mut self) {
-        self.flags = (self.flags() - TrailerFlags::COMPACTED).bits();
+        let mut flags = self.flags();
+        flags.remove(TrailerFlags::COMPACTED);
+        self.flags = flags.bits();
     }
 
     /// Returns `true` if the magic bytes match the expected value.

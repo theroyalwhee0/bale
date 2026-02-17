@@ -309,6 +309,10 @@ impl ArchiveRead for Archive<MappedArchive> {
             let start = i * stride;
             let row = DirectoryRow::from_bytes(&table[start..start + stride], path_size).ok()?;
             let entry_id = row.entry_id();
+            // Skip tombstoned rows (entry_id == 0).
+            if entry_id == 0 {
+                return None;
+            }
             let entry_row = self.find_entry_row_by_id(entry_id)?;
             Some((entry_row, row.path_bytes_raw()))
         })
