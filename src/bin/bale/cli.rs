@@ -74,6 +74,9 @@ pub enum Command {
         /// Output directory (defaults to current directory).
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
+        /// Extract without directory structure (flatten paths).
+        #[arg(long, visible_alias = "flatten")]
+        flat: bool,
         /// Entries to extract (if empty, extracts all).
         entries: Vec<String>,
     },

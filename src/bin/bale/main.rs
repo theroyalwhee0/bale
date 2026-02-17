@@ -87,8 +87,9 @@ fn run(cli: Cli) -> Result<(), BaleCliError> {
         Command::Extract {
             archive,
             output,
+            flat,
             entries,
-        } => commands::extract::run(archive, output, &entries),
+        } => commands::extract::run(archive, output, &entries, flat),
 
         // Maintenance.
         #[cfg(feature = "compact")]
