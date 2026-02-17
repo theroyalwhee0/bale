@@ -29,9 +29,9 @@ default = ["bin"]
 reader = []
 writer = []
 compact = ["reader", "writer"]
-cli = ["reader", "writer", "dep:clap", "dep:env_logger"]
+cli = ["compact", "reader", "writer", "dep:clap", "dep:env_logger", "dep:dialoguer"]
 fuse = ["cli", "dep:fuser"]
-bin = ["compact", "fuse"]
+bin = ["fuse"]
 # Enable integration tests requiring external tools (zipinfo, unzip, file, fusermount).
 integration-tests = []
 
@@ -56,6 +56,7 @@ memmap2 = "0.9.9"
 
 # CLI (optional)
 clap = { version = "4", features = ["derive"], optional = true }
+dialoguer = { version = "0.12.0", optional = true }
 
 # FUSE (optional)
 fuser = { version = "0.16.0", optional = true }
