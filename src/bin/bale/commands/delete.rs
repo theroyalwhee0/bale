@@ -8,7 +8,7 @@ use crate::error::BaleCliError;
 
 /// Deletes entries from an archive.
 ///
-/// Returns an error if no entries were deleted, unless `ignore_missing` is true.
+/// Returns an error if any requested entries are missing, unless `ignore_missing` is true.
 pub fn run(
     archive_path: impl AsRef<Path>,
     entries: &[String],
@@ -42,8 +42,8 @@ pub fn run(
         println!("Deleted {deleted_count} entries");
     }
 
-    // Error if nothing was deleted (unless --ignore-missing).
-    if deleted_count == 0 && !ignore_missing {
+    // Error if any entries were missing (unless --ignore-missing).
+    if !missing.is_empty() && !ignore_missing {
         return Err(BaleError::EntryNotFound(missing.join(", ")).into());
     }
 
