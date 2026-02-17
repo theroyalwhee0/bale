@@ -523,7 +523,7 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
     /// # Errors
     ///
     /// Returns an error if not found or not a directory.
-    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
+    fn directory(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
         let path = path.as_ref();
         let (entry, path_bytes, id) = self
             .find_entry_with_path(path)
@@ -987,7 +987,7 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
     /// # Errors
     ///
     /// Returns an error if the path is invalid or writing fails.
-    fn add_folder(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError> {
+    fn add_directory(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError> {
         let path = path.as_ref();
         // Ensure directory type bits are set.
         let mode = if mode & SFlag::S_IFMT.bits() == 0 {
@@ -1165,15 +1165,15 @@ mod tests {
         assert_eq!(entry.kind(), EntryKind::File);
     }
 
-    /// add_folder creates a directory entry with no data.
+    /// add_directory creates a directory entry with no data.
     #[test]
-    fn add_folder_creates_directory() {
+    fn add_directory_creates_directory() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.bale");
 
         {
             let mut writer = ArchiveWriter::create(&path).unwrap();
-            writer.add_folder("mydir", 0o755).unwrap();
+            writer.add_directory("mydir", 0o755).unwrap();
             writer.sync().unwrap();
         }
 
@@ -1183,7 +1183,7 @@ mod tests {
         assert_eq!(entry.data_offset.get(), 0);
         assert_eq!(entry.file_size.get(), 0);
 
-        let dir_entry = reader.folder("mydir").unwrap();
+        let dir_entry = reader.directory("mydir").unwrap();
         assert_eq!(dir_entry.path().as_str(), Some("mydir"));
     }
 
@@ -1354,7 +1354,7 @@ mod tests {
         writer.sync().unwrap();
     }
 
-    /// Writer entry/file/folder/symlink accessors work.
+    /// Writer entry/file/directory/symlink accessors work.
     #[test]
     fn writer_typed_accessors() {
         let dir = TempDir::new().unwrap();
@@ -1362,7 +1362,7 @@ mod tests {
 
         let mut writer = ArchiveWriter::create(&path).unwrap();
         writer.add_entry("a_file.txt", b"data", 0o100644).unwrap();
-        writer.add_folder("a_dir", 0o755).unwrap();
+        writer.add_directory("a_dir", 0o755).unwrap();
         writer.add_symlink("a_link", "target", 0o777).unwrap();
 
         assert!(writer.entry("a_file.txt").unwrap().is_file());
@@ -1370,7 +1370,7 @@ mod tests {
         assert!(writer.entry("a_link").unwrap().is_symlink());
 
         assert!(writer.file("a_file.txt").is_ok());
-        assert!(writer.folder("a_dir").is_ok());
+        assert!(writer.directory("a_dir").is_ok());
         assert!(writer.symlink("a_link").is_ok());
 
         writer.sync().unwrap();
@@ -1447,7 +1447,7 @@ mod tests {
         let path = dir.path().join("test.bale");
 
         let mut writer = ArchiveWriter::create(&path).unwrap();
-        writer.add_folder("mydir", 0o755).unwrap();
+        writer.add_directory("mydir", 0o755).unwrap();
 
         let result = writer.hard_link("mydir", "link");
         assert!(matches!(result, Err(BaleError::NotAFile(_))));
@@ -1544,7 +1544,7 @@ mod tests {
 
         {
             let mut writer = ArchiveWriter::create(&path).unwrap();
-            writer.add_folder("src", 0o755).unwrap();
+            writer.add_directory("src", 0o755).unwrap();
             writer.add_entry("src/a.txt", b"aaa", 0o100644).unwrap();
             writer.add_entry("src/b.txt", b"bbb", 0o100644).unwrap();
             writer.rename("src", "dst").unwrap();
@@ -1555,7 +1555,7 @@ mod tests {
         assert!(reader.find_entry("src").is_none());
         assert!(reader.find_entry("src/a.txt").is_none());
         assert!(reader.find_entry("src/b.txt").is_none());
-        assert!(reader.folder("dst").is_ok());
+        assert!(reader.directory("dst").is_ok());
         assert_eq!(reader.file("dst/a.txt").unwrap().data, b"aaa");
         assert_eq!(reader.file("dst/b.txt").unwrap().data, b"bbb");
     }
@@ -1582,7 +1582,7 @@ mod tests {
 
         // Create archive with small path_size.
         let mut writer = ArchiveWriter::create_with_options(&path, 4096, 16).unwrap();
-        writer.add_folder("a", 0o755).unwrap();
+        writer.add_directory("a", 0o755).unwrap();
         writer.add_entry("a/file.txt", b"data", 0o100644).unwrap();
 
         // Renaming "a" to a long name would make "a/file.txt" exceed 16 bytes.
@@ -1692,7 +1692,7 @@ mod tests {
         let path = dir.path().join("test.bale");
 
         let mut writer = ArchiveWriter::create(&path).unwrap();
-        writer.add_folder("mydir", 0o755).unwrap();
+        writer.add_directory("mydir", 0o755).unwrap();
 
         let result = writer.replace_content("mydir", b"data", 0o100644);
         assert!(matches!(result, Err(BaleError::NotAFile(_))));

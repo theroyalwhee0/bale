@@ -498,7 +498,7 @@ impl ArchiveRead for Archive<MappedArchive> {
     /// # Errors
     ///
     /// Returns an error if the path is not found or is not a directory.
-    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
+    fn directory(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError> {
         let path = path.as_ref();
         let (entry, path_bytes, id) = self
             .find_entry_with_path(path)
@@ -1096,9 +1096,9 @@ mod tests {
         assert!(matches!(result, Err(BaleError::NotAFile(_))));
     }
 
-    /// folder() returns a DirEntry for directories.
+    /// directory() returns a DirEntry for directories.
     #[test]
-    fn folder_accessor() {
+    fn directory_accessor() {
         let bytes = build_test_archive(&[TestEntry {
             path: "src",
             data: b"",
@@ -1107,14 +1107,14 @@ mod tests {
         }]);
         let archive = archive_from_bytes(&bytes);
 
-        let dir = archive.folder("src").unwrap();
+        let dir = archive.directory("src").unwrap();
         assert_eq!(dir.path().as_str(), Some("src"));
         assert_eq!(dir.id(), 1);
     }
 
-    /// folder() on a file returns NotADirectory.
+    /// directory() on a file returns NotADirectory.
     #[test]
-    fn folder_on_file_returns_not_a_directory() {
+    fn directory_on_file_returns_not_a_directory() {
         let bytes = build_test_archive(&[TestEntry {
             path: "file.txt",
             data: b"data",
@@ -1123,7 +1123,7 @@ mod tests {
         }]);
         let archive = archive_from_bytes(&bytes);
 
-        let result = archive.folder("file.txt");
+        let result = archive.directory("file.txt");
         assert!(matches!(result, Err(BaleError::NotADirectory(_))));
     }
 

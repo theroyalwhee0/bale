@@ -176,7 +176,7 @@ pub trait ArchiveWrite: ArchiveRead {
     /// Returns an error if:
     /// - The path exceeds the archive's path_size
     /// - Writing to the archive fails
-    fn add_folder(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError>;
+    fn add_directory(&mut self, path: impl AsRef<str>, mode: u32) -> Result<(), BaleError>;
 
     /// Creates a symbolic link entry.
     ///

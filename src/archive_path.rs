@@ -10,7 +10,7 @@ use crate::BaleError;
 /// Reserved path prefix for bale internal use.
 ///
 /// Paths with components starting with this prefix are rejected to reserve
-/// space for future format extensions (e.g., virtual `.bale/` metadata folder
+/// space for future format extensions (e.g., virtual `.bale/` metadata directory
 /// in FUSE mounts).
 const RESERVED_PREFIX: &str = ".bale";
 

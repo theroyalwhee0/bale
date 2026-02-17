@@ -189,7 +189,7 @@ pub trait ArchiveRead {
     /// Returns an error if:
     /// - The path is not found ([`BaleError::EntryNotFound`])
     /// - The entry exists but is not a directory ([`BaleError::NotADirectory`])
-    fn folder(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError>;
+    fn directory(&self, path: impl AsRef<str>) -> Result<DirEntry<'_>, BaleError>;
 
     /// Returns a symlink entry by path.
     ///

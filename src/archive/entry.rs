@@ -6,7 +6,7 @@ use crate::archive::{DirEntry, FileEntry, SymlinkEntry};
 ///
 /// This enum provides generic access to archive entries when the caller
 /// needs to handle any entry type. For type-specific access, use
-/// [`ArchiveRead::file`], [`ArchiveRead::folder`], or the entry's
+/// [`ArchiveRead::file`], [`ArchiveRead::directory`], or the entry's
 /// conversion methods.
 ///
 /// # Example
