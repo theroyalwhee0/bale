@@ -308,7 +308,9 @@ pub trait ArchiveRead {
                 }
             }
 
-            unreachable!("component walk exhausted without returning");
+            return Err(BaleError::Corrupted(
+                "component walk exhausted without returning".into(),
+            ));
         }
     }
 }
