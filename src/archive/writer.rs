@@ -1697,4 +1697,170 @@ mod tests {
         let result = writer.replace_content("mydir", b"data", 0o100644);
         assert!(matches!(result, Err(BaleError::NotAFile(_))));
     }
+
+    /// `add_file` with a nonexistent source path returns an I/O error.
+    #[test]
+    fn add_file_nonexistent_source_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.add_file("/nonexistent/path/file.txt", "file.txt");
+        assert!(matches!(result, Err(BaleError::Io(_))));
+    }
+
+    /// `add_file` reads data from disk and it round-trips through the archive.
+    #[test]
+    fn add_file_reads_data_from_disk() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("source.txt");
+        std::fs::write(&src, b"round-trip content").unwrap();
+
+        let archive_path = dir.path().join("test.bale");
+        {
+            let mut writer = ArchiveWriter::create(&archive_path).unwrap();
+            writer.add_file(&src, "source.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = crate::ArchiveReader::open(&archive_path).unwrap();
+        let file = reader.file("source.txt").unwrap();
+        assert_eq!(file.data, b"round-trip content");
+    }
+
+    /// `add_symlink` sets symlink mode bits and preserves the target.
+    #[test]
+    fn add_symlink_basic_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            // Pass mode without type bits — add_symlink should set S_IFLNK.
+            writer.add_symlink("mylink", "target_file", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = crate::ArchiveReader::open(&path).unwrap();
+        let entry = reader.find_entry("mylink").unwrap();
+        assert_eq!(entry.kind(), EntryKind::Symlink);
+        // S_IFLNK (0o120000) should be set in mode.
+        assert_eq!(entry.mode.get() & 0o170000, 0o120000);
+        let symlink = reader.symlink("mylink").unwrap();
+        assert_eq!(symlink.target(), Some("target_file"));
+    }
+
+    /// `add_symlink` preserves explicit `S_IFLNK` mode bits without doubling.
+    #[test]
+    fn add_symlink_preserves_explicit_mode_bits() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            // Pass mode with S_IFLNK already set.
+            writer
+                .add_symlink("mylink", "target_file", 0o120777)
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = crate::ArchiveReader::open(&path).unwrap();
+        let entry = reader.find_entry("mylink").unwrap();
+        assert_eq!(entry.mode.get(), 0o120777);
+    }
+
+    /// `hard_link` to a nonexistent target returns `EntryNotFound`.
+    #[test]
+    fn hard_link_nonexistent_target_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.hard_link("nonexistent", "link");
+        assert!(matches!(result, Err(BaleError::EntryNotFound(_))));
+    }
+
+    /// Symlinks can be hard linked (only directories are forbidden).
+    #[test]
+    fn hard_link_symlink_allowed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_symlink("original_link", "target", 0o777)
+                .unwrap();
+            writer.hard_link("original_link", "second_link").unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = crate::ArchiveReader::open(&path).unwrap();
+        let orig = reader.symlink("original_link").unwrap();
+        let link = reader.symlink("second_link").unwrap();
+        assert_eq!(orig.id, link.id);
+        assert_eq!(orig.target(), Some("target"));
+        assert_eq!(link.target(), Some("target"));
+    }
+
+    /// `rename` with a nonexistent source returns `EntryNotFound`.
+    #[test]
+    fn rename_nonexistent_source_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        let result = writer.rename("nonexistent", "new_name");
+        assert!(matches!(result, Err(BaleError::EntryNotFound(_))));
+    }
+
+    /// `rename` to an existing destination returns `PathExists`.
+    #[test]
+    fn rename_to_existing_destination_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_entry("src.txt", b"src", 0o100644).unwrap();
+        writer.add_entry("dst.txt", b"dst", 0o100644).unwrap();
+        let result = writer.rename("src.txt", "dst.txt");
+        assert!(matches!(result, Err(BaleError::PathExists(_))));
+    }
+
+    /// Calling `sync` twice is safe and the archive remains unchanged.
+    #[test]
+    fn sync_idempotency() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o100644).unwrap();
+            writer.sync().unwrap();
+            writer.sync().unwrap();
+        }
+
+        let reader = crate::ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 1);
+        assert_eq!(reader.file("file.txt").unwrap().data, b"data");
+    }
+
+    /// Path at exactly `path_size` succeeds; one byte longer fails.
+    #[test]
+    fn path_at_max_length_boundary() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let path_size: u16 = 16;
+        let mut writer = ArchiveWriter::create_with_options(&path, 4096, path_size).unwrap();
+
+        // Exact fit: 16 bytes.
+        let exact_path = "a".repeat(path_size as usize);
+        writer.add_entry(&exact_path, b"data", 0o100644).unwrap();
+
+        // One byte too long: 17 bytes.
+        let long_path = "b".repeat(path_size as usize + 1);
+        let result = writer.add_entry(&long_path, b"data", 0o100644);
+        assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
+    }
 }

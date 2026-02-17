@@ -595,4 +595,158 @@ mod tests {
 
         assert_eq!(paths, vec!["a.txt", "z(1).txt", "z.txt"]);
     }
+
+    /// Compacting 3 entries with the same path keeps only the last one.
+    #[test]
+    fn compact_all_duplicates() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"v1", 0o644).unwrap();
+            writer.add_entry("file.txt", b"v2", 0o644).unwrap();
+            writer.add_entry("file.txt", b"v3", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let stats = compact(&path).unwrap();
+        assert_eq!(stats.entries_removed, 2);
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 1);
+        let data = reader
+            .read_data(reader.find_entry("file.txt").unwrap())
+            .unwrap();
+        assert_eq!(data, b"v3");
+    }
+
+    /// Hard-linked entries survive compaction.
+    #[test]
+    fn compact_preserves_hard_links() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_entry("original.txt", b"shared data", 0o100644)
+                .unwrap();
+            writer.hard_link("original.txt", "link.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        // After compaction, both paths should exist with the same data.
+        // Note: compact re-writes entries individually, so they become
+        // separate entries with identical content (not shared entry IDs).
+        let reader = ArchiveReader::open(&path).unwrap();
+        let orig = reader.file("original.txt").unwrap();
+        let link = reader.file("link.txt").unwrap();
+        assert_eq!(orig.data, b"shared data");
+        assert_eq!(link.data, b"shared data");
+    }
+
+    /// Symlink target and mode are preserved through compaction.
+    #[test]
+    fn compact_handles_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_entry("target.txt", b"target data", 0o100644)
+                .unwrap();
+            writer.add_symlink("mylink", "target.txt", 0o777).unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let entry = reader.find_entry("mylink").unwrap();
+        assert_eq!(entry.kind(), EntryKind::Symlink);
+        // Mode should preserve symlink type bits.
+        assert_eq!(entry.mode.get() & 0o170000, 0o120000);
+        let data = reader.read_data(entry).unwrap();
+        assert_eq!(data, b"target.txt");
+    }
+
+    /// Compaction creates implicit parent directories for files.
+    #[test]
+    fn compact_creates_implicit_directories() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            // Add a file without its parent directory.
+            writer
+                .add_entry("a/b/file.txt", b"nested", 0o100644)
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        // The implicit directories should have been created.
+        let dir_a = reader.find_entry("a").unwrap();
+        assert_eq!(dir_a.kind(), EntryKind::Directory);
+        let dir_ab = reader.find_entry("a/b").unwrap();
+        assert_eq!(dir_ab.kind(), EntryKind::Directory);
+        // The file should still exist.
+        let file = reader.file("a/b/file.txt").unwrap();
+        assert_eq!(file.data, b"nested");
+    }
+
+    /// Rename duplicates produces `file(1).txt`, `file(2).txt` suffixes.
+    #[test]
+    fn rename_duplicates_suffix_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("doc.md", b"first", 0o644).unwrap();
+            writer.add_entry("doc.md", b"second", 0o644).unwrap();
+            writer.add_entry("doc.md", b"third", 0o644).unwrap();
+            writer.add_entry("doc.md", b"fourth", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let stats = rename_duplicates(&path).unwrap();
+        assert_eq!(stats.entries_renamed, 3);
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count(), 4);
+        // Last occurrence keeps the original name.
+        assert_eq!(
+            reader
+                .read_data(reader.find_entry("doc.md").unwrap())
+                .unwrap(),
+            b"fourth"
+        );
+        // Earlier occurrences get sequential suffixes.
+        assert_eq!(
+            reader
+                .read_data(reader.find_entry("doc(1).md").unwrap())
+                .unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            reader
+                .read_data(reader.find_entry("doc(2).md").unwrap())
+                .unwrap(),
+            b"second"
+        );
+        assert_eq!(
+            reader
+                .read_data(reader.find_entry("doc(3).md").unwrap())
+                .unwrap(),
+            b"third"
+        );
+    }
 }
