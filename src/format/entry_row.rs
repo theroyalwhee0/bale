@@ -285,4 +285,33 @@ mod tests {
         let restored = EntryRow::ref_from_bytes(bytes).unwrap();
         assert_eq!(restored.reserved, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
+
+    // ==================== Property Tests ====================
+
+    use crate::proptest_config;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// Arbitrary 64-byte input never panics when interpreted as an EntryRow.
+        ///
+        /// Exercises `ref_from_bytes`, `kind`, `crc`, and all accessor methods
+        /// on random byte patterns.
+        #[test]
+        fn fuzz_entry_row_parsing(data in prop::collection::vec(any::<u8>(), 64..=64)) {
+            let row = EntryRow::ref_from_bytes(&data).unwrap();
+            let _ = row.kind();
+            let _ = row.crc();
+            let _ = row.entry_id.get();
+            let _ = row.data_offset.get();
+            let _ = row.file_size.get();
+            let _ = row.block_size.get();
+            let _ = row.created_time.get();
+            let _ = row.modified_time.get();
+            let _ = row.mode.get();
+            let _ = row.compression;
+            let _ = row.flags;
+        }
+    }
 }

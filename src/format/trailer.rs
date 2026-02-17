@@ -637,6 +637,34 @@ mod tests {
         assert!(trailer.validated().is_err());
     }
 
+    // ==================== Property Tests ====================
+
+    use crate::proptest_config;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// Arbitrary 64-byte input never panics when interpreted as a Trailer.
+        ///
+        /// Exercises `ref_from_bytes`, `is_valid`, `validated`, `has_valid_magic`,
+        /// and `alignment` on random byte patterns.
+        #[test]
+        fn fuzz_trailer_parsing(data in prop::collection::vec(any::<u8>(), 64..=64)) {
+            let trailer = Trailer::ref_from_bytes(&data).unwrap();
+            let _ = trailer.is_valid();
+            let _ = trailer.validated();
+            let _ = trailer.has_valid_magic();
+            let _ = trailer.alignment();
+            let _ = trailer.path_size();
+            let _ = trailer.archive_size();
+            let _ = trailer.next_id();
+            let _ = trailer.flags();
+            let _ = trailer.is_compacted();
+            let _ = trailer.metadata_crc();
+        }
+    }
+
     /// Byte layout matches spec offsets.
     #[test]
     fn byte_layout_matches_spec() {
