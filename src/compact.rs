@@ -2,7 +2,8 @@
 
 use crate::format::EntryRow;
 use crate::{
-    ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter, BaleError, EntryKind,
+    AddEntryOptions, ArchivePath, ArchiveRead, ArchiveReader, ArchiveWrite, ArchiveWriter,
+    BaleError, EntryKind,
 };
 use nix::sys::stat::SFlag;
 use std::collections::{HashMap, HashSet};
@@ -185,7 +186,15 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
             // Get mode from entry row.
             let mode = entry_row.mode.get();
 
-            writer.add_entry(path_str, data, mode)?;
+            writer.add_entry_with_options(
+                path_str,
+                data,
+                mode,
+                AddEntryOptions {
+                    created_time: Some(entry_row.created_time.get()),
+                    modified_time: Some(entry_row.modified_time.get()),
+                },
+            )?;
         }
 
         writer.sync()?;
@@ -313,7 +322,15 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
         for (entry_row, new_path) in &entries {
             let data = reader.read_data(entry_row)?;
             let mode = entry_row.mode.get();
-            writer.add_entry(new_path, data, mode)?;
+            writer.add_entry_with_options(
+                new_path,
+                data,
+                mode,
+                AddEntryOptions {
+                    created_time: Some(entry_row.created_time.get()),
+                    modified_time: Some(entry_row.modified_time.get()),
+                },
+            )?;
         }
 
         writer.sync()?;
@@ -332,7 +349,10 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
+
+    use crate::proptest_config;
 
     /// Compacting an empty archive works.
     #[test]
@@ -748,5 +768,140 @@ mod tests {
                 .unwrap(),
             b"third"
         );
+    }
+
+    /// Compacting preserves created_time and modified_time from original entries.
+    #[test]
+    fn compact_preserves_timestamps() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with entries and record their timestamps.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("a.txt", b"aaa", 0o644).unwrap();
+            writer.add_entry("b.txt", b"bbb", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Read timestamps before compaction.
+        let (a_created, a_modified, b_created, b_modified) = {
+            let reader = ArchiveReader::open(&path).unwrap();
+            let a = reader.find_entry("a.txt").unwrap();
+            let b = reader.find_entry("b.txt").unwrap();
+            (
+                a.created_time.get(),
+                a.modified_time.get(),
+                b.created_time.get(),
+                b.modified_time.get(),
+            )
+        };
+
+        compact(&path).unwrap();
+
+        // Verify timestamps are preserved.
+        let reader = ArchiveReader::open(&path).unwrap();
+        let a = reader.find_entry("a.txt").unwrap();
+        let b = reader.find_entry("b.txt").unwrap();
+
+        assert_eq!(a.created_time.get(), a_created);
+        assert_eq!(a.modified_time.get(), a_modified);
+        assert_eq!(b.created_time.get(), b_created);
+        assert_eq!(b.modified_time.get(), b_modified);
+    }
+
+    /// rename_duplicates preserves timestamps from original entries.
+    #[test]
+    fn rename_duplicates_preserves_timestamps() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create archive with duplicate entries.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"version 1", 0o644).unwrap();
+            writer.add_entry("file.txt", b"version 2", 0o644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Read timestamps before rename (iterate to get both entries).
+        let timestamps_before: Vec<(i64, i64)> = {
+            let reader = ArchiveReader::open(&path).unwrap();
+            reader
+                .iter_entries()
+                .map(|(row, _)| (row.created_time.get(), row.modified_time.get()))
+                .collect()
+        };
+        assert_eq!(timestamps_before.len(), 2);
+
+        rename_duplicates(&path).unwrap();
+
+        // After rename: file(1).txt has first entry's timestamps,
+        // file.txt has second entry's timestamps.
+        let reader = ArchiveReader::open(&path).unwrap();
+        let renamed = reader.find_entry("file(1).txt").unwrap();
+        let original = reader.find_entry("file.txt").unwrap();
+
+        assert_eq!(renamed.created_time.get(), timestamps_before[0].0);
+        assert_eq!(renamed.modified_time.get(), timestamps_before[0].1);
+        assert_eq!(original.created_time.get(), timestamps_before[1].0);
+        assert_eq!(original.modified_time.get(), timestamps_before[1].1);
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config::config())]
+
+        /// Compact round-trip preserves all entry metadata.
+        #[test]
+        fn compact_round_trip_preserves_metadata(
+            entries in prop::collection::vec(
+                (
+                    "[a-z]{1,8}\\.[a-z]{1,3}",  // path
+                    prop::collection::vec(any::<u8>(), 0..64),  // data
+                    prop::sample::select(vec![0o100644u32, 0o100755, 0o100600]),  // mode
+                ),
+                1..8,
+            ),
+        ) {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("test.bale");
+
+            // Create archive with generated entries.
+            {
+                let mut writer = ArchiveWriter::create(&path).unwrap();
+                for (entry_path, data, mode) in &entries {
+                    writer.add_entry(entry_path, data, *mode).unwrap();
+                }
+                writer.sync().unwrap();
+            }
+
+            // Collect metadata before compaction (last occurrence of each path wins).
+            let metadata_before: HashMap<String, (Vec<u8>, u32, i64, i64)> = {
+                let reader = ArchiveReader::open(&path).unwrap();
+                let mut map = HashMap::new();
+                for (row, path_bytes) in reader.iter_entries() {
+                    let p = ArchivePath::from_null_padded_bytes(path_bytes)
+                        .to_str_checked()
+                        .unwrap()
+                        .to_owned();
+                    let data = reader.read_data(row).unwrap().to_vec();
+                    map.insert(p, (data, row.mode.get(), row.created_time.get(), row.modified_time.get()));
+                }
+                map
+            };
+
+            compact(&path).unwrap();
+
+            // Verify all metadata is preserved.
+            let reader = ArchiveReader::open(&path).unwrap();
+            for (p, (expected_data, expected_mode, expected_created, expected_modified)) in &metadata_before {
+                let row = reader.find_entry(p).unwrap();
+                let data = reader.read_data(row).unwrap();
+                prop_assert_eq!(data, expected_data.as_slice());
+                prop_assert_eq!(row.mode.get(), *expected_mode);
+                prop_assert_eq!(row.created_time.get(), *expected_created);
+                prop_assert_eq!(row.modified_time.get(), *expected_modified);
+            }
+        }
     }
 }

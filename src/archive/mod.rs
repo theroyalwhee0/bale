@@ -9,6 +9,8 @@
 //! - [`ArchiveReader`] = `Archive<MappedArchive>` - Read-only access
 //! - [`ArchiveWriter`] = `Archive<MappedArchiveMut>` - Read-write access
 
+/// Options for adding entries.
+mod add_entry_options;
 /// Read operations trait.
 mod archive_read;
 /// Write operations trait.
@@ -29,6 +31,7 @@ mod symlink_entry;
 /// Read-write archive implementation.
 mod writer;
 
+pub use add_entry_options::AddEntryOptions;
 pub use archive_read::ArchiveRead;
 pub(crate) use archive_read::resolve_target;
 pub use archive_write::ArchiveWrite;
