@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5082ba28c2bd622539615529a7000df3b8424404f5b68fa67f760d33d0a9473e # shrinks to entries = [("bg.vlh", [132, 91, 148, 60, 113, 26, 30, 172, 141, 75, 192, 62, 214, 169, 36, 134, 208, 205, 187, 168, 24, 31, 229, 174, 86, 188, 72, 123, 128, 184, 102, 105, 212, 94, 146, 123, 191, 203, 20, 176, 187, 210, 160, 154, 168, 79, 157, 223, 180], 33188)]
