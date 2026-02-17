@@ -370,4 +370,104 @@ mod tests {
         let result = MappedArchiveMut::open(file.path());
         assert!(matches!(result, Err(BaleError::FileLocked)));
     }
+
+    /// Creating over an existing file returns an I/O error.
+    #[test]
+    fn create_existing_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        std::fs::write(&path, b"existing").unwrap();
+        let result = MappedArchiveMut::create(&path);
+        assert!(result.is_err());
+    }
+
+    /// `create_with_capacity` sets the initial capacity correctly.
+    #[test]
+    fn capacity_matches_initial_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let archive = MappedArchiveMut::create_with_capacity(&path, 8192).unwrap();
+        assert_eq!(archive.capacity(), 8192);
+        assert_eq!(archive.len(), 0);
+    }
+
+    /// Extending beyond initial capacity triggers reallocation.
+    #[test]
+    fn extend_grows_beyond_initial_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut archive = MappedArchiveMut::create_with_capacity(&path, 16).unwrap();
+        let data = vec![0xABu8; 64];
+        archive.extend(&data).unwrap();
+        assert_eq!(archive.len(), 64);
+        assert!(archive.capacity() >= 64);
+        assert_eq!(archive.as_bytes(), data.as_slice());
+    }
+
+    /// Growing via `set_len` zero-fills the new region.
+    #[test]
+    fn set_len_extends_with_zeros() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut archive = MappedArchiveMut::create_with_capacity(&path, 256).unwrap();
+        archive.extend(b"hi").unwrap();
+        archive.set_len(10).unwrap();
+        assert_eq!(archive.len(), 10);
+        assert_eq!(&archive.as_bytes()[..2], b"hi");
+        assert!(archive.as_bytes()[2..].iter().all(|&b| b == 0));
+    }
+
+    /// Shrinking via `set_len` reduces the logical length.
+    #[test]
+    fn set_len_truncates_logical_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut archive = MappedArchiveMut::create_with_capacity(&path, 256).unwrap();
+        archive.extend(b"hello world").unwrap();
+        assert_eq!(archive.len(), 11);
+        archive.set_len(5).unwrap();
+        assert_eq!(archive.len(), 5);
+        assert_eq!(archive.as_bytes(), b"hello");
+    }
+
+    /// In-place byte modification via `as_bytes_mut` works.
+    #[test]
+    fn as_bytes_mut_allows_modification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut archive = MappedArchiveMut::create_with_capacity(&path, 256).unwrap();
+        archive.extend(b"hello").unwrap();
+        archive.as_bytes_mut()[0] = b'H';
+        assert_eq!(archive.as_bytes(), b"Hello");
+    }
+
+    /// `sync` truncates the file to the logical length.
+    #[test]
+    fn sync_updates_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        let mut archive = MappedArchiveMut::create_with_capacity(&path, 4096).unwrap();
+        archive.extend(b"small data").unwrap();
+        archive.sync().unwrap();
+        assert_eq!(archive.capacity(), archive.len());
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.len(), 10);
+    }
+
+    /// Drop preserves `max(len, committed_len)`.
+    #[test]
+    fn drop_preserves_committed_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bale");
+        {
+            let mut archive = MappedArchiveMut::create_with_capacity(&path, 4096).unwrap();
+            archive.extend(b"committed content").unwrap();
+            archive.sync().unwrap();
+            // Reduce logical length below committed length.
+            archive.set_len(5).unwrap();
+            // On drop, file should be truncated to max(5, 17) = 17.
+        }
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.len(), 17);
+    }
 }

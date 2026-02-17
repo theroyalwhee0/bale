@@ -111,4 +111,35 @@ mod tests {
         assert_ne!(Crc::new(42), Crc::new(43));
         assert_eq!(Crc::NONE, Crc::new(0));
     }
+
+    /// Multi-segment append produces the same CRC as a single-pass compute.
+    #[test]
+    fn append_multi_segment_matches_single_pass() {
+        let a = b"Hello, ";
+        let b = b"beautiful ";
+        let c = b"World!";
+        let combined = [a.as_slice(), b.as_slice(), c.as_slice()].concat();
+
+        let incremental = Crc::compute(a).append(b).append(c);
+        let single_pass = Crc::compute(&combined);
+        assert_eq!(incremental, single_pass);
+    }
+
+    /// Appending data to `Crc::NONE` matches computing from scratch.
+    #[test]
+    fn append_from_none_matches_compute() {
+        let data = b"some input data";
+        let from_none = Crc::NONE.append(data);
+        let computed = Crc::compute(data);
+        assert_eq!(from_none, computed);
+    }
+
+    /// Same input always produces the same CRC output.
+    #[test]
+    fn compute_deterministic() {
+        let data = b"deterministic check";
+        let first = Crc::compute(data);
+        let second = Crc::compute(data);
+        assert_eq!(first, second);
+    }
 }

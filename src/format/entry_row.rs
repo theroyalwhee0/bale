@@ -225,4 +225,64 @@ mod tests {
         assert_eq!(restored.compression, EntryRow::COMPRESSION_NONE);
         assert_eq!(restored.flags, 0);
     }
+
+    /// Maximum entry ID (`u32::MAX`) round-trips through serialization.
+    #[test]
+    fn boundary_entry_id_max() {
+        let row = EntryRow::new_file(u32::MAX, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.entry_id.get(), u32::MAX);
+    }
+
+    /// Maximum `u64` values for `file_size` and `block_size` round-trip.
+    #[test]
+    fn boundary_file_size_max() {
+        let row = EntryRow::new_file(1, Crc::NONE, 0, u64::MAX, u64::MAX, 0, 0, 0o100644);
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.file_size.get(), u64::MAX);
+        assert_eq!(restored.block_size.get(), u64::MAX);
+    }
+
+    /// Extreme `i64` timestamp values (`MIN` and `MAX`) round-trip.
+    #[test]
+    fn boundary_timestamps_min_max() {
+        let row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, i64::MIN, i64::MAX, 0o100644);
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.created_time.get(), i64::MIN);
+        assert_eq!(restored.modified_time.get(), i64::MAX);
+    }
+
+    /// Maximum `u64` data offset round-trips through serialization.
+    #[test]
+    fn boundary_data_offset_max() {
+        let row = EntryRow::new_file(1, Crc::NONE, u64::MAX, 0, 0, 0, 0, 0o100644);
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.data_offset.get(), u64::MAX);
+    }
+
+    /// Non-default compression and flags survive serialization.
+    #[test]
+    fn compression_and_flags_roundtrip() {
+        let mut row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        row.compression = 7;
+        row.flags = 0b1010_0101;
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.compression, 7);
+        assert_eq!(restored.flags, 0b1010_0101);
+    }
+
+    /// Non-zero reserved bytes survive serialization.
+    #[test]
+    fn reserved_field_roundtrip() {
+        let mut row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        row.reserved = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let bytes = row.as_bytes();
+        let restored = EntryRow::ref_from_bytes(bytes).unwrap();
+        assert_eq!(restored.reserved, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
 }
