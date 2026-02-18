@@ -175,26 +175,37 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
             writer.add_directory(dir_str, SFlag::S_IFDIR.bits() | DEFAULT_DIR_PERM)?;
         }
 
-        for (entry_row, path_bytes) in &final_entries {
-            // Read the data from the original archive.
-            let data = reader.read_data(entry_row)?;
+        // Track original entry IDs to preserve hard link structure.
+        // Maps original entry_id -> first path written for that entry.
+        let mut written_entries: HashMap<u32, String> = HashMap::new();
 
+        for (entry_row, path_bytes) in &final_entries {
             // Get the path as a validated UTF-8 string.
             let archive_path = ArchivePath::from_null_padded_bytes(path_bytes);
             let path_str = archive_path.to_str_checked()?;
 
-            // Get mode from entry row.
-            let mode = entry_row.mode.get();
+            let entry_id = entry_row.entry_id.get();
 
-            writer.add_entry_with_options(
-                path_str,
-                data,
-                mode,
-                AddEntryOptions {
-                    created_time: Some(entry_row.created_time.get()),
-                    modified_time: Some(entry_row.modified_time.get()),
-                },
-            )?;
+            if let Some(first_path) = written_entries.get(&entry_id) {
+                // This entry ID was already written — create a hard link.
+                writer.hard_link(first_path, path_str)?;
+            } else {
+                // First occurrence of this entry ID — write normally.
+                let data = reader.read_data(entry_row)?;
+                let mode = entry_row.mode.get();
+
+                writer.add_entry_with_options(
+                    path_str,
+                    data,
+                    mode,
+                    AddEntryOptions {
+                        created_time: Some(entry_row.created_time.get()),
+                        modified_time: Some(entry_row.modified_time.get()),
+                    },
+                )?;
+
+                written_entries.insert(entry_id, path_str.to_owned());
+            }
         }
 
         writer.sync()?;
@@ -641,7 +652,7 @@ mod tests {
         assert_eq!(data, b"v3");
     }
 
-    /// Hard-linked entries survive compaction.
+    /// Hard-linked entries survive compaction with shared entry IDs.
     #[test]
     fn compact_preserves_hard_links() {
         let dir = TempDir::new().unwrap();
@@ -658,14 +669,55 @@ mod tests {
 
         compact(&path).unwrap();
 
-        // After compaction, both paths should exist with the same data.
-        // Note: compact re-writes entries individually, so they become
-        // separate entries with identical content (not shared entry IDs).
+        // After compaction, both paths should exist with the same data
+        // and share the same entry ID (hard link preserved).
         let reader = ArchiveReader::open(&path).unwrap();
         let orig = reader.file("original.txt").unwrap();
         let link = reader.file("link.txt").unwrap();
         assert_eq!(orig.data, b"shared data");
         assert_eq!(link.data, b"shared data");
+        assert_eq!(orig.id, link.id, "hard links should share entry ID");
+        assert_eq!(reader.entry_count(), 1, "should have single entry row");
+    }
+
+    /// Multiple hard links to the same file are preserved through compaction.
+    #[test]
+    fn compact_preserves_multiple_hard_links() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer
+                .add_entry("original.txt", b"shared data", 0o100644)
+                .unwrap();
+            writer.hard_link("original.txt", "link1.txt").unwrap();
+            writer.hard_link("original.txt", "link2.txt").unwrap();
+            writer.hard_link("original.txt", "link3.txt").unwrap();
+            writer.sync().unwrap();
+        }
+
+        compact(&path).unwrap();
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let orig = reader.file("original.txt").unwrap();
+        let link1 = reader.file("link1.txt").unwrap();
+        let link2 = reader.file("link2.txt").unwrap();
+        let link3 = reader.file("link3.txt").unwrap();
+
+        // All links share the same data.
+        assert_eq!(orig.data, b"shared data");
+        assert_eq!(link1.data, b"shared data");
+        assert_eq!(link2.data, b"shared data");
+        assert_eq!(link3.data, b"shared data");
+
+        // All links share the same entry ID.
+        assert_eq!(orig.id, link1.id);
+        assert_eq!(orig.id, link2.id);
+        assert_eq!(orig.id, link3.id);
+
+        // Single entry row for all links.
+        assert_eq!(reader.entry_count(), 1);
     }
 
     /// Symlink target and mode are preserved through compaction.
