@@ -6,7 +6,6 @@
 use super::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
 use crate::format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchive};
-use std::collections::HashSet;
 use std::path::Path;
 use zerocopy::FromBytes;
 
@@ -37,6 +36,14 @@ impl Archive<MappedArchive> {
         let trailer = *Trailer::ref_from_bytes(trailer_bytes)
             .map_err(|e| BaleError::Corrupted(format!("invalid trailer: {e}")))?;
         trailer.validated()?;
+
+        // Validate archive size matches actual file size.
+        let expected_size = trailer.archive_size.get();
+        if len != expected_size {
+            return Err(BaleError::Corrupted(format!(
+                "archive size mismatch: file is {len} bytes, trailer claims {expected_size} bytes"
+            )));
+        }
 
         // Validate metadata CRC-32C.
         Self::check_metadata_crc(bytes, &trailer)?;
@@ -407,72 +414,91 @@ impl ArchiveRead for Archive<MappedArchive> {
             let curr_start = i * stride;
             let prev_path = &table[prev_start..prev_start + path_size];
             let curr_path = &table[curr_start..curr_start + path_size];
-            prev_path <= curr_path
+            prev_path < curr_path
         })
     }
 
     /// Returns duplicate paths in the directory table.
-    fn find_duplicates(&self) -> Vec<ArchivePath<'static>> {
+    ///
+    /// Requires the directory table to be sorted. Walks adjacent pairs to
+    /// find duplicates in a single pass with no extra allocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotSorted` if the directory table is not sorted.
+    fn find_duplicates(&self) -> Result<Vec<ArchivePath<'static>>, BaleError> {
+        if !self.is_sorted() {
+            return Err(BaleError::NotSorted);
+        }
         let count = self.trailer.directory_entry_count.get() as usize;
         if count <= 1 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let stride = DirectoryRow::stride(self.trailer.path_size());
         let path_size = self.trailer.path_size() as usize;
         let table = self.directory_table_bytes();
-        let mut duplicates = Vec::new();
-        let mut seen = HashSet::new();
 
+        let mut duplicates = Vec::new();
         for i in 1..count {
             let prev_start = (i - 1) * stride;
             let curr_start = i * stride;
             let prev_path = &table[prev_start..prev_start + path_size];
             let curr_path = &table[curr_start..curr_start + path_size];
 
-            if prev_path == curr_path && seen.insert(curr_path.to_vec()) {
+            if prev_path == curr_path {
                 let path = ArchivePath::from_null_padded_bytes(curr_path);
-                duplicates.push(path.into_owned());
+                if duplicates.last() != Some(&path) {
+                    duplicates.push(path.into_owned());
+                }
             }
         }
-        duplicates
+        Ok(duplicates)
     }
 
     /// Checks for orphaned data blocks not referenced by any entry.
+    ///
+    /// Walks entries sorted by data offset, checking that each block starts
+    /// where the previous block (padded to alignment) ended. Any gap in the
+    /// data region indicates an orphaned block.
     ///
     /// # Errors
     ///
     /// Returns an error if the entry table or alignment is corrupted.
     fn has_orphaned_data(&self) -> Result<bool, BaleError> {
         let entry_table = self.entry_table()?;
-        let referenced: HashSet<u64> = entry_table
-            .iter()
-            .map(|row| row.data_offset.get())
-            .filter(|&offset| offset != 0)
-            .collect();
-
         let alignment = self.alignment()? as u64;
-        let data_region_end = self.trailer.entry_table_offset.get();
+        if alignment == 0 {
+            return Ok(false);
+        }
 
-        // Walk aligned offsets from the first alignment boundary after the file
-        // header up to the entry table.
-        let mut offset = {
+        // Collect entries that have data blocks, sorted by offset.
+        let mut blocks: Vec<(u64, u64)> = entry_table
+            .iter()
+            .filter(|row| row.data_offset.get() != 0)
+            .map(|row| (row.data_offset.get(), row.block_size.get()))
+            .collect();
+        blocks.sort_by_key(|&(offset, _)| offset);
+
+        let data_region_start = {
             let start = FileHeader::SIZE as u64;
-            if alignment == 0 {
-                return Ok(false);
-            }
-            // Round up to next alignment boundary.
             start.div_ceil(alignment) * alignment
         };
+        let data_region_end = self.trailer.entry_table_offset.get();
 
-        while offset < data_region_end {
-            // Each alignment boundary in the data region that is not referenced
-            // by any entry is an orphaned data block.
-            if !referenced.contains(&offset) {
+        // Walk blocks in offset order. The first block must start at the
+        // first alignment boundary; each subsequent block must start where
+        // the previous one ends (rounded up to alignment).
+        let mut expected = data_region_start;
+        for &(offset, size) in &blocks {
+            if offset != expected {
                 return Ok(true);
             }
-            offset += alignment;
+            expected = (offset + size).div_ceil(alignment) * alignment;
         }
-        Ok(false)
+
+        // Any remaining space between the last block and the entry table
+        // is orphaned data.
+        Ok(expected < data_region_end)
     }
 
     /// Returns a file entry by path.
@@ -717,8 +743,8 @@ mod tests {
         trailer.alignment_power = alignment_power;
         trailer.path_size = zerocopy::byteorder::little_endian::U16::new(path_size);
 
-        // Set compacted flag only if the directory table is sorted.
-        let is_sorted = entries.windows(2).all(|w| w[0].path <= w[1].path);
+        // Set compacted flag only if the directory table is strictly sorted.
+        let is_sorted = entries.windows(2).all(|w| w[0].path < w[1].path);
         if is_sorted {
             trailer.set_compacted();
         } else {
@@ -778,7 +804,7 @@ mod tests {
         assert!(archive.find_entry("hello.txt").is_none());
         assert!(archive.get_path(0).is_none());
         assert!(archive.is_sorted());
-        assert!(archive.find_duplicates().is_empty());
+        assert!(archive.find_duplicates().unwrap().is_empty());
         assert!(!archive.has_orphaned_data().unwrap());
     }
 
@@ -980,9 +1006,9 @@ mod tests {
         assert_eq!(archive.read_data(entry).unwrap(), b"b");
     }
 
-    /// Duplicate paths are detected.
+    /// Duplicate paths cause the table to not be strictly sorted.
     #[test]
-    fn find_duplicates_detects_dupes() {
+    fn duplicate_paths_not_sorted() {
         let bytes = build_test_archive(&[
             TestEntry {
                 path: "dup.txt",
@@ -1005,9 +1031,11 @@ mod tests {
         ]);
         let archive = archive_from_bytes(&bytes);
 
-        let dupes = archive.find_duplicates();
-        assert_eq!(dupes.len(), 1);
-        assert_eq!(dupes[0].as_str(), Some("dup.txt"));
+        assert!(!archive.is_sorted());
+        assert!(matches!(
+            archive.find_duplicates(),
+            Err(BaleError::NotSorted)
+        ));
     }
 
     /// No duplicates when all paths are unique.
@@ -1028,7 +1056,7 @@ mod tests {
             },
         ]);
         let archive = archive_from_bytes(&bytes);
-        assert!(archive.find_duplicates().is_empty());
+        assert!(archive.find_duplicates().unwrap().is_empty());
     }
 
     /// CRC mismatch is detected when data is corrupted.
@@ -1595,5 +1623,125 @@ mod tests {
 
         let result = archive.resolve("link");
         assert!(matches!(result, Err(BaleError::InvalidPath(_))));
+    }
+
+    /// find_duplicates returns NotSorted when the directory table is unsorted.
+    #[test]
+    fn find_duplicates_errors_when_unsorted() {
+        let bytes = build_test_archive(&[
+            TestEntry {
+                path: "a.txt",
+                data: b"first",
+                mode: 0o100644,
+                id: 1,
+            },
+            TestEntry {
+                path: "b.txt",
+                data: b"middle",
+                mode: 0o100644,
+                id: 2,
+            },
+            TestEntry {
+                path: "a.txt",
+                data: b"duplicate",
+                mode: 0o100644,
+                id: 3,
+            },
+        ]);
+        let archive = archive_from_bytes(&bytes);
+
+        assert!(!archive.is_sorted());
+        assert!(matches!(
+            archive.find_duplicates(),
+            Err(BaleError::NotSorted)
+        ));
+    }
+
+    /// has_orphaned_data does not false-positive when a data block spans
+    /// multiple alignment boundaries.
+    ///
+    /// Bug: the current implementation walks alignment-sized steps and only
+    /// checks whether each boundary is a referenced data_offset. When a
+    /// block_size exceeds the alignment, intermediate boundaries within that
+    /// block are not referenced and are incorrectly reported as orphaned.
+    #[test]
+    fn has_orphaned_data_large_block_spanning_boundaries() {
+        // Use a small alignment (512) so a ~1200-byte block spans 3 boundaries.
+        let alignment: u32 = 512;
+        static LARGE_DATA: [u8; 1200] = [0xAB; 1200];
+        let bytes = build_test_archive_with_options(
+            &[TestEntry {
+                path: "big.bin",
+                data: &LARGE_DATA,
+                mode: 0o100644,
+                id: 1,
+            }],
+            256,
+            alignment,
+        );
+        let archive = archive_from_bytes(&bytes);
+
+        // The data block starts at offset 512 and is 1200 bytes, spanning
+        // boundaries at 512, 1024, and 1536. Only 512 is in the referenced
+        // set, so the current code incorrectly returns true.
+        assert!(
+            !archive.has_orphaned_data().unwrap(),
+            "large block spanning multiple alignment boundaries is not orphaned"
+        );
+    }
+
+    /// Opening an archive with mismatched archive_size should fail.
+    ///
+    /// Bug: the current implementation does not validate the trailer's
+    /// archive_size field against the actual file size.
+    #[test]
+    fn open_rejects_archive_size_mismatch() {
+        let bytes = build_test_archive(&[TestEntry {
+            path: "file.txt",
+            data: b"data",
+            mode: 0o100644,
+            id: 1,
+        }]);
+
+        // Tamper with archive_size in the trailer to a wrong value.
+        let mut tampered = bytes.clone();
+        let trailer_start = tampered.len() - Trailer::SIZE;
+
+        // archive_size is at trailer offset 16 (8 bytes, LE).
+        let archive_size_offset = trailer_start + 16;
+        let wrong_size: u64 = 9999;
+        tampered[archive_size_offset..archive_size_offset + 8]
+            .copy_from_slice(&wrong_size.to_le_bytes());
+
+        // Recompute metadata CRC so the CRC check itself passes — we want
+        // to isolate the archive_size validation.
+        let file_header = &tampered[..FileHeader::SIZE];
+        let trailer_bytes = &tampered[trailer_start..];
+        let trailer = *Trailer::ref_from_bytes(trailer_bytes).unwrap();
+
+        let entry_table_offset = trailer.entry_table_offset.get() as usize;
+        let entry_count = trailer.entry_count.get() as usize;
+        let entry_table =
+            &tampered[entry_table_offset..entry_table_offset + entry_count * EntryRow::SIZE];
+
+        let dir_table_offset = trailer.directory_table_offset.get() as usize;
+        let dir_count = trailer.directory_entry_count.get() as usize;
+        let stride = DirectoryRow::stride(trailer.path_size());
+        let dir_table = &tampered[dir_table_offset..dir_table_offset + dir_count * stride];
+
+        let crc = Trailer::compute_metadata_crc(file_header, entry_table, dir_table, &trailer);
+        let crc_offset = trailer_start + 60;
+        tampered[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_u32().to_le_bytes());
+
+        // Write tampered bytes to a file and try to open.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_size.bale");
+        std::fs::write(&path, &tampered).unwrap();
+
+        let result = <Archive<MappedArchive>>::open(&path);
+        assert!(
+            result.is_err(),
+            "should reject archive with mismatched archive_size"
+        );
     }
 }

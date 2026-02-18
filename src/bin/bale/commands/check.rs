@@ -63,12 +63,16 @@ pub fn run(archive_path: impl AsRef<Path>, quiet: bool) -> Result<(), BaleCliErr
         errors.push("directory table is not sorted by path".to_string());
     }
 
-    // Check duplicates.
-    let duplicates = reader.find_duplicates();
-    let has_duplicates = !duplicates.is_empty();
-    for path in &duplicates {
-        errors.push(format!("Duplicate path: '{}'", path));
-    }
+    // Check duplicates (only meaningful when sorted).
+    let has_duplicates = if is_sorted {
+        let duplicates = reader.find_duplicates()?;
+        for path in &duplicates {
+            errors.push(format!("Duplicate path: '{}'", path));
+        }
+        !duplicates.is_empty()
+    } else {
+        false
+    };
 
     // Check orphaned data.
     let has_orphaned_data = reader.has_orphaned_data()?;

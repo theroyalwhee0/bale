@@ -500,27 +500,36 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
         Ok(())
     }
 
-    /// Checks if the directory table is sorted.
+    /// Checks if the directory table is strictly sorted by path bytes.
     fn is_sorted(&self) -> bool {
-        self.dir_entries.windows(2).all(|w| w[0].0 <= w[1].0)
+        self.dir_entries.windows(2).all(|w| w[0].0 < w[1].0)
     }
 
     /// Returns duplicate paths.
-    fn find_duplicates(&self) -> Vec<ArchivePath<'static>> {
+    ///
+    /// Requires the directory table to be sorted. The writer always
+    /// maintains sort order, so this walks adjacent pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotSorted` if the directory table is not sorted.
+    fn find_duplicates(&self) -> Result<Vec<ArchivePath<'static>>, BaleError> {
+        if !self.is_sorted() {
+            return Err(BaleError::NotSorted);
+        }
         if self.dir_entries.len() <= 1 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let mut duplicates = Vec::new();
-        let mut seen = HashSet::new();
         for i in 1..self.dir_entries.len() {
-            if self.dir_entries[i - 1].0 == self.dir_entries[i].0
-                && seen.insert(self.dir_entries[i].0.clone())
-            {
+            if self.dir_entries[i - 1].0 == self.dir_entries[i].0 {
                 let path = ArchivePath::from_null_padded_bytes(&self.dir_entries[i].0);
-                duplicates.push(path.into_owned());
+                if duplicates.last() != Some(&path) {
+                    duplicates.push(path.into_owned());
+                }
             }
         }
-        duplicates
+        Ok(duplicates)
     }
 
     /// Checks for orphaned data blocks.
@@ -1107,7 +1116,7 @@ mod tests {
         assert_eq!(reader.entry_count(), 0);
         assert!(reader.iter_entries().next().is_none());
         assert!(reader.is_sorted());
-        assert!(reader.find_duplicates().is_empty());
+        assert!(reader.find_duplicates().unwrap().is_empty());
         assert!(!reader.has_orphaned_data().unwrap());
     }
 
@@ -1289,10 +1298,8 @@ mod tests {
         }
 
         let reader = ArchiveReader::open(&path).unwrap();
-        // Both entries are in the tables.
-        let dupes = reader.find_duplicates();
-        assert_eq!(dupes.len(), 1);
-        assert_eq!(dupes[0].as_str(), Some("file.txt"));
+        // Duplicate paths mean the table is not strictly sorted.
+        assert!(!reader.is_sorted());
 
         // Directory table count includes both.
         assert_eq!(reader.trailer().directory_entry_count.get(), 2);
