@@ -2,8 +2,24 @@
 
 use crate::EntryKind;
 use crate::format::Crc;
+use bitflags::bitflags;
 use zerocopy::byteorder::little_endian::{I64, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+bitflags! {
+    /// Entry flags bitfield.
+    ///
+    /// Stored as a `u8` in the entry row at offset 53.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct EntryFlags: u8 {
+        /// Entry has a CRC-32C checksum to verify.
+        ///
+        /// When set, the `crc32c` field contains a valid checksum that
+        /// should be verified against the stored data bytes. When clear,
+        /// CRC verification is skipped (directories, empty files).
+        const HAS_CRC = 0x01;
+    }
+}
 
 /// Entry table row (64 bytes) with per-entry metadata.
 ///
@@ -64,6 +80,10 @@ impl EntryRow {
     pub const COMPRESSION_NONE: u8 = 0;
 
     /// Creates a new `EntryRow` for a regular file.
+    ///
+    /// Sets the `HAS_CRC` flag when `block_size > 0` (entry has data
+    /// to verify). Empty files get no flag since there is no data to
+    /// checksum.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new_file(
@@ -76,6 +96,11 @@ impl EntryRow {
         modified_time: i64,
         mode: u32,
     ) -> Self {
+        let flags = if block_size > 0 {
+            EntryFlags::HAS_CRC.bits()
+        } else {
+            0
+        };
         Self {
             entry_id: U32::new(entry_id),
             crc32c: U32::new(crc.to_u32()),
@@ -86,7 +111,7 @@ impl EntryRow {
             modified_time: I64::new(modified_time),
             mode: U32::new(mode),
             compression: Self::COMPRESSION_NONE,
-            flags: 0,
+            flags,
             reserved: [0u8; Self::RESERVED_SIZE],
         }
     }
@@ -118,6 +143,18 @@ impl EntryRow {
         Crc::new(self.crc32c.get())
     }
 
+    /// Returns the parsed entry flags.
+    #[must_use]
+    pub fn entry_flags(&self) -> EntryFlags {
+        EntryFlags::from_bits_truncate(self.flags)
+    }
+
+    /// Returns `true` if this entry has a CRC-32C checksum to verify.
+    #[must_use]
+    pub fn has_crc(&self) -> bool {
+        self.entry_flags().contains(EntryFlags::HAS_CRC)
+    }
+
     /// Returns the entry kind based on the mode field.
     #[must_use]
     pub fn kind(&self) -> EntryKind {
@@ -136,7 +173,7 @@ mod tests {
         assert_eq!(EntryRow::SIZE, 64);
     }
 
-    /// File constructor sets all fields correctly.
+    /// File constructor sets all fields correctly, including HAS_CRC flag.
     #[test]
     fn new_file() {
         let row = EntryRow::new_file(
@@ -158,8 +195,19 @@ mod tests {
         assert_eq!(row.modified_time.get(), 1_700_000_001_000);
         assert_eq!(row.mode.get(), 0o100644);
         assert_eq!(row.compression, EntryRow::COMPRESSION_NONE);
-        assert_eq!(row.flags, 0);
+        assert!(row.has_crc(), "HAS_CRC should be set when block_size > 0");
         assert!(row.reserved.iter().all(|&b| b == 0));
+    }
+
+    /// File constructor does not set HAS_CRC when block_size is 0.
+    #[test]
+    fn new_file_empty_no_has_crc() {
+        let row = EntryRow::new_file(1, Crc::NONE, 0, 0, 0, 0, 0, 0o100644);
+        assert!(
+            !row.has_crc(),
+            "HAS_CRC should not be set when block_size == 0"
+        );
+        assert_eq!(row.flags, 0);
     }
 
     /// Directory constructor sets data fields to zero.
@@ -223,7 +271,7 @@ mod tests {
         assert_eq!(restored.modified_time.get(), 1_700_000_001_000);
         assert_eq!(restored.mode.get(), 0o100755);
         assert_eq!(restored.compression, EntryRow::COMPRESSION_NONE);
-        assert_eq!(restored.flags, 0);
+        assert!(restored.has_crc(), "HAS_CRC set for non-zero block_size");
     }
 
     /// Maximum entry ID (`u32::MAX`) round-trips through serialization.
@@ -274,6 +322,9 @@ mod tests {
         let restored = EntryRow::ref_from_bytes(bytes).unwrap();
         assert_eq!(restored.compression, 7);
         assert_eq!(restored.flags, 0b1010_0101);
+        // HAS_CRC (bit 0) is set in 0b1010_0101.
+        assert!(restored.has_crc());
+        assert!(restored.entry_flags().contains(EntryFlags::HAS_CRC));
     }
 
     /// Non-zero reserved bytes survive serialization.
@@ -303,6 +354,8 @@ mod tests {
             let row = EntryRow::ref_from_bytes(&data).unwrap();
             let _ = row.kind();
             let _ = row.crc();
+            let _ = row.entry_flags();
+            let _ = row.has_crc();
             let _ = row.entry_id.get();
             let _ = row.data_offset.get();
             let _ = row.file_size.get();

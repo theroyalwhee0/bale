@@ -1,0 +1,28 @@
+[profile.default]
+# Mark tests exceeding 50ms as SLOW for performance visibility.
+slow-timeout = "50ms"
+
+# Proptest/fuzz tests run hundreds of randomized cases.
+[[profile.default.overrides]]
+filter = 'test(/fuzz_/)'
+slow-timeout = "500ms"
+
+# archive_path property tests (inside proptest! block).
+[[profile.default.overrides]]
+filter = 'test(/archive_path::tests::(valid_paths|no_consecutive|no_leading|leading_slashes|trailing_slashes|excess_dotdot|path_traversal|interior_spaces|tryfrom_all)/)'
+slow-timeout = "500ms"
+
+# Compact integration test does heavy I/O.
+[[profile.default.overrides]]
+filter = 'test(/compact::tests::/)'
+slow-timeout = "5s"
+
+# CLI integration tests spawn subprocesses.
+[[profile.default.overrides]]
+filter = 'binary(cli_commands) or test(cli_tools)'
+slow-timeout = "500ms"
+
+# FUSE tests have mount/unmount overhead.
+[[profile.default.overrides]]
+filter = 'test(/fuse_/) or binary(/fuse/)'
+slow-timeout = "200ms"

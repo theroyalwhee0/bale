@@ -9,6 +9,7 @@ use proptest::test_runner::FileFailurePersistence;
 /// absolute path derived from `CARGO_MANIFEST_DIR` at compile time.
 pub fn config() -> ProptestConfig {
     ProptestConfig {
+        cases: 64,
         failure_persistence: Some(Box::new(FileFailurePersistence::SourceParallel(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/proptest-regressions"

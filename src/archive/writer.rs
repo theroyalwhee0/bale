@@ -9,7 +9,7 @@ use super::{
     AddEntryOptions, Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, OpenOptions,
     SymlinkEntry,
 };
-use crate::format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
+use crate::format::{Crc, DirectoryRow, EntryFlags, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchiveMut};
 use nix::sys::stat::SFlag;
 use std::collections::HashSet;
@@ -518,14 +518,18 @@ impl ArchiveRead for Archive<MappedArchiveMut> {
 
     /// Verifies the CRC-32C checksum for an entry.
     ///
+    /// Checks the `HAS_CRC` flag to determine whether verification is needed.
+    /// This avoids the sentinel collision where a legitimate CRC-32C of zero
+    /// would be mistaken for "no CRC".
+    ///
     /// # Errors
     ///
     /// Returns an error if the CRC does not match.
     fn verify_crc(&self, entry: &EntryRow) -> Result<(), BaleError> {
-        let Some(stored_crc) = entry.crc().get() else {
-            // No CRC; nothing to verify (directory or empty entry).
+        if !entry.has_crc() {
             return Ok(());
-        };
+        }
+        let stored_crc = entry.crc32c.get();
         let data = self.read_data(entry)?;
         let computed = Crc::compute(data);
 
@@ -1029,6 +1033,11 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         row.crc32c = U32::new(crc.to_u32());
         row.mode = U32::new(mode);
         row.modified_time = I64::new(now_millis());
+        row.flags = if data.is_empty() {
+            0
+        } else {
+            EntryFlags::HAS_CRC.bits()
+        };
 
         self.dirty = true;
         Ok(())
@@ -1827,6 +1836,53 @@ mod tests {
         let mut writer = ArchiveWriter::create(&path).unwrap();
         let result = writer.add_symlink("link", "foo\x01bar", 0o777);
         assert!(matches!(result, Err(BaleError::UnsafeFilename(_))));
+    }
+
+    /// replace_content sets HAS_CRC flag when replacing with non-empty data.
+    #[test]
+    fn replace_content_sets_has_crc_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"old data", 0o100644).unwrap();
+            writer
+                .replace_content("file.txt", b"new data!", 0o100755)
+                .unwrap();
+
+            let entry = writer.find_entry("file.txt").unwrap();
+            assert!(
+                entry.has_crc(),
+                "HAS_CRC should be set after replace_content with non-empty data"
+            );
+            writer.sync().unwrap();
+        }
+
+        let reader = ArchiveReader::open(&path).unwrap();
+        let entry = reader.find_entry("file.txt").unwrap();
+        assert!(
+            entry.has_crc(),
+            "HAS_CRC should persist through sync and re-open"
+        );
+        reader.verify_crc(entry).unwrap();
+    }
+
+    /// replace_content clears HAS_CRC flag when replacing with empty data.
+    #[test]
+    fn replace_content_clears_has_crc_for_empty_data() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        let mut writer = ArchiveWriter::create(&path).unwrap();
+        writer.add_entry("file.txt", b"old data", 0o100644).unwrap();
+        writer.replace_content("file.txt", b"", 0o100644).unwrap();
+
+        let entry = writer.find_entry("file.txt").unwrap();
+        assert!(
+            !entry.has_crc(),
+            "HAS_CRC should be clear after replace_content with empty data"
+        );
     }
 
     /// replace_content on a directory returns an error.
