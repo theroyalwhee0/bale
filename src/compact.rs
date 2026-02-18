@@ -8,40 +8,30 @@ use crate::{
 use nix::sys::stat::SFlag;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use tempfile::TempPath;
 
 /// Default permission bits for directories (rwxr-xr-x).
 const DEFAULT_DIR_PERM: u32 = 0o755;
 
-/// Guard that deletes a temp file on drop unless marked to persist.
-struct TempFileGuard {
-    /// Path to the temp file.
-    path: PathBuf,
-    /// If true, the file is kept (renamed to final destination).
-    persist: bool,
-}
-
-impl TempFileGuard {
-    /// Creates a guard for the given path.
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            persist: false,
-        }
-    }
-
-    /// Marks the file to be persisted (not deleted on drop).
-    fn persist(&mut self) {
-        self.persist = true;
-    }
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        if !self.persist {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
+/// Creates a securely-named temp file path in the given directory.
+///
+/// Uses `tempfile::Builder` for race-free creation with an unpredictable name,
+/// then removes the file so `ArchiveWriter` can create it with `O_CREAT|O_EXCL`.
+/// The returned `TempPath` auto-deletes the path on drop for error cleanup.
+///
+/// # Errors
+///
+/// Returns an error if temp file creation or removal fails.
+fn secure_temp_path(dir: &Path) -> Result<TempPath, BaleError> {
+    let named = tempfile::Builder::new()
+        .prefix(".bale-")
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    let temp_path = named.into_temp_path();
+    // Remove so ArchiveWriter can create_new the file atomically.
+    fs::remove_file(&temp_path)?;
+    Ok(temp_path)
 }
 
 /// Statistics from a compact operation.
@@ -149,16 +139,11 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
 
     let entries_removed = total_entries - final_entries.len();
 
-    // Create temp file in same directory (for atomic rename).
-    // TempFileGuard ensures cleanup on error.
+    // Create a securely-named temp file in the same directory (for atomic rename).
+    // TempPath auto-deletes on drop unless persist() is called.
     let parent = path.parent().unwrap_or(Path::new("."));
-    let temp_path = parent.join(format!(
-        ".{}.compact.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("archive")
-    ));
-    let mut guard = TempFileGuard::new(temp_path.clone());
+    let temp_path_guard = secure_temp_path(parent)?;
+    let temp_path = temp_path_guard.to_path_buf();
 
     // Write compacted archive.
     {
@@ -214,9 +199,8 @@ pub fn compact(path: impl AsRef<Path>) -> Result<CompactStats, BaleError> {
     // Get compacted size.
     let compacted_size = fs::metadata(&temp_path)?.len();
 
-    // Atomic rename.
-    fs::rename(&temp_path, path)?;
-    guard.persist();
+    // Atomic rename to final path (also prevents temp file deletion).
+    temp_path_guard.persist(path).map_err(|e| e.error)?;
 
     Ok(CompactStats {
         original_size,
@@ -315,16 +299,11 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
     // Sort entries by the new path for binary search.
     entries.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // Create temp file in same directory (for atomic rename).
-    // TempFileGuard ensures cleanup on error.
+    // Create a securely-named temp file in the same directory (for atomic rename).
+    // TempPath auto-deletes on drop unless persist() is called.
     let parent = path.parent().unwrap_or(Path::new("."));
-    let temp_path = parent.join(format!(
-        ".{}.rename.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("archive")
-    ));
-    let mut guard = TempFileGuard::new(temp_path.clone());
+    let temp_path_guard = secure_temp_path(parent)?;
+    let temp_path = temp_path_guard.to_path_buf();
 
     // Write archive with renamed entries.
     {
@@ -347,9 +326,8 @@ pub fn rename_duplicates(path: impl AsRef<Path>) -> Result<RenameStats, BaleErro
         writer.sync()?;
     }
 
-    // Atomic rename.
-    fs::rename(&temp_path, path)?;
-    guard.persist();
+    // Atomic rename to final path (also prevents temp file deletion).
+    temp_path_guard.persist(path).map_err(|e| e.error)?;
 
     Ok(RenameStats {
         entries_renamed: renames.len(),
