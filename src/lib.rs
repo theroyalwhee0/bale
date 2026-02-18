@@ -36,7 +36,7 @@ mod proptest_config;
 #[cfg(feature = "reader")]
 pub use archive::ArchiveReader;
 #[cfg(feature = "writer")]
-pub use archive::{AddEntryOptions, ArchiveWrite, ArchiveWriter};
+pub use archive::{AddEntryOptions, ArchiveWrite, ArchiveWriter, OpenOptions};
 #[cfg(any(feature = "reader", feature = "writer"))]
 pub use archive::{Archive, ArchiveRead, DirEntry, Entry, FileEntry, SymlinkEntry};
 pub use archive_path::ArchivePath;

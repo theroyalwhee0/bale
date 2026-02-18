@@ -24,6 +24,8 @@ mod dir_entry;
 mod entry;
 /// File entry wrapper.
 mod file_entry;
+/// Options for opening an existing archive.
+mod open_options;
 /// Read-only archive implementation.
 mod reader;
 /// Symlink entry wrapper.
@@ -39,4 +41,5 @@ pub use core::{Archive, ArchiveReader, ArchiveWriter};
 pub use dir_entry::DirEntry;
 pub use entry::Entry;
 pub use file_entry::FileEntry;
+pub use open_options::OpenOptions;
 pub use symlink_entry::SymlinkEntry;

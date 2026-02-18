@@ -6,7 +6,8 @@
 //! to disk via [`sync()`](ArchiveWrite::sync).
 
 use super::{
-    AddEntryOptions, Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, SymlinkEntry,
+    AddEntryOptions, Archive, ArchiveRead, ArchiveWrite, DirEntry, Entry, FileEntry, OpenOptions,
+    SymlinkEntry,
 };
 use crate::format::{Crc, DirectoryRow, EntryRow, FileHeader, Trailer};
 use crate::{ArchivePath, BaleError, EntryKind, MappedArchiveMut};
@@ -87,16 +88,38 @@ impl Archive<MappedArchiveMut> {
 
     /// Opens an existing archive for appending.
     ///
-    /// Reads the trailer to determine table locations and configuration,
-    /// then parses existing entry and directory tables into memory.
+    /// Validates the metadata CRC-32C by default. Use
+    /// [`open_with_options`](Self::open_with_options) to disable CRC
+    /// validation for repair scenarios.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The file cannot be opened
     /// - The archive format is invalid
+    /// - The metadata CRC-32C does not match
     /// - Memory mapping fails
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BaleError> {
+        Self::open_with_options(path, OpenOptions::default())
+    }
+
+    /// Opens an existing archive with custom options.
+    ///
+    /// When `options.validate_crc` is `true` (the default), the metadata
+    /// CRC-32C is verified before returning. Set it to `false` for repair
+    /// scenarios where you need to open a corrupted archive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The file cannot be opened
+    /// - The archive format is invalid
+    /// - The metadata CRC-32C does not match (when validation is enabled)
+    /// - Memory mapping fails
+    pub fn open_with_options(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+    ) -> Result<Self, BaleError> {
         let mmap = MappedArchiveMut::open(path)?;
         let bytes = mmap.as_bytes();
         let len = bytes.len() as u64;
@@ -113,6 +136,11 @@ impl Archive<MappedArchiveMut> {
         let trailer = *Trailer::ref_from_bytes(trailer_bytes)
             .map_err(|e| BaleError::Corrupted(format!("invalid trailer: {e}")))?;
         trailer.validated()?;
+
+        // Validate metadata CRC-32C.
+        if options.validate_crc {
+            Self::check_metadata_crc(bytes, &trailer)?;
+        }
 
         // Parse existing entry table into memory.
         let entry_count = trailer.entry_count.get() as usize;
@@ -158,6 +186,61 @@ impl Archive<MappedArchiveMut> {
             entry_rows,
             dir_entries,
         })
+    }
+
+    /// Verifies the metadata CRC-32C against the archive contents.
+    ///
+    /// Computes the CRC over file header, entry table, directory table,
+    /// and trailer bytes 0–59, then compares against the stored value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BaleError::Corrupted` if the CRC does not match.
+    fn check_metadata_crc(bytes: &[u8], trailer: &Trailer) -> Result<(), BaleError> {
+        let stored = trailer.metadata_crc();
+        let file_header = &bytes[..FileHeader::SIZE];
+        let entry_table = {
+            let count = trailer.entry_count.get() as usize;
+            if count == 0 {
+                &[] as &[u8]
+            } else {
+                let offset = trailer.entry_table_offset.get() as usize;
+                let len = count * EntryRow::SIZE;
+                &bytes[offset..offset + len]
+            }
+        };
+        let directory_table = {
+            let count = trailer.directory_entry_count.get() as usize;
+            if count == 0 {
+                &[] as &[u8]
+            } else {
+                let offset = trailer.directory_table_offset.get() as usize;
+                let stride = DirectoryRow::stride(trailer.path_size());
+                let len = count * stride;
+                &bytes[offset..offset + len]
+            }
+        };
+
+        // Compute with CRC field zeroed (use a copy of the trailer).
+        let computed = {
+            let mut trailer_for_crc = *trailer;
+            trailer_for_crc.set_metadata_crc(Crc::NONE);
+            Trailer::compute_metadata_crc(
+                file_header,
+                entry_table,
+                directory_table,
+                &trailer_for_crc,
+            )
+        };
+
+        if stored != computed {
+            let stored_val = stored.to_u32();
+            let computed_val = computed.to_u32();
+            return Err(BaleError::Corrupted(format!(
+                "metadata CRC-32C mismatch: stored {stored_val:#010x}, computed {computed_val:#010x}"
+            )));
+        }
+        Ok(())
     }
 
     /// Adds an entry with configurable options.
@@ -1911,5 +1994,86 @@ mod tests {
         let long_path = "b".repeat(path_size as usize + 1);
         let result = writer.add_entry(&long_path, b"data", 0o100644);
         assert!(matches!(result, Err(BaleError::PathTooLong { .. })));
+    }
+
+    /// `open` validates metadata CRC and rejects corrupted archives.
+    #[test]
+    fn open_rejects_corrupted_metadata_crc() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create a valid archive.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o100644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Corrupt a byte in the entry table to invalidate the metadata CRC.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let trailer_start = bytes.len() - crate::format::Trailer::SIZE;
+        // Corrupt a byte just before the trailer (in the directory table).
+        bytes[trailer_start - 1] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        // Default open should reject the corrupted archive.
+        let err = match ArchiveWriter::open(&path) {
+            Ok(_) => panic!("expected CRC mismatch error, got Ok"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("CRC-32C mismatch"),
+            "expected CRC mismatch error, got: {msg}"
+        );
+    }
+
+    /// `open_with_options` with `validate_crc: false` opens corrupted archives.
+    #[test]
+    fn open_with_options_skips_crc_validation() {
+        use super::OpenOptions;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        // Create a valid archive.
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o100644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Corrupt a byte in the directory table to invalidate the metadata CRC.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let trailer_start = bytes.len() - crate::format::Trailer::SIZE;
+        bytes[trailer_start - 1] ^= 0xFF;
+        std::fs::write(&path, &bytes).unwrap();
+
+        // Opening with CRC validation disabled should succeed.
+        let options = OpenOptions {
+            validate_crc: false,
+        };
+        let result = ArchiveWriter::open_with_options(&path, options);
+        assert!(
+            result.is_ok(),
+            "expected open to succeed with CRC validation disabled"
+        );
+    }
+
+    /// `open` succeeds on a valid archive (CRC matches).
+    #[test]
+    fn open_accepts_valid_metadata_crc() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bale");
+
+        {
+            let mut writer = ArchiveWriter::create(&path).unwrap();
+            writer.add_entry("file.txt", b"data", 0o100644).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Default open should succeed on a valid archive.
+        let writer = ArchiveWriter::open(&path).unwrap();
+        assert_eq!(writer.entry_count(), 1);
     }
 }
