@@ -16,6 +16,6 @@ mod trailer;
 
 pub use crc::Crc;
 pub use directory_row::DirectoryRow;
-pub use entry_row::EntryRow;
+pub use entry_row::{EntryFlags, EntryRow};
 pub use file_header::FileHeader;
 pub use trailer::{Trailer, TrailerFlags};

@@ -370,14 +370,18 @@ impl ArchiveRead for Archive<MappedArchive> {
 
     /// Verifies the CRC-32C checksum for an entry.
     ///
+    /// Checks the `HAS_CRC` flag to determine whether verification is needed.
+    /// This avoids the sentinel collision where a legitimate CRC-32C of zero
+    /// would be mistaken for "no CRC".
+    ///
     /// # Errors
     ///
     /// Returns an error if the data cannot be read or the CRC does not match.
     fn verify_crc(&self, entry: &EntryRow) -> Result<(), BaleError> {
-        let Some(stored_crc) = entry.crc().get() else {
-            // No CRC; nothing to verify (directory or empty entry).
+        if !entry.has_crc() {
             return Ok(());
-        };
+        }
+        let stored_crc = entry.crc32c.get();
         let data = self.read_data(entry)?;
         let computed = Crc::compute(data);
 
@@ -1057,6 +1061,63 @@ mod tests {
         ]);
         let archive = archive_from_bytes(&bytes);
         assert!(archive.find_duplicates().unwrap().is_empty());
+    }
+
+    /// verify_crc succeeds when CRC-32C is zero and HAS_CRC is set.
+    ///
+    /// This tests the sentinel collision fix: a legitimate CRC-32C of zero
+    /// should still be verified (and pass) rather than being skipped.
+    #[test]
+    fn verify_crc_zero_value_with_has_crc_flag() {
+        let mut bytes = build_test_archive(&[TestEntry {
+            path: "test.bin",
+            data: b"Hello, world!",
+            mode: 0o100644,
+            id: 1,
+        }]);
+
+        // Find the entry row and force its CRC to 0 while keeping HAS_CRC set.
+        // The entry table starts at the offset stored in the trailer.
+        let trailer_start = bytes.len() - Trailer::SIZE;
+        let trailer = *Trailer::ref_from_bytes(&bytes[trailer_start..]).unwrap();
+        let entry_offset = trailer.entry_table_offset.get() as usize;
+
+        // CRC-32C is at entry row offset 4 (4 bytes, LE).
+        let crc_offset = entry_offset + 4;
+        bytes[crc_offset..crc_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        // Flags is at entry row offset 53. Ensure HAS_CRC (0x01) is set.
+        let flags_offset = entry_offset + 53;
+        bytes[flags_offset] = 0x01;
+
+        // Recompute metadata CRC so the archive opens cleanly.
+        let entry_count = trailer.entry_count.get() as usize;
+        let entry_table = &bytes[entry_offset..entry_offset + entry_count * EntryRow::SIZE];
+        let dir_offset = trailer.directory_table_offset.get() as usize;
+        let dir_count = trailer.directory_entry_count.get() as usize;
+        let stride = DirectoryRow::stride(trailer.path_size());
+        let dir_table = &bytes[dir_offset..dir_offset + dir_count * stride];
+        let file_header = &bytes[..FileHeader::SIZE];
+
+        let mut new_trailer = *Trailer::ref_from_bytes(&bytes[trailer_start..]).unwrap();
+        new_trailer.set_metadata_crc(Crc::NONE);
+        let metadata_crc =
+            Trailer::compute_metadata_crc(file_header, entry_table, dir_table, &new_trailer);
+        new_trailer.set_metadata_crc(metadata_crc);
+        bytes[trailer_start..].copy_from_slice(new_trailer.as_bytes());
+
+        let archive = archive_from_bytes(&bytes);
+        let entry = archive.find_entry("test.bin").unwrap();
+
+        // HAS_CRC is set, so verify_crc should check the CRC.
+        // CRC is 0 but data is "Hello, world!" (CRC != 0), so this should fail.
+        let result = archive.verify_crc(entry);
+        assert!(
+            result.is_err(),
+            "should detect CRC mismatch when stored CRC is 0 but HAS_CRC is set"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("CRC-32C mismatch"), "error was: {err}");
     }
 
     /// CRC mismatch is detected when data is corrupted.

@@ -270,8 +270,10 @@ access. When compression is used, the compression format's own integrity
 mechanisms are expected to cover decompression correctness.
 
 When `block_size` is 0 (empty files, directories), the `crc32c` field must
-be set to `0x00000000`. Readers must skip CRC validation for entries with
-`block_size = 0`.
+be set to `0x00000000` and the `HAS_CRC` flag (entry flags bit 0) must be
+clear. When `block_size > 0`, the `HAS_CRC` flag must be set. Readers must
+check the `HAS_CRC` flag — not the CRC value itself — to determine whether
+to verify the checksum.
 
 Data block corruption is detected only when an individual entry's data is
 read and its CRC-32C is validated. The metadata CRC-32C in the trailer (see
@@ -436,13 +438,22 @@ the `mode` field (0x8 for regular file, 0x4 for directory).
 
 The `flags` field is an 8-bit bitfield.
 
-| Bit  | Mask | Name     | Description |
-|------|------|----------|-------------|
-| 0–7  | —    | Reserved | Must be zero |
+| Bit  | Mask | Name     | Description                            |
+|------|------|----------|----------------------------------------|
+| 0    | 0x01 | HAS_CRC  | Entry has a CRC-32C checksum to verify |
+| 1–7  | —    | Reserved | Must be zero                           |
 
-In version 1.0.0, all 8 bits are reserved and must be zero. Future minor
-versions may define flag bits; readers that do not understand a flag bit
-must ignore it (see Reserved Fields).
+**HAS_CRC (bit 0):** When set, the `crc32c` field contains a valid checksum
+that must be verified against the stored data bytes. When clear, CRC
+verification is skipped (directories, empty files). Writers must set this
+flag for any entry with `block_size > 0`. Readers must check this flag —
+not the CRC value — to determine whether to verify the checksum. This
+avoids a sentinel collision where a legitimate CRC-32C of `0x00000000`
+(approximately 1 in 2^32 chance) would be mistaken for "no CRC" and
+silently skip verification.
+
+Future minor versions may define additional flag bits; readers that do not
+understand a flag bit must ignore it (see Reserved Fields).
 
 ### Timestamps
 
@@ -1042,7 +1053,7 @@ Offset  Size  Content
 ──────────────────────────────────────────
 8192    64    Entry Row (id=1, crc32c=..., data_offset=4096,
               file_size=13, block_size=13, mode=0o100644,
-              compression=0, flags=0)
+              compression=0, flags=0x01 [HAS_CRC])
 ──────────────────────────────────────────
                 Directory Table (1 row)
 ──────────────────────────────────────────
