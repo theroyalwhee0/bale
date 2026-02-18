@@ -403,9 +403,13 @@ impl Archive<MappedArchiveMut> {
         }
     }
 
-    /// Finds an entry row by ID using linear search on the in-memory table.
+    /// Finds an entry row by ID using binary search on the sorted table.
     fn find_entry_row_by_id(&self, id: u32) -> Option<&EntryRow> {
-        self.entry_rows.iter().find(|r| r.entry_id.get() == id)
+        let idx = self
+            .entry_rows
+            .binary_search_by_key(&id, |r| r.entry_id.get())
+            .ok()?;
+        Some(&self.entry_rows[idx])
     }
 }
 
@@ -1012,12 +1016,12 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
         // Write new data block.
         let (data_offset, crc) = self.write_data_block(data)?;
 
-        // Find and update the entry row in-place.
-        let row = self
+        // Find and update the entry row in-place via binary search.
+        let idx = self
             .entry_rows
-            .iter_mut()
-            .find(|r| r.entry_id.get() == entry_id)
-            .ok_or_else(|| BaleError::EntryNotFound(path.to_owned()))?;
+            .binary_search_by_key(&entry_id, |r| r.entry_id.get())
+            .map_err(|_| BaleError::EntryNotFound(path.to_owned()))?;
+        let row = &mut self.entry_rows[idx];
 
         row.data_offset = U64::new(data_offset);
         row.file_size = U64::new(data.len() as u64);
@@ -1046,7 +1050,15 @@ impl ArchiveWrite for Archive<MappedArchiveMut> {
             return Ok(());
         }
 
-        // Sort entry rows by entry_id.
+        // Entry rows are maintained in sorted order by entry_id (IDs are
+        // monotonically increasing, retain preserves order).  Sort as a
+        // defensive fallback in case the invariant is ever violated.
+        debug_assert!(
+            self.entry_rows
+                .windows(2)
+                .all(|w| w[0].entry_id.get() <= w[1].entry_id.get()),
+            "entry_rows should already be sorted by entry_id"
+        );
         self.entry_rows.sort_by_key(|r| r.entry_id.get());
 
         // Sort directory entries by path bytes.
