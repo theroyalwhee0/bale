@@ -1,2 +1,2 @@
-error: Duplicate path: 'file.txt'
+error: directory table is not sorted by path
 error: check failed: 1 issue(s) found

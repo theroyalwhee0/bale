@@ -86,6 +86,10 @@ pub enum BaleError {
     #[error("symlink loop: {0}")]
     SymlinkLoop(String),
 
+    /// Directory table is not sorted (required for duplicate detection).
+    #[error("directory table is not sorted")]
+    NotSorted,
+
     /// Archive has exhausted its entry ID space (u32::MAX reached).
     #[error("archive is full: entry ID space exhausted")]
     ArchiveFull,

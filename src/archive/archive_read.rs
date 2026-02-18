@@ -150,10 +150,13 @@ pub trait ArchiveRead {
 
     /// Returns a list of duplicate paths in the archive.
     ///
-    /// Duplicate paths occur when the same path appears multiple times in the
-    /// directory table (e.g., hard links with the same path are not duplicates
-    /// since they share the same entry ID).
-    fn find_duplicates(&self) -> Vec<ArchivePath<'static>>;
+    /// The directory table must be sorted before calling this method. If it
+    /// is not sorted, returns a `NotSorted` error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory table is not sorted.
+    fn find_duplicates(&self) -> Result<Vec<ArchivePath<'static>>, BaleError>;
 
     /// Checks if the archive contains orphaned data.
     ///
